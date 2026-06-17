@@ -1,0 +1,150 @@
+package main
+
+Type :: struct {
+    name: string,
+    kind: any,
+}
+Object :: struct {
+    name: string,
+    type_id: TypeId,
+}
+Scope :: struct {
+    objects:        map[string]ObjId,
+    types:          map[string]TypeId,
+    items:          map[string]ItemId,
+    parent:         ^Scope,
+}
+ModuleScope :: struct {
+    using scope: Scope,
+    obj_foreward:   map[string]ObjId,
+    ty_foreward:    map[string]TypeId,
+}
+new_object :: proc(s: ^Scope, o: Object) -> ObjId {
+    ctx := get()
+    append(&ctx.objs, o);
+    id := ObjId(len(ctx.objs)-1);
+    _, ok := s.types[o.name];       assert(!ok);
+    _, ok = s.objects[o.name];      assert(!ok);
+    s.objects[o.name] = id
+    return id
+}
+new_type :: proc(s: ^Scope, t: Type) -> TypeId {
+    ctx := get()
+    append(&ctx.types, t);
+    id := TypeId(len(ctx.types)-1);
+    _, ok := s.types[t.name];       assert(!ok);
+    _, ok = s.objects[t.name];      assert(!ok);
+    s.types[t.name] = id
+    return id
+}
+new_object_fd :: proc(s: ^ModuleScope, o: Object) -> ObjId {
+    ctx := get()
+    append(&ctx.objs, o);
+    id := ObjId(len(ctx.objs)-1);
+
+    // make sure it doesn't exist
+    _, ok := s.ty_foreward[o.name]; assert(!ok);
+    _, ok = s.obj_foreward[o.name]; assert(!ok);
+    _, ok = s.types[o.name];        assert(!ok);
+    _, ok = s.objects[o.name];      assert(!ok);
+
+    s.obj_foreward[o.name] = id
+    return id
+}
+new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
+    ctx := get()
+    append(&ctx.types, t);
+    id := TypeId(len(ctx.types)-1);
+    // make sure it doesn't exist
+    _, ok := s.ty_foreward[t.name]; assert(!ok);
+    _, ok = s.obj_foreward[t.name]; assert(!ok);
+    _, ok = s.types[t.name];        assert(!ok);
+    _, ok = s.objects[t.name];      assert(!ok);
+    s.ty_foreward[t.name] = id
+    return id
+}
+resolve_stmt :: proc(s: ^Scope, id: StmtId) {
+panic("impl")
+}
+resolve_block :: proc(s: ^Scope, b: ^Block) {
+    b_scope := new_scope(s);
+    for id in b.stmts {
+        resolve_stmt(s, id)
+    }
+    free_scope(&b_scope)
+}
+resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
+    fndec, ok := get(id).(FnDec); assert(ok); // assert it's a fn dec
+    oid, ook := s.obj_foreward[fndec.name]; assert(ook); // make sure fd exists
+    obj := get(oid); // gets pointer, so modify that
+
+    // impl
+    resolve_block(s, &fndec.block);
+
+    delete_key(&s.obj_foreward, fndec.name); // delete fd and create object
+    s.objects[fndec.name] = oid; // recreate link
+}
+forward_item :: proc(s: ^ModuleScope, id: ItemId) {
+    item := get(id)
+    // foreward
+    switch i in item {
+    case FnDec:         new_object_fd(s, Object{name=i.name});
+    case:               panic("impl")
+    }
+}
+resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
+    item := get(id)
+
+    switch _ in item {
+    case FnDec:         resolve_fn_dec_item(s, id);
+    case:               panic("impl")
+    }
+}
+new_scope :: proc(parent:^Scope=nil) -> Scope {
+    s := Scope{}
+    s.objects       = make(map[string]ObjId,  allocator=context.allocator);
+    s.types         = make(map[string]TypeId, allocator=context.allocator);
+    s.items         = make(map[string]ItemId, allocator=context.allocator);
+    s.parent = parent;
+    return s;
+}
+new_module_scope :: proc() -> ModuleScope {
+    s := ModuleScope{}
+    s.scope = new_scope()
+    s.obj_foreward  = make(map[string]ObjId,  allocator=context.allocator);
+    s.ty_foreward   = make(map[string]TypeId, allocator=context.allocator);
+    return s
+}
+free_scope :: proc(s: ^Scope) {
+    if s == nil do return;
+
+    delete(s.objects);
+    delete(s.types);
+    delete(s.items);
+
+    s^ = {};
+}
+
+free_module_scope :: proc(s: ^ModuleScope) {
+    if s == nil do return;
+
+    free_scope(&s.scope);
+
+    delete(s.obj_foreward);
+    delete(s.ty_foreward);
+
+    s^ = {};
+}
+resolve_module_ast :: proc(ast: ^AST) {
+    global_scope := new_module_scope()
+
+    for id in ast.items {
+        forward_item(&global_scope, id)
+    }
+
+    for id in ast.items {
+        resolve_item(&global_scope, id)
+    }
+    free_module_scope(&global_scope)
+}
+
