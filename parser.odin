@@ -75,7 +75,7 @@ TypeSpecifier :: union {
 }
 VarDec :: struct {
     name: string,
-    type: TypeSpecifier,
+    type: Maybe(TypeSpecifier),
     value: ExprId,
 }
 Stmt :: union {
@@ -124,7 +124,7 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         consume_token(p);
         expr := parse_expr(p);
         expect_symbol(p, ";");
-        return new_stmt(Stmt(VarDec{name=name.text, value=expr}));
+        return new_stmt(Stmt(VarDec{name=name.text, type=nil, value=expr}));
     } else {
         fmt.println("Invalid token in statement:", current_token(p));
         panic("");

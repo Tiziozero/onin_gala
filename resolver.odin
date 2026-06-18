@@ -1,8 +1,16 @@
 package main
 
+TypeKind :: enum {
+    Integer,
+    Float,
+    Rune,
+    Byte,
+    Pointer,
+}
 Type :: struct {
     name: string,
-    kind: any,
+    kind: TypeKind,
+    ptr: TypeId,
 }
 Object :: struct {
     name: string,
@@ -29,9 +37,11 @@ new_object :: proc(s: ^Scope, o: Object) -> ObjId {
     return id
 }
 new_type :: proc(s: ^Scope, t: Type) -> TypeId {
-    ctx := get()
+    ctx := get_ctx();
     append(&ctx.types, t);
-    id := TypeId(len(ctx.types)-1);
+    id := TypeId(len(ctx.types)-1);  // allocate type
+
+    // make sure it doesn't exist
     _, ok := s.types[t.name];       assert(!ok);
     _, ok = s.objects[t.name];      assert(!ok);
     s.types[t.name] = id
@@ -54,7 +64,7 @@ new_object_fd :: proc(s: ^ModuleScope, o: Object) -> ObjId {
 new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
     ctx := get()
     append(&ctx.types, t);
-    id := TypeId(len(ctx.types)-1);
+    id := TypeId(len(ctx.types)-1); 
     // make sure it doesn't exist
     _, ok := s.ty_foreward[t.name]; assert(!ok);
     _, ok = s.obj_foreward[t.name]; assert(!ok);
@@ -63,13 +73,63 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
     s.ty_foreward[t.name] = id
     return id
 }
+resolve_expr :: proc(s: ^Scope, id: ExprId) {
+    switch e in get(id) {
+    case Binop: {
+    }
+    case Number: {
+    }
+    case Symbol: {
+    }
+    case: panic("impl");
+    }
+}
+intern_type :: proc(t: Type) -> TypeId {
+    assert(t.kind == .Pointer)
+    for ty, id in get_ctx().types {
+        if ty == t { return TypeId(id) }
+    }
+    append(&get_ctx().types, t);
+    return TypeId(len(get_ctx().types)-1)
+}
+scope_get_type :: proc(s: ^Scope, n: string) -> TypeId {
+    scope := s
+    for scope != nil {
+        id, ok := scope.types[n];
+        if ok { return id }
+        scope = scope.parent
+    }
+    panic("type doesn't exist");
+}
+resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
+    switch k in t {
+    case BaseType: { // will get declared type id
+        ty := scope_get_type(s, string(k));
+        return ty
+    }
+    case PointerType: { // creates a pointer and will ge that one
+        id := resolve_type_specifier(s, k^)
+        return intern_type({kind=.Pointer, ptr=id})
+    }
+    case: panic("impl");
+    }
+}
 resolve_stmt :: proc(s: ^Scope, id: StmtId) {
-panic("impl")
+    switch stmt in get(id) {
+    case VarDec: {
+        resolve_expr(s, stmt.value);
+        if stmt.type != nil {
+            ty, ok := stmt.type.(TypeSpecifier); assert(ok);
+            resolve_type_specifier(s, ty);
+        }
+    }
+    case: panic("Impl");
+    }
 }
 resolve_block :: proc(s: ^Scope, b: ^Block) {
     b_scope := new_scope(s);
     for id in b.stmts {
-        resolve_stmt(s, id)
+        resolve_stmt(&b_scope, id)
     }
     free_scope(&b_scope)
 }
