@@ -1,20 +1,27 @@
 package main
 
 TypeKind :: enum {
+    Invalid,
+    Function,
     Integer,
     Float,
     Rune,
     Byte,
     Pointer,
 }
+Arg :: struct {
+    name: string,
+    type: TypeId
+}
 Type :: struct {
     name: string,
     kind: TypeKind,
     ptr: TypeId,
+    fn: struct { args: []Arg, ret_ty: Maybe(TypeId)},
 }
 Object :: struct {
     name: string,
-    type_id: TypeId,
+    type: TypeId,
 }
 Scope :: struct {
     objects:        map[string]ObjId,
@@ -76,21 +83,53 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
     case Binop: {
+        resolve_expr(s, e.left);
+        resolve_expr(s, e.right);
     }
     case Number: {
-    }
+    } // nothing
     case Symbol: {
+        obj := scope_get_object(s, e.name);
+        get_ctx().expr_objects[id] = obj
     }
+
     case: panic("impl");
     }
 }
+cmp_types :: proc(l, r: Type) -> bool {
+    if l.kind != r.kind { return false } 
+
+    if l.kind == .Function {
+        if l.fn.ret_ty != r.fn.ret_ty { return false }
+        if len(l.fn.args) != len(r.fn.args) { return false }
+        /// cehck each arg
+        for i in 0..<len(l.fn.args) {
+            if l.fn.args[i] != r.fn.args[i] { return false }
+        }
+        return true // same type
+    } else if l.kind == .Pointer {
+        return cmp_types(get(l.ptr)^, get(r.ptr)^)
+    } else {
+        return true // same kind, same type for now
+    }
+}
+// only intern function and pointers
 intern_type :: proc(t: Type) -> TypeId {
-    assert(t.kind == .Pointer)
+    assert(t.kind == .Pointer || t.kind == .Function)
     for ty, id in get_ctx().types {
-        if ty == t { return TypeId(id) }
+        if cmp_types(ty, t) { return TypeId(id) }
     }
     append(&get_ctx().types, t);
     return TypeId(len(get_ctx().types)-1)
+}
+scope_get_object :: proc(s: ^Scope, n: string) -> ObjId {
+    scope := s
+    for scope != nil {
+        id, ok := scope.objects[n];
+        if ok { return id }
+        scope = scope.parent
+    }
+    panic("object doesn't exist");
 }
 scope_get_type :: proc(s: ^Scope, n: string) -> TypeId {
     scope := s
@@ -140,6 +179,15 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 
     // impl
     resolve_block(s, &fndec.block);
+    // create fn type
+    fnty := Type{}
+    fnty.kind = .Function;
+    fnty.fn.args = make([]Arg, 0, allocator=context.temp_allocator)
+    fnty.fn.ret_ty = nil
+    tyid := intern_type(fnty);
+
+    obj.type = tyid
+    obj.name =fndec.name;
 
     delete_key(&s.obj_foreward, fndec.name); // delete fd and create object
     s.objects[fndec.name] = oid; // recreate link

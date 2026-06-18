@@ -1,12 +1,13 @@
 package main
 
 Context :: struct {
-    exprs: [dynamic]Expr,
-    stmts: [dynamic]Stmt,
-    items: [dynamic]Item,
-    types: [dynamic]Type,
-    objs : [dynamic]Object,
-    expr_types:     map[ExprId]Type
+    exprs:              [dynamic]Expr,
+    stmts:              [dynamic]Stmt,
+    items:              [dynamic]Item,
+    types:              [dynamic]Type,
+    objs :              [dynamic]Object,
+    expr_types:         map[ExprId]TypeId,
+    expr_objects:       map[ExprId]ObjId,
 }
 new_stmt :: proc(stmt:=Stmt{}) -> StmtId {
     ctx := cast(^Context)context.user_ptr
