@@ -1,6 +1,8 @@
 package main
 
 TypeKind :: enum {
+    UntypedInteger,
+    UntypedFloat,
     Invalid,
     Function,
     Integer,
@@ -35,7 +37,7 @@ ModuleScope :: struct {
     ty_foreward:    map[string]TypeId,
 }
 new_object :: proc(s: ^Scope, o: Object) -> ObjId {
-    ctx := get()
+    ctx := get_ctx()
     append(&ctx.objs, o);
     id := ObjId(len(ctx.objs)-1);
     _, ok := s.types[o.name];       assert(!ok);
@@ -55,7 +57,7 @@ new_type :: proc(s: ^Scope, t: Type) -> TypeId {
     return id
 }
 new_object_fd :: proc(s: ^ModuleScope, o: Object) -> ObjId {
-    ctx := get()
+    ctx := get_ctx()
     append(&ctx.objs, o);
     id := ObjId(len(ctx.objs)-1);
 
@@ -69,7 +71,7 @@ new_object_fd :: proc(s: ^ModuleScope, o: Object) -> ObjId {
     return id
 }
 new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
-    ctx := get()
+    ctx := get_ctx()
     append(&ctx.types, t);
     id := TypeId(len(ctx.types)-1); 
     // make sure it doesn't exist
@@ -115,7 +117,8 @@ cmp_types :: proc(l, r: Type) -> bool {
 }
 // only intern function and pointers
 intern_type :: proc(t: Type) -> TypeId {
-    assert(t.kind == .Pointer || t.kind == .Function)
+    assert(t.kind == .Pointer || t.kind == .Function || 
+            t.kind == .UntypedInteger || t.kind == .UntypedFloat)
     for ty, id in get_ctx().types {
         if cmp_types(ty, t) { return TypeId(id) }
     }
@@ -187,10 +190,11 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     tyid := intern_type(fnty);
 
     obj.type = tyid
-    obj.name =fndec.name;
+    obj.name = fndec.name;
 
     delete_key(&s.obj_foreward, fndec.name); // delete fd and create object
     s.objects[fndec.name] = oid; // recreate link
+    get_ctx().item_objects[id] = oid;
 }
 forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     item := get(id)

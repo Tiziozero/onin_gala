@@ -6,8 +6,10 @@ Context :: struct {
     items:              [dynamic]Item,
     types:              [dynamic]Type,
     objs :              [dynamic]Object,
+    // refs
     expr_types:         map[ExprId]TypeId,
     expr_objects:       map[ExprId]ObjId,
+    item_objects:       map[ItemId]ObjId,
 }
 new_stmt :: proc(stmt:=Stmt{}) -> StmtId {
     ctx := cast(^Context)context.user_ptr
@@ -28,7 +30,6 @@ get :: proc {
     get_expr,
     get_stmt,
     get_item,
-    get_ctx,
     get_obj,
     get_type,
 }
