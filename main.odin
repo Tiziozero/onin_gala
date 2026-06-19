@@ -27,15 +27,22 @@ main :: proc() {
     defer mem.dynamic_arena_destroy(&dyn_arena)                        // ← prefer defer
 
     ctx := Context{}
-    ctx.items = make([dynamic]Item, allocator=context.temp_allocator)
-    ctx.exprs = make([dynamic]Expr, allocator=context.temp_allocator)
-    ctx.stmts = make([dynamic]Stmt, allocator=context.temp_allocator)
+    ctx.items =         make([dynamic]Item, allocator=context.temp_allocator)
+    ctx.exprs =         make([dynamic]Expr, allocator=context.temp_allocator)
+    ctx.stmts =         make([dynamic]Stmt, allocator=context.temp_allocator)
+    ctx.objs =          make([dynamic]Object, allocator=context.temp_allocator)
+    ctx.types =         make([dynamic]Type, allocator=context.temp_allocator)
+    ctx.expr_objects =  make(map[ExprId]ObjId)
+    ctx.expr_types =    make(map[ExprId]TypeId)
+    defer delete(ctx.expr_objects)
+    defer delete(ctx.expr_types)
     context.user_ptr = &ctx
 
     tokens := lex_file(data)
+    defer delete(tokens)
     ast := parse_tokens(tokens[:])
     resolve_module_ast(&ast)
+    typecheck_module(&ast)
 
     fmt.println("Finished parsing");
-    defer delete(tokens)
 }
