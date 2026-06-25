@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 TypeKind :: enum {
     UntypedInteger,
     UntypedFloat,
@@ -141,6 +142,17 @@ scope_get_type :: proc(s: ^Scope, n: string) -> TypeId {
         if ok { return id }
         scope = scope.parent
     }
+    fmt.println(n)
+
+    fmt.println("existing:")
+    t := s;
+    for t != nil {
+        for ty in s.types {
+            fmt.println(ty)
+        }
+        fmt.println("scope:", t.parent)
+        t = t.parent
+    }
     panic("type doesn't exist");
 }
 resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
@@ -186,7 +198,9 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     fnty := Type{}
     fnty.kind = .Function;
     fnty.fn.args = make([]Arg, 0, allocator=context.temp_allocator)
-    fnty.fn.ret_ty = nil
+    if fndec.ret_ty != nil {
+        fnty.fn.ret_ty = resolve_type_specifier(s, fndec.ret_ty.(TypeSpecifier))
+    }
     tyid := intern_type(fnty);
 
     obj.type = tyid
@@ -220,9 +234,10 @@ new_scope :: proc(parent:^Scope=nil) -> Scope {
     s.parent = parent;
     return s;
 }
-new_module_scope :: proc() -> ModuleScope {
+new_module_scope :: proc(parent:^Scope=nil) -> ModuleScope {
     s := ModuleScope{}
     s.scope = new_scope()
+    s.parent = parent
     s.obj_foreward  = make(map[string]ObjId,  allocator=context.allocator);
     s.ty_foreward   = make(map[string]TypeId, allocator=context.allocator);
     return s
@@ -248,7 +263,7 @@ free_module_scope :: proc(s: ^ModuleScope) {
     s^ = {};
 }
 resolve_module_ast :: proc(ast: ^AST) {
-    global_scope := new_module_scope()
+    global_scope := new_module_scope(&get_ctx().base_mod)
 
     for id in ast.items {
         forward_item(&global_scope, id)

@@ -154,7 +154,7 @@ parse_block :: proc(p: ^Parser) -> Block{
 }
 FnDec :: struct {
     name: string,
-    ret_ty: TypeSpecifier,
+    ret_ty: Maybe(TypeSpecifier),
     block: Block,
 }
 

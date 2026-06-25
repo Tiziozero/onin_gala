@@ -1,5 +1,7 @@
 package main
 
+import "core:os"
+import "core:io"
 import "core:fmt"
 import "core:strings"
 import "core:mem"
@@ -9,11 +11,17 @@ CGCtx :: struct {
     b: strings.Builder,
 }
 
-cwrite :: proc(c: ^CGCtx, format: string, data: ..any) {
-    fmt.sbprintf(&c.b, format, data);
+cwritef :: proc(c: ^CGCtx, format: string, data: ..any) {
+    fmt.sbprintf(&c.b, format, ..data)
 }
-cwriteln :: proc(c: ^CGCtx, format: string, data: ..any) {
-    fmt.sbprintfln(&c.b, format, data);
+cwrite :: proc(c: ^CGCtx, format: string) {
+    fmt.sbprint(&c.b, format)
+}
+cwriteln :: proc(c: ^CGCtx, format: string) {
+    fmt.sbprintln(&c.b, format);
+}
+cwritefln :: proc(c: ^CGCtx, format: string, data: ..any) {
+    fmt.sbprintfln(&c.b, format, ..data);
 }
 ty_to_llv_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     ty := get_type(id)
@@ -25,6 +33,7 @@ ty_to_llv_str :: proc(c: ^CGCtx, id: TypeId) -> string {
         return fmt.aprintf("ptr", allocator=c.arena.block_allocator )
     }
     case: {
+        fmt.println("ty name:", ty.name, ty.kind);
         return fmt.aprintf("%s", ty.name, allocator=c.arena.block_allocator )
     }
     }
@@ -35,18 +44,29 @@ gen_item :: proc(c: ^CGCtx, id: ItemId) {
     case FnDec: {
         objid :=get_ctx().item_objects[id] 
         obj := get_ctx().objs[objid]
-        cwrite(c, "define");
-        cwrite(c, "%s", ty_to_llv_str(c, obj.type));
+        fn_ty := get_type(obj.type)
+        cwrite(c, "define ");
+        if fn_ty.fn.ret_ty != nil {
+            cwritef(c, "%s ", ty_to_llv_str(c, fn_ty.fn.ret_ty.(TypeId)));
+        } else {
+            cwrite(c,"void ");
+        }
+        cwritef(c, "@%s ", obj.name);
+        cwrite(c, "() ");
+        cwriteln(c, "{");
+        cwriteln(c, "entry:");
+        cwriteln(c, "ret i32 7");
+        cwriteln(c, "}");
     }
     case: panic("impl")
     }
 }
-cg_ast :: proc(c: ^CGCtx, ast: AST) {
+cg_ast :: proc(c: ^CGCtx, ast: ^AST) {
     for id in ast.items {
         gen_item(c, id)
     }
 }
-cg_module :: proc(ast: AST) {
+cg_module :: proc(ast: ^AST) {
     cgctx := CGCtx{}
     mem.dynamic_arena_init(&cgctx.arena)
     strings.builder_init(&cgctx.b)
@@ -60,4 +80,6 @@ cg_module :: proc(ast: AST) {
     fmt.sbprintfln(&cgctx.b, "declare void @free(ptr)")
     cg_ast(&cgctx, ast)
     fmt.println(strings.to_string(cgctx.b))
+    e := os.write_entire_file_from_string("a.ll", strings.to_string(cgctx.b))
+    assert(e == io.Error.None)
 }
