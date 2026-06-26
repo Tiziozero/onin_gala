@@ -24,7 +24,7 @@ Type :: struct {
 }
 Object :: struct {
     name: string,
-    type: TypeId,
+    type: Maybe(TypeId),
 }
 Scope :: struct {
     objects:        map[string]ObjId,
@@ -172,10 +172,13 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
     switch stmt in get(id) {
     case VarDec: {
         resolve_expr(s, stmt.value);
+        resolved_ty : Maybe(TypeId) = nil
         if stmt.type != nil {
             ty, ok := stmt.type.(TypeSpecifier); assert(ok);
-            resolve_type_specifier(s, ty);
+            resolved_ty = resolve_type_specifier(s, ty);
         }
+        oid := new_object(s, Object{name=stmt.name, type=resolved_ty})
+        get_ctx().stmt_objects[id] = oid;
     }
     case: panic("Impl");
     }

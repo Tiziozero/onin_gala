@@ -34,8 +34,12 @@ main :: proc() {
     ctx.types =         make([dynamic]Type, allocator=context.temp_allocator)
     ctx.expr_objects =  make(map[ExprId]ObjId)
     ctx.expr_types =    make(map[ExprId]TypeId)
+    ctx.item_objects =    make(map[ItemId]ObjId)
+    ctx.stmt_objects =    make(map[StmtId]ObjId)
     defer delete(ctx.expr_objects)
     defer delete(ctx.expr_types)
+    defer delete(ctx.item_objects)
+    defer delete(ctx.stmt_objects)
     context.user_ptr = &ctx
 
     tokens := lex_file(data)

@@ -7,5 +7,4 @@ declare ptr @malloc(i64)
 declare void @free(ptr)
 define i32 @main () {
 entry:
-ret i32 7
 }

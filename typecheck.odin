@@ -74,7 +74,7 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
     case Symbol: {
         fmt.println("is a symbol")
         obj := get_ctx().expr_objects[e];
-             get_ctx().expr_types[e] = get_obj(obj).type
+             get_ctx().expr_types[e] = get_obj(obj).type.(TypeId)
     }
     case Number: {
         fmt.println("is a number")

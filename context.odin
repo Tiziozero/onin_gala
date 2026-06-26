@@ -10,6 +10,7 @@ Context :: struct {
     expr_types:         map[ExprId]TypeId,
     expr_objects:       map[ExprId]ObjId,
     item_objects:       map[ItemId]ObjId,
+    stmt_objects:       map[StmtId]ObjId,
     base_mod:           ModuleScope,
 }
 new_stmt :: proc(stmt:=Stmt{}) -> StmtId {
