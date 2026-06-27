@@ -1,8 +1,8 @@
 #!/bin/bash
-set -e
+set -x
 
 odin run .
 clang -o a.out a.ll
 ./a.out
-echo "res:"
 echo $?
+echo "end"

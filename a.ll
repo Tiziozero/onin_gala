@@ -7,9 +7,8 @@ declare ptr @malloc(i64)
 declare void @free(ptr)
 define i32 @main () {
 entry:
-	%v = alloca i32
-	%t1 = add i32 5, 3
-	store i32 %t1, ptr %v
-	%t2 = load i32, ptr %v
-	ret i32 %t2
+	%t2 = add i32 5, 3
+	%i32 = %t2 %!(MISSING ARGUMENT)
+	%t3 = load i32, ptr %v
+	ret i32 %t3
 }

@@ -78,12 +78,18 @@ VarDec :: struct {
     type: Maybe(TypeSpecifier),
     value: ExprId,
 }
+Assignment :: struct {
+    type: Maybe(TypeSpecifier),
+    target, value: ExprId,
+}
 Return :: struct {
     expr: Maybe(ExprId),
 }
 Stmt :: union {
     VarDec,
+    Assignment,
     Return,
+    ExprId
 }
 Parser::struct{
     tokens: []Token,
@@ -139,9 +145,16 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         e := parse_expr(p);
         expect_symbol(p, ";");
         return new_stmt(Stmt(Return{expr=e}));
-    } else {
-        fmt.println("Invalid token in statement:", current_token(p));
-        panic("");
+    } else { // otherwise try stmt
+        expr := parse_expr(p);
+        if is_symbol(current_token(p), "=") {
+            consume_token(p); // "="
+            v := parse_expr(p);
+            expect_symbol(p, ";");
+            return new_stmt(Stmt(Assignment{target=expr, value=v}));
+        }
+        expect_symbol(p, ";");
+        return new_stmt(Stmt(ExprId(expr)));
     }
 }
 is_kw :: proc(p: ^Parser, k: Keyword) -> bool {

@@ -160,6 +160,14 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             }
         }
     }
+    case Assignment: {
+        tc_expr(tc, stmt.target);
+        tc_expr(tc, stmt.value);
+        t, ok := compare_and_reduce_types(expr_ty(stmt.target), expr_ty(stmt.value))
+        assert(ok);
+        propagate_type(t, stmt.target);
+
+    }
     case: panic("impl");
     }
 }

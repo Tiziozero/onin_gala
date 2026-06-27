@@ -210,6 +210,10 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
             resolve_expr(s, e);
         }
     }
+    case Assignment: {
+        resolve_expr(s, stmt.target);
+        resolve_expr(s, stmt.value);
+    }
     case: panic("Impl");
     }
 }

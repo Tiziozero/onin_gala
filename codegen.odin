@@ -1,5 +1,7 @@
 package main
 
+import "core:math/rand"
+import "core:math"
 import "core:os"
 import "core:io"
 import "core:fmt"
@@ -104,7 +106,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> string {
     case: panic("impl");
     }
 }
-cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
+old_cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     #partial switch s in get_stmt(id) {
     case VarDec:{
         obj := get_ctx().stmt_objects[id];
@@ -125,27 +127,65 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     case:panic("impl");
     }
 }
+cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
+    #partial switch s in get_stmt(id) {
+    case VarDec:{
+        obj := get_ctx().stmt_objects[id];
+        // init
+         sname := new_tmp(c);
+        v := cg_expr(c, s.value);
+        cwritefln(c, "\t%%%s = %s %s", sname, ty_to_llv_str(c, expr_ty(s.value)), v)
+        c.scope.vars[s.name]=sname;
+    }
+    case Return: {
+        if e, ok := s.expr.(ExprId); ok {
+            t := cg_expr(c, e);
+            cwritefln(c, "\tret %s %s", ty_to_llv_str(c, expr_ty(e)), t)
+        } else {
+            cwriteln(c, "\tret void")
+        }
+    }
+    case Assignment: {
+    }
+    case:panic("impl");
+    }
+}
 gen_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
     case FnDec: {
+        // double check type is a function
         assert(check_fn(i));
+        // new scope
+        old_scope := c.scope
+        new_cg_scope := new_gcscope(&old_scope);
+        c.scope = new_cg_scope
+
+        // get type
         objid :=get_ctx().item_objects[id]
         obj := get_ctx().objs[objid]
         fn_ty := get_type(obj.type.(TypeId))
+
+        // write
         cwrite(c, "define ");
+        // write return type
         if fn_ty.fn.ret_ty != nil {
             cwritef(c, "%s ", ty_to_llv_str(c, fn_ty.fn.ret_ty.(TypeId)));
         } else {
             cwrite(c,"void ");
         }
+        // write name
         cwritef(c, "@%s ", obj.name);
+        // write args
         cwrite(c, "() ");
         cwriteln(c, "{");
+        // entry block
         cwriteln(c, "entry:");
         for s in i.block.stmts {
             cg_stmt(c, s);
         }
         cwriteln(c, "}");
+        // reset scope
+        c.scope = old_scope
     }
     case: panic("impl")
     }
@@ -169,8 +209,13 @@ check_fn :: proc(f: FnDec) -> bool {
     }
     return true
 }
-cgscope_get :: proc(s: ^CGScope) -> string {
-    panic("impl")
+cgscope_get :: proc(scope: ^CGScope, v: string) -> string {
+    s := scope
+    for s != nil {
+        n, ok := s.vars[v];
+        if ok do return n
+    }
+    panic("doesn't exist")
 }
 cg_module :: proc(ast: ^AST) {
     cgctx := CGCtx{}
@@ -196,4 +241,16 @@ cg_module :: proc(ast: ^AST) {
     fmt.println(strings.to_string(sb))
     e := os.write_entire_file_from_string("a.ll", strings.to_string(sb))
     assert(e == io.Error.None)
+    p, err := os.process_start({command={"clang", "-o", "a.out", "a.ll"}});
+    assert(err == .NONE);
+    p_state, werr := os.process_wait(p)
+    assert(err == .NONE);
+    fmt.println("clang exit code:", p_state.exit_code);
+    
+    p, err = os.process_start({command={"./a.out"}});
+    assert(err == .NONE);
+    p_state, werr = os.process_wait(p)
+    assert(err == .NONE);
+    fmt.println("program exit code:", p_state.exit_code);
+
 }
