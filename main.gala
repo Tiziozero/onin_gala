@@ -1,3 +1,4 @@
 fn main(): i32 {
     v := 5 + 3;
+    return v;
 }

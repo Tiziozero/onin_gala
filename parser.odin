@@ -78,8 +78,12 @@ VarDec :: struct {
     type: Maybe(TypeSpecifier),
     value: ExprId,
 }
+Return :: struct {
+    expr: Maybe(ExprId),
+}
 Stmt :: union {
     VarDec,
+    Return,
 }
 Parser::struct{
     tokens: []Token,
@@ -118,6 +122,7 @@ is_symbol :: proc(t: Token, s: string) -> bool {
     return false;
 }
 parse_stmt :: proc(p: ^Parser) -> StmtId {
+    a := 7;
     if current_token(p).kind == .Ident &&
         is_symbol(next_token(p), ":=") {
         name := consume_token(p)
@@ -125,10 +130,23 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         expr := parse_expr(p);
         expect_symbol(p, ";");
         return new_stmt(Stmt(VarDec{name=name.text, type=nil, value=expr}));
+    } else if is_kw(p, .Return) {
+        consume_token(p); // "return";
+        if is_symbol(current_token(p), ";") {
+            consume_token(p); // ";"
+            return new_stmt(Stmt(Return{expr=nil}));
+        }
+        e := parse_expr(p);
+        expect_symbol(p, ";");
+        return new_stmt(Stmt(Return{expr=e}));
     } else {
         fmt.println("Invalid token in statement:", current_token(p));
         panic("");
     }
+}
+is_kw :: proc(p: ^Parser, k: Keyword) -> bool {
+    if current_token(p).kind == .Keyword && current_token(p).kw == k do return true
+    return false
 }
 
 parse_primary :: proc(p: ^Parser) -> ExprId {
@@ -139,7 +157,7 @@ parse_primary :: proc(p: ^Parser) -> ExprId {
         return new_expr(Expr(Number{consume_token(p).text}));
     }
     fmt.println(current_token(p));
-    panic("impl?")
+    panic("invalid primary token")
 }
 parse_block :: proc(p: ^Parser) -> Block{
     expect_symbol(p, "{");
@@ -169,7 +187,7 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
     panic("impl");
 }
 parse_kw :: proc(p: ^Parser) -> ItemId {
-    switch current_token(p).kw {
+    #partial switch current_token(p).kw {
     case .Fn: {
         f := FnDec{}
         kw := consume_token(p);

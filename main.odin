@@ -48,7 +48,7 @@ main :: proc() {
     // create base type first
     ctx.base_mod = new_module_scope();
     new_type(&ctx.base_mod, Type{name="i32", kind=.Integer});
-    new_type(&ctx.base_mod, Type{name="f32", kind=.Integer});
+    new_type(&ctx.base_mod, Type{name="f32", kind=.Float});
     resolve_module_ast(&ast)
     typecheck_module(&ast)
     cg_module(&ast)

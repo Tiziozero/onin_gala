@@ -92,7 +92,8 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     case Number: {
     } // nothing
     case Symbol: {
-        obj := scope_get_object(s, e.name);
+        obj, ok := scope_get_object(s, e.name);
+        assert(ok)
         get_ctx().expr_objects[id] = obj
     }
 
@@ -126,20 +127,20 @@ intern_type :: proc(t: Type) -> TypeId {
     append(&get_ctx().types, t);
     return TypeId(len(get_ctx().types)-1)
 }
-scope_get_object :: proc(s: ^Scope, n: string) -> ObjId {
+scope_get_object :: proc(s: ^Scope, n: string) -> (ObjId, bool) {
     scope := s
     for scope != nil {
         id, ok := scope.objects[n];
-        if ok { return id }
+        if ok { return id, true }
         scope = scope.parent
     }
-    panic("object doesn't exist");
+    return 0, false
 }
-scope_get_type :: proc(s: ^Scope, n: string) -> TypeId {
+scope_get_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
     scope := s
     for scope != nil {
         id, ok := scope.types[n];
-        if ok { return id }
+        if ok { return id, true }
         scope = scope.parent
     }
     fmt.println(n)
@@ -153,12 +154,13 @@ scope_get_type :: proc(s: ^Scope, n: string) -> TypeId {
         fmt.println("scope:", t.parent)
         t = t.parent
     }
-    panic("type doesn't exist");
+    return 0, false
 }
 resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
     switch k in t {
     case BaseType: { // will get declared type id
-        ty := scope_get_type(s, string(k));
+        ty, ok := scope_get_type(s, string(k));
+        assert(ok)
         return ty
     }
     case PointerType: { // creates a pointer and will ge that one
@@ -168,8 +170,31 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
     case: panic("impl");
     }
 }
+get_untyped_default :: proc(t: TypeId) -> TypeId {
+    #partial switch get_type(t).kind {
+    case .UntypedInteger: return get_ctx().base_mod.types["i32"]
+    case .UntypedFloat: return get_ctx().base_mod.types["f32"]
+    case: panic("impl");
+    }
+}
+propagate_type :: proc(ty: TypeId, expr: ExprId) {
+    fmt.println("propagating:", get_type(ty), "to", get_expr(expr));
+    switch e in get_expr(expr) {
+    case Binop: {
+        propagate_type(ty, e.left)
+        propagate_type(ty, e.right)
+    }
+    case Number: {
+    }
+    case Symbol: {
+    }
+    case: panic("impl");
+    }
+    // set to all
+    get_ctx().expr_types[expr] = ty;
+}
 resolve_stmt :: proc(s: ^Scope, id: StmtId) {
-    switch stmt in get(id) {
+    #partial switch stmt in get(id) {
     case VarDec: {
         resolve_expr(s, stmt.value);
         resolved_ty : Maybe(TypeId) = nil
@@ -179,6 +204,11 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
         }
         oid := new_object(s, Object{name=stmt.name, type=resolved_ty})
         get_ctx().stmt_objects[id] = oid;
+    }
+    case Return: {
+        if e, ok := stmt.expr.(ExprId); ok {
+            resolve_expr(s, e);
+        }
     }
     case: panic("Impl");
     }
