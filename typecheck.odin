@@ -125,6 +125,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             if is_untyped(resolved_ty.(TypeId)) {
                 fmt.println("it's untyped")
                 t := get_untyped_default(resolved_ty.(TypeId))
+                fmt.println("got:", t, get(t));
                 propagate_type(t, stmt.value)
             }
             // set obj type to expr type
@@ -163,9 +164,11 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
     case Assignment: {
         tc_expr(tc, stmt.target);
         tc_expr(tc, stmt.value);
+        // target must have a type
+        _, tyok := get_ctx().expr_types[stmt.target]; assert(tyok);
         t, ok := compare_and_reduce_types(expr_ty(stmt.target), expr_ty(stmt.value))
         assert(ok);
-        propagate_type(t, stmt.target);
+        propagate_type(t, stmt.value);
 
     }
     case: panic("impl");

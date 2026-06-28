@@ -1,5 +1,4 @@
-fn main(): i32 {
-    v := 5 + 3;
-    v = 3;
-    return v;
+fn main(): int {
+    v := 5.0 + 3.0;
+    return 7;
 }

@@ -79,7 +79,6 @@ VarDec :: struct {
     value: ExprId,
 }
 Assignment :: struct {
-    type: Maybe(TypeSpecifier),
     target, value: ExprId,
 }
 Return :: struct {

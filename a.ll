@@ -5,10 +5,8 @@ target triple = "x86_64-pc-linux-gnu"
 declare i32 @printf(ptr, ...)
 declare ptr @malloc(i64)
 declare void @free(ptr)
-define i32 @main () {
+define i64 @main () {
 entry:
-	%t2 = add i32 5, 3
-	%i32 = %t2 %!(MISSING ARGUMENT)
-	%t3 = load i32, ptr %v
-	ret i32 %t3
+	%t1 = fadd double 5.0, 3.0
+	ret i64 7
 }

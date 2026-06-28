@@ -172,8 +172,17 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
 }
 get_untyped_default :: proc(t: TypeId) -> TypeId {
     #partial switch get_type(t).kind {
-    case .UntypedInteger: return get_ctx().base_mod.types["i32"]
-    case .UntypedFloat: return get_ctx().base_mod.types["f32"]
+    case .UntypedInteger: {
+        fmt.println("returning int for untyped int");
+        v, ok := get_ctx().base_mod.types["int"]; assert(ok);
+        return v
+    }
+    case .UntypedFloat: {
+        fmt.println("returning float for untyped float");
+        v, ok := get_ctx().base_mod.types["flt"]; assert(ok);
+        return v
+    }
+
     case: panic("impl");
     }
 }

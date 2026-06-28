@@ -47,7 +47,8 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
             i += 1
         } else if is_num(c) {
             start := i
-            for i < len(buf) && is_num(buf[i]) {
+            for (i < len(buf) && is_num(buf[i])) ||
+                (i < len(buf) && buf[i] == '.' && is_num(buf[i+1])) {
                 i += 1
             }
             ident := cast(string)buf[start:i];
