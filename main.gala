@@ -1,4 +1,8 @@
 fn main(): int {
-    v := 5.0 + 3.0;
+    v := 5.0 + 3.0 - fib();
     return 7;
+}
+
+fn fib(): flt {
+    return 0.0;
 }

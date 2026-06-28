@@ -62,6 +62,10 @@ ty_to_llv_str :: proc(c: ^CGCtx, id: TypeId) -> string {
         llvm_ty[id]="i64";
         return llvm_ty[id]
     }
+    case .Void: {
+        llvm_ty[id]="void";
+        return llvm_ty[id]
+    }
     }
     panic("impl")
 }
@@ -122,7 +126,12 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
             case .Subtraction: op = "fsub"
             case: panic("impl")
             }
+        } else if get_type(expr_ty(id)).kind == .Void {
+            dump_context(get_ctx())
+            panic("can't binop voids");
         } else {
+            fmt.println(get_type(expr_ty(id)).kind)
+            fmt.println(get_expr(id))
             panic("handle");
         }
         return {kind=.Binop,
@@ -130,6 +139,9 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
     }
     case Symbol: {
         return {kind=.SingleRes,v=c.scope.vars[e.name]};
+    }
+    case FnCall: {
+        panic("impl fncall");
     }
     case: panic("impl");
     }
@@ -243,11 +255,7 @@ gen_item :: proc(c: ^CGCtx, id: ItemId) {
         // write
         cwrite(c, "define ");
         // write return type
-        if fn_ty.fn.ret_ty != nil {
-            cwritef(c, "%s ", ty_to_llv_str(c, fn_ty.fn.ret_ty.(TypeId)));
-        } else {
-            cwrite(c,"void ");
-        }
+        cwritef(c, "%s ", ty_to_llv_str(c, fn_ty.fn.ret_ty));
         // write name
         cwritef(c, "@%s ", obj.name);
         // write args

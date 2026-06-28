@@ -49,6 +49,7 @@ main :: proc() {
     ctx.base_mod = new_module_scope();
     new_type(&ctx.base_mod, Type{name="int", kind=.Integer});
     new_type(&ctx.base_mod, Type{name="flt", kind=.Float});
+    new_type(&ctx.base_mod, Type{name="void", kind=.Void});
     resolve_module_ast(&ast)
     typecheck_module(&ast)
     cg_module(&ast)

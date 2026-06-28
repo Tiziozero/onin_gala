@@ -104,9 +104,25 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
         tc_expr(tc, expr.left);
         tc_expr(tc, expr.right);
         ty, ok := compare_and_reduce_types(expr_ty(expr.left), expr_ty(expr.right));
+        propagate_type(ty, expr.left); // propagate, wtf?
+        propagate_type(ty, expr.right);
         assert(ok)
         assert(can_binop(ty))
         get_ctx().expr_types[e] = ty
+    }
+    case FnCall: {
+        tc_expr(tc, expr.target);
+        ty := get_type(expr_ty(expr.target));
+        assert(ty.kind == .Function)
+        fargs := ty.fn.args;
+        if len(fargs) != len(expr.args) {
+            fmt.println(len(fargs), len(expr.args))
+            panic("args count for function don't match");
+        }
+        for i in 0..<len(fargs) {
+            panic("impl")
+        }
+        get_ctx().expr_types[e] = ty.fn.ret_ty
     }
     case: panic("impl tc expr")
     }

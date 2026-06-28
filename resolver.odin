@@ -11,6 +11,7 @@ TypeKind :: enum {
     Rune,
     Byte,
     Pointer,
+    Void,
 }
 Arg :: struct {
     name: string,
@@ -20,22 +21,23 @@ Type :: struct {
     name: string,
     kind: TypeKind,
     ptr: TypeId,
-    fn: struct { args: []Arg, ret_ty: Maybe(TypeId)},
+    fn: struct { args: []Arg, ret_ty: TypeId},
 }
 Object :: struct {
     name: string,
     type: Maybe(TypeId),
 }
+// set this here cus it's needed for scopes to access
 Scope :: struct {
     objects:        map[string]ObjId,
     types:          map[string]TypeId,
+    obj_foreward:   map[string]ObjId,
+    ty_foreward:    map[string]TypeId,
     items:          map[string]ItemId,
     parent:         ^Scope,
 }
 ModuleScope :: struct {
     using scope: Scope,
-    obj_foreward:   map[string]ObjId,
-    ty_foreward:    map[string]TypeId,
 }
 new_object :: proc(s: ^Scope, o: Object) -> ObjId {
     ctx := get_ctx()
@@ -69,6 +71,7 @@ new_object_fd :: proc(s: ^ModuleScope, o: Object) -> ObjId {
     _, ok = s.objects[o.name];      assert(!ok);
 
     s.obj_foreward[o.name] = id
+    fmt.println("new obj fd:", id, o.name)
     return id
 }
 new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
@@ -95,6 +98,12 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         obj, ok := scope_get_object(s, e.name);
         assert(ok)
         get_ctx().expr_objects[id] = obj
+    }
+    case FnCall: {
+        resolve_expr(s, e.target);
+        for a in e.args {
+            resolve_expr(s, a);
+        }
     }
 
     case: panic("impl");
@@ -132,6 +141,9 @@ scope_get_object :: proc(s: ^Scope, n: string) -> (ObjId, bool) {
     for scope != nil {
         id, ok := scope.objects[n];
         if ok { return id, true }
+        // check fds too
+        id, ok = scope.obj_foreward[n];
+        if ok { return id, true }
         scope = scope.parent
     }
     return 0, false
@@ -140,6 +152,9 @@ scope_get_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
     scope := s
     for scope != nil {
         id, ok := scope.types[n];
+        if ok { return id, true }
+        // check fds too
+        id, ok = scope.ty_foreward[n];
         if ok { return id, true }
         scope = scope.parent
     }
@@ -197,6 +212,8 @@ propagate_type :: proc(ty: TypeId, expr: ExprId) {
     }
     case Symbol: {
     }
+    case FnCall: {
+    }
     case: panic("impl");
     }
     // set to all
@@ -233,6 +250,11 @@ resolve_block :: proc(s: ^Scope, b: ^Block) {
     }
     free_scope(&b_scope)
 }
+void_type :: proc() -> TypeId {
+    v, ok := get_ctx().base_mod.types["void"];
+    assert(ok);
+    return v;
+}
 resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     fndec, ok := get(id).(FnDec); assert(ok); // assert it's a fn dec
     oid, ook := s.obj_foreward[fndec.name]; assert(ook); // make sure fd exists
@@ -246,6 +268,8 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     fnty.fn.args = make([]Arg, 0, allocator=context.temp_allocator)
     if fndec.ret_ty != nil {
         fnty.fn.ret_ty = resolve_type_specifier(s, fndec.ret_ty.(TypeSpecifier))
+    } else {
+        fnty.fn.ret_ty = void_type();
     }
     tyid := intern_type(fnty);
 

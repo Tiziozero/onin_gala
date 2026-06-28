@@ -25,6 +25,11 @@ Expr :: union {
     Binop,
     Number,
     Symbol,
+    FnCall,
+}
+FnCall :: struct {
+    target: ExprId,
+    args: [dynamic]ExprId,
 }
 op_is_right_assoc :: proc(t: Token) -> bool {
     return false // extend for ** etc.
@@ -44,7 +49,7 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
 }
 
 parse_binop :: proc(p: ^Parser, min_prec: int) -> ExprId {
-    lhs := parse_primary(p)
+    lhs := parse_postfix(p)
 
     for {
         op := current_token(p)
@@ -161,10 +166,29 @@ is_kw :: proc(p: ^Parser, k: Keyword) -> bool {
     return false
 }
 
+parse_postfix :: proc(p: ^Parser) -> ExprId {
+    t := parse_primary(p);
+    for {
+        if is_symbol(current_token(p), "(") {
+            consume_token(p); // "("
+                              // "until it meets a ")"
+            args := make([dynamic]ExprId, allocator=context.temp_allocator);
+            for !is_symbol(current_token(p), ")") {
+                e := parse_expr(p);
+                if is_symbol(current_token(p), ",") {
+                    consume_token(p); // ","
+                } else do break
+            }
+            expect_symbol(p, ")"); // expect ")"
+            t = new_expr(FnCall{target=t, args=args});
+        } else do break
+    }
+    return t;
+}
 parse_primary :: proc(p: ^Parser) -> ExprId {
     if current_token(p).kind == .Ident {
         e :=  Expr(Symbol{consume_token(p).text});
-           return new_expr(e)
+        return new_expr(e)
     } else if current_token(p).kind == .Number {
         return new_expr(Expr(Number{consume_token(p).text}));
     }

@@ -18,6 +18,8 @@ dump_types :: proc(ctx: ^Context) {
         fmt.printf("[%d] %s\n", i, t.name)
 
         switch t.kind {
+        case .Void: 
+            fmt.println("    kind: Void")
         case .Invalid:
             fmt.println("    kind: Invalid")
 
@@ -41,11 +43,7 @@ dump_types :: proc(ctx: ^Context) {
                 )
             }
 
-            if ty, ok := t.fn.ret_ty.(TypeId); ok {
-                fmt.printf("    ret: %s\n", type_name(ctx, ty))
-            } else {
-                fmt.println("    ret: void")
-            }
+            fmt.printf("    ret: %s\n", type_name(ctx, t.fn.ret_ty))
         }
     }
 }
