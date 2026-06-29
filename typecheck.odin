@@ -181,7 +181,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
         } else  {
             if tc.fn_ret_ty != nil {
                 if get_type(tc.fn_ret_ty.(TypeId)).kind == .Void {
-                    // returning void
+                    // returning voiud
                 } else { // not in function
                     panic("return value expected");
                 }
