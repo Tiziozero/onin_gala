@@ -1,8 +1,11 @@
 fn main(): int {
     v := 5.0 + 3.0 - fib();
-    return 7;
+    return smth()+7;
 }
 
 fn fib(): flt {
-    return 0.0;
+    return 6.0;
+}
+fn smth(): int {
+    return 6;
 }

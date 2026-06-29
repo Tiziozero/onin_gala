@@ -1,7 +1,5 @@
 package main
 
-import "core:math/rand"
-import "core:math"
 import "core:os"
 import "core:io"
 import "core:fmt"
@@ -17,10 +15,12 @@ CGCtx :: struct {
 
 CGScope :: struct {
     vars : map[string]string,
+    parent: ^CGScope,
 }
 new_gcscope :: proc(parent: ^CGScope) -> CGScope {
     s := CGScope{}
     s.vars = make(map[string]string);
+    s.parent = parent
     return s;
 }
 free_cgscope :: proc(s: ^CGScope) {
@@ -92,6 +92,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
         l_v : string
         // create something usable in binop
         switch l.kind {
+        case .Invalid: panic("invalid")
         case .SingleRes: l_v = l.v
         case .Binop: {
             // write binop first
@@ -103,6 +104,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
         }
         r_v: string
         switch r.kind {
+        case .Invalid: panic("invalid")
         case .SingleRes: r_v = r.v
         case .Binop: {
             // write binop first
@@ -138,17 +140,46 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
             v=aprintf(c, "%s %s %s, %s", op, ty_to_llv_str(c, ty), l_v, r_v)};
     }
     case Symbol: {
-        return {kind=.SingleRes,v=c.scope.vars[e.name]};
+        fmt.println("gen symbol:", e, c.scope.vars[e.name]);
+        v := cgscope_get(&c.scope, e.name);
+        return {kind=.SingleRes,v=v};
     }
     case FnCall: {
-        panic("impl fncall");
+        t := cg_expr(c, e.target);
+        fmt.println("fn target:", t);
+        target := reduce_expr_to_single_value(c, t);
+        fn_ty := get_type(expr_ty(e.target));
+        new_t := new_tmp(c);
+        fmt.println("retuced target:", target);
+        cwritefln(c, "\t%s = call %s %s()", new_t, ty_to_llv_str(c, fn_ty.fn.ret_ty), target);
+        return {kind=.SingleRes, v=new_t};
     }
     case: panic("impl");
     }
 }
 
+reduce_expr_to_single_value :: proc(c: ^CGCtx, e: expr_result) -> string {
+    switch e.kind {
+    case .Invalid: panic("invalid")
+    case .SingleRes: {
+        fmt.println("reducing res:", e.v);
+        return e.v
+    }
+    case .Number: {
+        fmt.println("reducing number:", e.v);
+        return e.v
+    }
+    case .Binop: {
+        t := new_tmp(c)
+        fmt.println("reducing binop:", e.v);
+        cwritefln(c, "\t%s = %s", t, e.v);
+        return t
+    }
+    }
+    panic("impl");
+}
 expr_result :: struct {
-    kind: enum {SingleRes,Binop,Number},
+    kind: enum {Invalid, SingleRes,Binop,Number},
     v: string,
 }
 cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
@@ -171,6 +202,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             c.scope.vars[obj.name] = t
             return
         }
+        case .Invalid: panic("invalid")
         case: panic("impl");
         }
     }
@@ -190,6 +222,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
                 cwritefln(c, "\t%s = %s", t, r.v);
                 cwritefln(c, "\tret %s %s", ty_to_llv_str(c, expr_ty(e)), t)
             }
+        case .Invalid: panic("invalid")
             }
         } else {
             cwriteln(c, "\tret void")
@@ -200,6 +233,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         case Symbol: {
             v := cg_expr(c, s.value);
             switch v.kind {
+            case .Invalid: panic("invalid")
             case .Number: {
                 c.scope.vars[e.name] = v.v
                 return
@@ -297,6 +331,7 @@ cgscope_get :: proc(scope: ^CGScope, v: string) -> string {
     for s != nil {
         n, ok := s.vars[v];
         if ok do return n
+        s = s.parent
     }
     panic("doesn't exist")
 }
@@ -311,7 +346,6 @@ cg_module :: proc(ast: ^AST) {
     cgctx.scope = new_gcscope(nil);
 
 
-
     // boilerplate + garbage
     fmt.sbprintfln(cgctx.b, "; target info")
     fmt.sbprintfln(cgctx.b, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"");
@@ -321,6 +355,15 @@ cg_module :: proc(ast: ^AST) {
     fmt.sbprintfln(cgctx.b, "declare i32 @printf(ptr, ...)")
     fmt.sbprintfln(cgctx.b, "declare ptr @malloc(i64)")
     fmt.sbprintfln(cgctx.b, "declare void @free(ptr)")
+    for i in ast.items {
+        switch s in get_item(i) {
+        case FnDec: { 
+            // declare first;
+            // it's a function , so use "@main" instead of "%main"
+            cgctx.scope.vars[s.name] = aprintf(&cgctx, "@%s", s.name);
+        }
+        }
+    }
     // gen
     cg_ast(&cgctx, ast)
     // print resuly
