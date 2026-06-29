@@ -240,6 +240,11 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
         resolve_expr(s, stmt.target);
         resolve_expr(s, stmt.value);
     }
+    case IfElse: {
+        resolve_expr(s, stmt.base_con)
+        b := stmt.base_block
+        resolve_block(s, &b)
+    }
     case: panic("Impl");
     }
 }

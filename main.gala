@@ -1,11 +1,6 @@
-fn main(): int {
-    v := 5.0 + 3.0 - fib();
-    return smth()+7;
-}
-
-fn fib(): flt {
-    return 6.0;
-}
-fn smth(): int {
-    return 6;
+fn main() {
+    a := 0;
+    if a {
+    }
+    return;
 }

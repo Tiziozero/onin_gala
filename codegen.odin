@@ -40,7 +40,7 @@ cwritefln :: proc(c: ^CGCtx, format: string, data: ..any) {
 }
 
 llvm_ty: map[TypeId]string
-ty_to_llv_str :: proc(c: ^CGCtx, id: TypeId) -> string {
+ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     t, ok := llvm_ty[id];
     if ok { fmt.println("type found for:", id); return t }
     ty := get_type(id)
@@ -66,6 +66,7 @@ ty_to_llv_str :: proc(c: ^CGCtx, id: TypeId) -> string {
         llvm_ty[id]="void";
         return llvm_ty[id]
     }
+    case: return "ptr"; // functions are just pointers
     }
     panic("impl")
 }
@@ -80,6 +81,15 @@ aprintf :: proc(c: ^CGCtx, format: string, data: ..any) -> string {
 }
 ssa_names: map[string]string;
 // returns value
+cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
+    #partial switch e in get(id) {
+        case Symbol: {
+            v := cgscope_get(&c.scope, e.name);
+            return v;
+        }
+    }
+    panic("no");
+}
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
     #partial switch e in get_expr(id) {
     case Number: {
@@ -87,33 +97,8 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
     }
     case Binop: {
         ty := expr_ty(id);
-        l := cg_expr(c, e.left);
-        r := cg_expr(c, e.right);
-        l_v : string
-        // create something usable in binop
-        switch l.kind {
-        case .Invalid: panic("invalid")
-        case .SingleRes: l_v = l.v
-        case .Binop: {
-            // write binop first
-            t := new_tmp(c);
-            cwritefln(c, "\t%s = %s", t, l.v);
-            l_v = t;
-        }
-        case .Number: l_v = l.v
-        }
-        r_v: string
-        switch r.kind {
-        case .Invalid: panic("invalid")
-        case .SingleRes: r_v = r.v
-        case .Binop: {
-            // write binop first
-            t := new_tmp(c);
-            cwritefln(c, "\t%s = %s", t, r.v);
-            r_v = t;
-        }
-        case .Number: r_v = r.v
-        }
+        l_v := reduce_expr_to_single_value(c, cg_expr(c, e.left))
+        r_v := reduce_expr_to_single_value(c, cg_expr(c, e.right))
         // get op kind
         op := ""
         if get_type(expr_ty(id)).kind == .Integer {
@@ -137,21 +122,22 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
             panic("handle");
         }
         return {kind=.Binop,
-            v=aprintf(c, "%s %s %s, %s", op, ty_to_llv_str(c, ty), l_v, r_v)};
+            v=aprintf(c, "%s %s %s, %s", op, ty_to_llvm_str(c, ty), l_v, r_v)};
     }
     case Symbol: {
-        fmt.println("gen symbol:", e, c.scope.vars[e.name]);
+        // v := cgscope_get(&c.scope, e.name);
+        t := new_tmp(c)
         v := cgscope_get(&c.scope, e.name);
-        return {kind=.SingleRes,v=v};
+        cwritefln(c, "\t%s = load %s, ptr %s",
+                            t, ty_to_llvm_str(c, expr_ty(id)), v);
+        return {kind=.SingleRes,v=t};
     }
     case FnCall: {
-        t := cg_expr(c, e.target);
-        fmt.println("fn target:", t);
-        target := reduce_expr_to_single_value(c, t);
-        fn_ty := get_type(expr_ty(e.target));
+        t := cg_fn_call_target(c, e.target);
         new_t := new_tmp(c);
-        fmt.println("retuced target:", target);
-        cwritefln(c, "\t%s = call %s %s()", new_t, ty_to_llv_str(c, fn_ty.fn.ret_ty), target);
+
+        fn_ty := get_type(expr_ty(e.target));
+        cwritefln(c, "\t%s = call %s %s()", new_t, ty_to_llvm_str(c, fn_ty.fn.ret_ty), t);
         return {kind=.SingleRes, v=new_t};
     }
     case: panic("impl");
@@ -162,16 +148,13 @@ reduce_expr_to_single_value :: proc(c: ^CGCtx, e: expr_result) -> string {
     switch e.kind {
     case .Invalid: panic("invalid")
     case .SingleRes: {
-        fmt.println("reducing res:", e.v);
         return e.v
     }
     case .Number: {
-        fmt.println("reducing number:", e.v);
         return e.v
     }
     case .Binop: {
         t := new_tmp(c)
-        fmt.println("reducing binop:", e.v);
         cwritefln(c, "\t%s = %s", t, e.v);
         return t
     }
@@ -185,45 +168,23 @@ expr_result :: struct {
 cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     #partial switch s in get_stmt(id) {
     case VarDec:{
+        // get object
         obj := get_obj(get_ctx().stmt_objects[id]);
-        v := cg_expr(c, s.value);
-        switch v.kind {
-        case .Number: {
-            c.scope.vars[obj.name] = v.v
-            return
-        }
-        case .SingleRes: {
-            c.scope.vars[obj.name] = v.v
-            return
-        }
-        case .Binop: {
-            t := new_tmp(c)
-            cwritefln(c, "\t%s = %s", t, v.v);
-            c.scope.vars[obj.name] = t
-            return
-        }
-        case .Invalid: panic("invalid")
-        case: panic("impl");
-        }
+        // gen value
+        value :=  reduce_expr_to_single_value(c, cg_expr(c, s.value));
+        // write name to scope
+        c.scope.vars[s.name] = aprintf(c, "%%%s", s.name);
+        // allocate
+        cwritefln(c, "\t%s = alloca %s",c.scope.vars[s.name], 
+            ty_to_llvm_str(c, obj.type.(TypeId)));
+        // init
+        cwritefln(c, "\tstore %s %s, ptr %s", ty_to_llvm_str(c, obj.type.(TypeId)),
+            value, c.scope.vars[s.name]);
     }
     case Return: {
         if e, ok := s.expr.(ExprId); ok {
-            r := cg_expr(c, e);
-            switch r.kind {
-            case .SingleRes: {
-                cwritefln(c, "\tret %s %s", ty_to_llv_str(c, expr_ty(e)), r.v)
-            }
-            case .Number: {
-                cwritefln(c, "\tret %s %s", ty_to_llv_str(c, expr_ty(e)), r.v)
-            }
-            case .Binop: {
-                t := new_tmp(c)
-                fmt.println("value is a binop at return:", t, r);
-                cwritefln(c, "\t%s = %s", t, r.v);
-                cwritefln(c, "\tret %s %s", ty_to_llv_str(c, expr_ty(e)), t)
-            }
-        case .Invalid: panic("invalid")
-            }
+            r := reduce_expr_to_single_value(c, cg_expr(c, e));
+            cwritefln(c, "\tret %s %s", ty_to_llvm_str(c, expr_ty(e)), r)
         } else {
             cwriteln(c, "\tret void")
         }
@@ -231,30 +192,13 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     case Assignment: {
         #partial switch e in get_expr(s.target) {
         case Symbol: {
-            v := cg_expr(c, s.value);
-            switch v.kind {
-            case .Invalid: panic("invalid")
-            case .Number: {
-                c.scope.vars[e.name] = v.v
-                return
-            }
-            case .SingleRes: {
-                c.scope.vars[e.name] = v.v
-                return
-            }
-            case .Binop: {
-                t := new_tmp(c)
-                cwritefln(c, "\t%s = %s", t, v.v);
-                // update
-                c.scope.vars[e.name] = t
-                return
-            }
-            case: panic("impl");
-            }
+            value :=  reduce_expr_to_single_value(c, cg_expr(c, s.value));
+            cwritefln(c, "\tstore %s %s, ptr %s",
+                ty_to_llvm_str(c, expr_ty(s.target)), value,
+                cgscope_get(&c.scope, e.name));
         }
         case: panic("impl");
         }
-        panic("impl");
     }
     case:panic("impl");
     }
@@ -289,7 +233,7 @@ gen_item :: proc(c: ^CGCtx, id: ItemId) {
         // write
         cwrite(c, "define ");
         // write return type
-        cwritef(c, "%s ", ty_to_llv_str(c, fn_ty.fn.ret_ty));
+        cwritef(c, "%s ", ty_to_llvm_str(c, fn_ty.fn.ret_ty));
         // write name
         cwritef(c, "@%s ", obj.name);
         // write args

@@ -129,7 +129,14 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
 }
 
 tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
-    #partial switch stmt in get_stmt(s) {
+    switch stmt in get_stmt(s) {
+    case ExprId: panic("impl");
+    case IfElse: {
+        tc_expr(tc, stmt.base_con);
+        // make it numeric
+        assert(is_numeric(expr_ty(stmt.base_con)));
+        tc_block(tc, stmt.base_block);
+    }
     case VarDec: {
         tc_expr(tc, stmt.value)
         resolved_ty := get_obj(get_ctx().stmt_objects[s]).type;
@@ -173,7 +180,11 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
         // otherwise make sure function doesn't expect a value
         } else  {
             if tc.fn_ret_ty != nil {
-                panic("return value expected");
+                if get_type(tc.fn_ret_ty.(TypeId)).kind == .Void {
+                    // returning void
+                } else { // not in function
+                    panic("return value expected");
+                }
             }
         }
     }

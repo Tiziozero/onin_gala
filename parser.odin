@@ -93,7 +93,12 @@ Stmt :: union {
     VarDec,
     Assignment,
     Return,
-    ExprId
+    ExprId,
+    IfElse,
+}
+IfElse :: struct {
+    base_con: ExprId,
+    base_block: Block,
 }
 Parser::struct{
     tokens: []Token,
@@ -149,6 +154,11 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         e := parse_expr(p);
         expect_symbol(p, ";");
         return new_stmt(Stmt(Return{expr=e}));
+    } else if is_kw(p, .If) {
+        consume_token(p); // "if"
+        condition := parse_expr(p);
+        block := parse_block(p);
+        return new_stmt(IfElse{base_con=condition, base_block=block});
     } else { // otherwise try stmt
         expr := parse_expr(p);
         if is_symbol(current_token(p), "=") {
