@@ -184,17 +184,19 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
 
         cwritefln(c, "\tbr i1 %s, label %%%s, label %%%s", comp, base_block, end_label);
 
-        // body
-        cwritefln(c, "%s:", base_block);
-        old := c.scope;
-        c.scope = new_gcscope(&old);
-        for statement in s.base_block.stmts {
-            cg_stmt(c, statement);
+        { // base block
+            cwritefln(c, "%s:", base_block);
+            old := c.scope;
+            c.scope = new_gcscope(&old);
+            for statement in s.base_block.stmts {
+                cg_stmt(c, statement);
+            }
+            fmt.println("freeing scope", c.scope.vars);
+            free_cgscope(&c.scope)
+            fmt.println("freed scope");
+            c.scope = old;
+            cwritefln(c, "\tbr label %%%s", end_label);
         }
-        fmt.println("freeing scope", c.scope.vars);
-        free_cgscope(&c.scope)
-        fmt.println("freed scope");
-        c.scope = old;
 
         cwritefln(c, "%s:", end_label);
     }

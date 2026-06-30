@@ -14,6 +14,7 @@ entry:
 	br i1 %cond2, label %base_block_label2, label %end_label2
 base_block_label2:
 	ret i64 4
+	br label %end_label2
 end_label2:
 	ret i64 3
 }
