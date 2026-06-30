@@ -7,25 +7,13 @@ declare ptr @malloc(i64)
 declare void @free(ptr)
 define i64 @main () {
 entry:
-	%t1 = fadd double 5.0, 3.0
-	%t2 = call double @fib()
-	%t3 = fsub double %t1, %t2
-	%v = alloca double
-	store double %t3, ptr %v
-	store double 4.0, ptr %v
-	%t4 = call i64 @smth()
-	%t5 = add i64 %t4, 7
-	%e = alloca i64
-	store i64 %t5, ptr %e
-	store i64 2, ptr %e
-	%t6 = load i64, ptr %e
-	ret i64 %t6
-}
-define double @fib () {
-entry:
-	ret double 6.0
-}
-define i64 @smth () {
-entry:
-	ret i64 6
+	%a = alloca i64
+	store i64 0, ptr %a
+	%t1 = load i64, ptr %a
+	%cond2 = icmp ne i64 %t1, 0
+	br i1 %cond2, label %base_block_label2, label %end_label2
+base_block_label2:
+	ret i64 4
+end_label2:
+	ret i64 3
 }

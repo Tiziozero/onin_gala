@@ -24,7 +24,7 @@ new_gcscope :: proc(parent: ^CGScope) -> CGScope {
     return s;
 }
 free_cgscope :: proc(s: ^CGScope) {
-    free(&s.vars);
+    delete(s.vars);
 }
 cwritef :: proc(c: ^CGCtx, format: string, data: ..any) {
     fmt.sbprintf(c.b, format, ..data)
@@ -167,6 +167,37 @@ expr_result :: struct {
 }
 cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     #partial switch s in get_stmt(id) {
+    /*
+        %cond = icmp eq i32 %a, %b
+        br i1 %cond, label %IfEqual, label %IfUnequal
+       */
+    case IfElse: {
+        cond := reduce_expr_to_single_value(c, cg_expr(c, s.base_con));
+        ty := get_type(expr_ty(s.base_con));
+        assert(ty.kind == .Integer); // must be an integer
+        c.tmp_id += 1;
+        comp := aprintf(c, "%%cond%d", c.tmp_id)
+        cwritefln(c, "\t%s = icmp ne %s %s, 0",
+            comp, ty_to_llvm_str(c, expr_ty(s.base_con)), cond)
+        base_block := aprintf(c, "base_block_label%d",c.tmp_id); 
+        end_label := aprintf(c, "end_label%d",c.tmp_id); 
+
+        cwritefln(c, "\tbr i1 %s, label %%%s, label %%%s", comp, base_block, end_label);
+
+        // body
+        cwritefln(c, "%s:", base_block);
+        old := c.scope;
+        c.scope = new_gcscope(&old);
+        for statement in s.base_block.stmts {
+            cg_stmt(c, statement);
+        }
+        fmt.println("freeing scope", c.scope.vars);
+        free_cgscope(&c.scope)
+        fmt.println("freed scope");
+        c.scope = old;
+
+        cwritefln(c, "%s:", end_label);
+    }
     case VarDec:{
         // get object
         obj := get_obj(get_ctx().stmt_objects[id]);

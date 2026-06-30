@@ -1,6 +1,7 @@
-fn main() {
+fn main(): int {
     a := 0;
     if a {
+        return 4;
     }
-    return;
+    return 3;
 }
