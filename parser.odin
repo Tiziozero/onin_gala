@@ -185,6 +185,7 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
             args := make([dynamic]ExprId, allocator=context.temp_allocator);
             for !is_symbol(current_token(p), ")") {
                 e := parse_expr(p);
+                append(&args, e)
                 if is_symbol(current_token(p), ",") {
                     consume_token(p); // ","
                 } else do break

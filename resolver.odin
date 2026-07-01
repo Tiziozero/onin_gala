@@ -1,5 +1,7 @@
 package main
 
+import "core:os/old"
+import "core:c"
 import "core:fmt"
 TypeKind :: enum {
     UntypedInteger,
@@ -67,6 +69,7 @@ new_object :: proc(s: ^Scope, o: Object) -> ObjId {
     append(&ctx.objs, o);
     id := ObjId(len(ctx.objs)-1);
     s.objects[o.name] = id
+    fmt.println("new object:", o.name, o.kind);
     return id
 }
 new_type :: proc(s: ^Scope, t: Type) -> TypeId {
@@ -118,7 +121,10 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     } // nothing
     case Symbol: {
         obj, ok := scope_get_object(s, e.name);
-        assert(ok)
+        if !ok {
+            fmt.println("Couldn't find", e.name, "in scope.");
+            assert(ok)
+        }
         get_ctx().expr_objects[id] = obj
     }
     case FnCall: {
@@ -287,8 +293,6 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     oid, ook := s.obj_foreward[fndec.name]; assert(ook); // make sure fd exists
     obj := get(oid); // gets pointer, so modify that
 
-    // impl
-    resolve_block(s, &fndec.block);
     // create fn type
     fnty := Type{}
     fnty.kind = .Function;
@@ -298,20 +302,29 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     } else {
         fnty.fn.ret_ty = void_type();
     }
+    // new scope for args
     // args
+    new_scope := new_scope(s);
     args := make([]Arg, len(fndec.args), allocator=context.temp_allocator)
     declared := make(map[string]Arg)
     for a, i in fndec.args {
-        t := resolve_type_specifier(s, a.t)
+        t := resolve_type_specifier(&new_scope, a.t)
         if da, ok := declared[a.name]; ok {
             fmt.println(a, da);
             panic("arg already exists")
         }
         args[i] = Arg{a.name, t}
         declared[a.name] = Arg{a.name, t}
+        new_object(&new_scope, Object{.Argument, a.name, t});
     }
     fnty.fn.args = args
+    // impl
+    resolve_block(&new_scope, &fndec.block);
+    // free args scope
+    free_scope(&new_scope);
 
+
+    // intern type
     tyid := intern_type(fnty);
 
     obj.type = tyid

@@ -12,14 +12,23 @@ CGCtx :: struct {
     tmp_id: int,
     scope: CGScope,
 }
-
+CGObjectKind :: enum {
+    Invalid,
+    Argument,
+    Variable,
+    Symbol, // like functions
+}
+CGObj :: struct {
+    kind: CGObjectKind,
+    name: string
+}
 CGScope :: struct {
-    vars : map[string]string,
+    vars : map[string]CGObj,
     parent: ^CGScope,
 }
 new_gcscope :: proc(parent: ^CGScope) -> CGScope {
     s := CGScope{}
-    s.vars = make(map[string]string);
+    s.vars = make(map[string]CGObj);
     s.parent = parent
     return s;
 }
@@ -85,7 +94,7 @@ cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
     #partial switch e in get(id) {
         case Symbol: {
             v := cgscope_get(&c.scope, e.name);
-            return v;
+            return v.name;
         }
     }
     panic("no");
@@ -126,18 +135,40 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
     }
     case Symbol: {
         // v := cgscope_get(&c.scope, e.name);
-        t := new_tmp(c)
         v := cgscope_get(&c.scope, e.name);
-        cwritefln(c, "\t%s = load %s, ptr %s",
-                            t, ty_to_llvm_str(c, expr_ty(id)), v);
-        return {kind=.SingleRes,v=t};
+        #partial switch v.kind {
+        case .Variable: fallthrough
+        case .Symbol: {
+            t := new_tmp(c)
+            cwritefln(c, "\t%s = load %s, ptr %s",
+                t, ty_to_llvm_str(c, expr_ty(id)), v.name);
+            return {kind=.SingleRes,v=t};
+        }
+        case .Argument: {
+            return {kind=.SingleRes,v=v.name};
+        }
+        case .Invalid: {
+            panic("invalid object");
+        }
+        }
+        panic("impl");
     }
     case FnCall: {
         t := cg_fn_call_target(c, e.target);
         new_t := new_tmp(c);
 
         fn_ty := get_type(expr_ty(e.target));
-        cwritefln(c, "\t%s = call %s %s()", new_t, ty_to_llvm_str(c, fn_ty.fn.ret_ty), t);
+        cwritef(c, "\t%s = call %s %s", new_t, ty_to_llvm_str(c, fn_ty.fn.ret_ty), t);
+        cwrite(c, "(");
+        for a, i in e.args {
+            r := reduce_expr_to_single_value(c, cg_expr(c, a));
+            cwritef(c, "%s %s", ty_to_llvm_str(c, expr_ty(a)), r);
+            if i < len(fn_ty.fn.args) - 1 {
+                fmt.println(i, len(fn_ty.fn.args))
+                cwritef(c, ", ")
+            }
+        }
+        cwriteln(c, ")");
         return {kind=.SingleRes, v=new_t};
     }
     case: panic("impl");
@@ -206,13 +237,13 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         // gen value
         value :=  reduce_expr_to_single_value(c, cg_expr(c, s.value));
         // write name to scope
-        c.scope.vars[s.name] = aprintf(c, "%%%s", s.name);
+        c.scope.vars[s.name] = {.Variable, aprintf(c, "%%%s", s.name)};
         // allocate
-        cwritefln(c, "\t%s = alloca %s",c.scope.vars[s.name], 
+        cwritefln(c, "\t%s = alloca %s",c.scope.vars[s.name].name, 
             ty_to_llvm_str(c, obj.type.(TypeId)));
         // init
         cwritefln(c, "\tstore %s %s, ptr %s", ty_to_llvm_str(c, obj.type.(TypeId)),
-            value, c.scope.vars[s.name]);
+            value, c.scope.vars[s.name].name);
     }
     case Return: {
         if e, ok := s.expr.(ExprId); ok {
@@ -239,10 +270,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
 cg_lvalue :: proc(c: ^CGCtx, id: ExprId) -> string {
     #partial switch e in get_expr(id) {
     case Symbol: {
-        name := new_tmp(c);
-        // set to last value
-        c.scope.vars[e.name] = name;
-        return aprintf(c, "%s", name);
+        panic("impl");
     }
     case: panic("impl")
     }
@@ -270,7 +298,17 @@ gen_item :: proc(c: ^CGCtx, id: ItemId) {
         // write name
         cwritef(c, "@%s ", obj.name);
         // write args
-        cwrite(c, "() ");
+        cwrite(c, "(");
+        for a, i in fn_ty.fn.args {
+            // write name to scope
+            c.scope.vars[a.name] = {.Argument, aprintf(c, "%%%s", a.name)};
+            cwritef(c, "%s %s", ty_to_llvm_str(c, a.type), c.scope.vars[a.name].name);
+            if i < len(fn_ty.fn.args) - 1 {
+                fmt.println(i, len(fn_ty.fn.args))
+                cwritef(c, ", ")
+            }
+        }
+        cwrite(c, ") ");
         cwriteln(c, "{");
         // entry block
         cwriteln(c, "entry:");
@@ -303,7 +341,7 @@ check_fn :: proc(f: FnDec) -> bool {
     }
     return true
 }
-cgscope_get :: proc(scope: ^CGScope, v: string) -> string {
+cgscope_get :: proc(scope: ^CGScope, v: string) -> CGObj {
     s := scope
     for s != nil {
         n, ok := s.vars[v];
@@ -337,7 +375,7 @@ cg_module :: proc(ast: ^AST) {
         case FnDec: { 
             // declare first;
             // it's a function , so use "@main" instead of "%main"
-            cgctx.scope.vars[s.name] = aprintf(&cgctx, "@%s", s.name);
+            cgctx.scope.vars[s.name] = {.Symbol, aprintf(&cgctx, "@%s", s.name)};
         }
         }
     }

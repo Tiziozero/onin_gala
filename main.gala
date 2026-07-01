@@ -1,7 +1,10 @@
 fn main(argc: int, argv: int): int {
-    a := 0;
+    a := argc - 1;
     if a {
-        return 4;
+        return 0;
     }
-    return 3;
+    return b(argc);
+}
+fn b(i: int): int {
+    return i + 67;
 }

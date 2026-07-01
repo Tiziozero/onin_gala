@@ -120,7 +120,13 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
             panic("args count for function don't match");
         }
         for i in 0..<len(fargs) {
-            panic("impl")
+            earg := expr.args[i];
+            farg := fargs[i];
+            tc_expr(tc, earg);
+            r, ok := compare_and_reduce_types(farg.type, expr_ty(earg));
+            assert(ok);
+            assert(r == farg.type); // should always match
+            propagate_type(r, earg);
         }
         get_ctx().expr_types[e] = ty.fn.ret_ty
     }
