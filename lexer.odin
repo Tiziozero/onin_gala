@@ -12,6 +12,7 @@ TokenKind :: enum {
     EOF,
 }
 Keyword :: enum {
+    Invalid,
     Fn,
     Return,
     If, Else,

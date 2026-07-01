@@ -216,8 +216,11 @@ parse_block :: proc(p: ^Parser) -> Block{
     expect_symbol(p, "}");
     return Block{stmts=stmts[:]}
 }
+
+FnDecArg :: struct{name: string, t: TypeSpecifier}
 FnDec :: struct {
     name: string,
+    args: [dynamic]FnDecArg, 
     ret_ty: Maybe(TypeSpecifier),
     block: Block,
 }
@@ -239,9 +242,23 @@ parse_kw :: proc(p: ^Parser) -> ItemId {
         kw := consume_token(p);
         name := expect_ident(p).text;
         f.name = name;
+        // args
+        args := make([dynamic]FnDecArg)
         expect_symbol(p, "(");
-        // parse args
+        for !is_symbol(current_token(p), ")") {
+            name := expect_ident(p);
+            expect_symbol(p, ":")
+            ty := parse_type(p);
+            append(&args, FnDecArg{name=name.text, t=ty})
+            if is_symbol(current_token(p), ",") {
+                consume_token(p);
+            } else {
+                break;
+            }
+        }
         expect_symbol(p, ")");
+        f.args = args
+
         if is_symbol(current_token(p), ":") {
             consume_token(p); // ":"
             f.ret_ty = parse_type(p);

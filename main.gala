@@ -1,4 +1,4 @@
-fn main(): int {
+fn main(argc: int, argv: int): int {
     a := 0;
     if a {
         return 4;

@@ -23,7 +23,13 @@ Type :: struct {
     ptr: TypeId,
     fn: struct { args: []Arg, ret_ty: TypeId},
 }
+ObjectKind :: enum {
+    Invalid,
+    Variable,
+    Argument,
+}
 Object :: struct {
+    kind: ObjectKind,
     name: string,
     type: Maybe(TypeId),
 }
@@ -39,50 +45,66 @@ Scope :: struct {
 ModuleScope :: struct {
     using scope: Scope,
 }
+name_exists :: proc(scope: ^Scope, n: string) -> bool {
+    s := scope
+    for s != nil {
+        _, ok := s.types[n];            if ok do return true
+        _, ok  = s.objects[n];          if ok do return true
+        _, ok  = s.ty_foreward[n];      if ok do return true
+        _, ok  = s.obj_foreward[n];     if ok do return true
+        s = s.parent
+    }
+    return false
+}
 new_object :: proc(s: ^Scope, o: Object) -> ObjId {
     ctx := get_ctx()
+    assert(o.kind != .Invalid);
+    assert(len(o.name) > 0);
+
+    // make sure they're not already declared
+    assert(!name_exists(s, o.name));
+
     append(&ctx.objs, o);
     id := ObjId(len(ctx.objs)-1);
-    _, ok := s.types[o.name];       assert(!ok);
-    _, ok = s.objects[o.name];      assert(!ok);
     s.objects[o.name] = id
     return id
 }
 new_type :: proc(s: ^Scope, t: Type) -> TypeId {
     ctx := get_ctx();
-    append(&ctx.types, t);
-    id := TypeId(len(ctx.types)-1);  // allocate type
+    assert(t.kind != .Invalid);
+    assert(len(t.name) > 0);
 
     // make sure it doesn't exist
-    _, ok := s.types[t.name];       assert(!ok);
-    _, ok = s.objects[t.name];      assert(!ok);
+    assert(!name_exists(s, t.name));
+
+    append(&ctx.types, t);
+    id := TypeId(len(ctx.types)-1);  // allocate type
     s.types[t.name] = id
     return id
 }
 new_object_fd :: proc(s: ^ModuleScope, o: Object) -> ObjId {
     ctx := get_ctx()
-    append(&ctx.objs, o);
-    id := ObjId(len(ctx.objs)-1);
+    assert(o.kind != .Invalid);
+    assert(len(o.name) > 0);
 
     // make sure it doesn't exist
-    _, ok := s.ty_foreward[o.name]; assert(!ok);
-    _, ok = s.obj_foreward[o.name]; assert(!ok);
-    _, ok = s.types[o.name];        assert(!ok);
-    _, ok = s.objects[o.name];      assert(!ok);
+    assert(!name_exists(s, o.name));
 
+    append(&ctx.objs, o);
+    id := ObjId(len(ctx.objs)-1);
     s.obj_foreward[o.name] = id
-    fmt.println("new obj fd:", id, o.name)
     return id
 }
 new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
     ctx := get_ctx()
+    assert(t.kind != .Invalid);
+    assert(len(t.name) > 0);
+
+    // make sure it doesn't exist
+    assert(!name_exists(s, t.name));
+
     append(&ctx.types, t);
     id := TypeId(len(ctx.types)-1); 
-    // make sure it doesn't exist
-    _, ok := s.ty_foreward[t.name]; assert(!ok);
-    _, ok = s.obj_foreward[t.name]; assert(!ok);
-    _, ok = s.types[t.name];        assert(!ok);
-    _, ok = s.objects[t.name];      assert(!ok);
     s.ty_foreward[t.name] = id
     return id
 }
@@ -228,7 +250,7 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
             ty, ok := stmt.type.(TypeSpecifier); assert(ok);
             resolved_ty = resolve_type_specifier(s, ty);
         }
-        oid := new_object(s, Object{name=stmt.name, type=resolved_ty})
+        oid := new_object(s, Object{kind=.Variable, name=stmt.name, type=resolved_ty})
         get_ctx().stmt_objects[id] = oid;
     }
     case Return: {
@@ -270,12 +292,26 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     // create fn type
     fnty := Type{}
     fnty.kind = .Function;
-    fnty.fn.args = make([]Arg, 0, allocator=context.temp_allocator)
+    // return type
     if fndec.ret_ty != nil {
         fnty.fn.ret_ty = resolve_type_specifier(s, fndec.ret_ty.(TypeSpecifier))
     } else {
         fnty.fn.ret_ty = void_type();
     }
+    // args
+    args := make([]Arg, len(fndec.args), allocator=context.temp_allocator)
+    declared := make(map[string]Arg)
+    for a, i in fndec.args {
+        t := resolve_type_specifier(s, a.t)
+        if da, ok := declared[a.name]; ok {
+            fmt.println(a, da);
+            panic("arg already exists")
+        }
+        args[i] = Arg{a.name, t}
+        declared[a.name] = Arg{a.name, t}
+    }
+    fnty.fn.args = args
+
     tyid := intern_type(fnty);
 
     obj.type = tyid
@@ -289,7 +325,7 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     item := get(id)
     // foreward
     switch i in item {
-    case FnDec:         new_object_fd(s, Object{name=i.name});
+    case FnDec:         new_object_fd(s, Object{kind=.Variable, name=i.name});
     case:               panic("impl")
     }
 }
