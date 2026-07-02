@@ -276,8 +276,10 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
             b := a.block
             resolve_block(s, &b)
         }
+        if stmt.has_else_block {
         b = stmt.else_block
         resolve_block(s, &b)
+        }
     }
     case: panic("Impl");
     }

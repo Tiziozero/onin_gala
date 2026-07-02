@@ -121,6 +121,7 @@ IfElse :: struct {
     base_con: ExprId,
     base_block: Block,
     alt: []AltCon,
+    has_else_block: bool,
     else_block: Block,
 }
 Parser::struct{
@@ -195,6 +196,7 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
             consume_token(p); // else
             block := parse_block(p);
             s.else_block = block
+            s.has_else_block = true
         }
         return new_stmt(s);
     } else { // otherwise try stmt

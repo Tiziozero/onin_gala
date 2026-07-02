@@ -169,7 +169,9 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             }
             tc_block(tc, a.block);
         }
-        tc_block(tc, stmt.else_block);
+        if stmt.has_else_block {
+            tc_block(tc, stmt.else_block);
+        }
     }
     case VarDec: {
         tc_expr(tc, stmt.value)

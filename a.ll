@@ -17,10 +17,12 @@ base_block_label1:
 alt_cond_label1_0:
 	%t4 = load i64, ptr %a
 	%t5 = icmp eq i64 %t4, 1
-	br i1 %t5, label %alt_block_label1_0, label %else_block_label1
+	br i1 %t5, label %alt_block_label1_0, label %end_label1
 alt_block_label1_0:
 	ret i64 2
-else_block_label1:
-	ret i64 0
 end_label1:
+	%v = alloca i64
+	store i64 67, ptr %v
+	%t6 = load i64, ptr %v
+	ret i64 %t6
 }

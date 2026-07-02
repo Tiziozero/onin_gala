@@ -294,43 +294,29 @@ expr_result :: struct {
     kind: enum {Invalid, SingleRes,Binop,Number},
     v: string,
 }
+stmt_ends_block :: proc(stmt: StmtId) -> bool {
+    #partial switch s in get(stmt) {
+    case IfElse: {
+        has_all_returns := s.has_else_block
+        if !check_rets(s.base_block) do has_all_returns = false;
+        for a in s.alt {
+            if !check_rets(a.block) do has_all_returns = false;
+        }
+        if s.has_else_block {
+            if !check_rets(s.else_block) do has_all_returns = false;
+        }
+        return has_all_returns
+    }
+    case Return: return true
+    case VarDec: return false
+    case Assignment: return false
+    case: panic("impl");
+    }
+    panic("impl");
+}
 cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     #partial switch s in get_stmt(id) {
-    /*
-        %cond = icmp eq i32 %a, %b
-        br i1 %cond, label %IfEqual, label %IfUnequal
-       */
-    case IfElse: /*{
-        c.tmp_id += 1;
-        base_block := aprintf(c, "base_block_label%d",c.tmp_id); 
-        end_label := aprintf(c, "end_label%d",c.tmp_id); 
-
-
-        { // base
-            cond := reduce_expr_to_single_value(c, cg_expr(c, s.base_con));
-            ty := get_type(expr_ty(s.base_con));
-            assert(ty.kind == .Bool); // must be an integer
-            cwritefln(c, "\tbr i1 %s, label %%%s, label %%%s", cond, base_block, end_label);
-            cwritefln(c, "%s:", base_block);
-            old := c.scope;
-            c.scope = new_gcscope(&old);
-            for statement in s.base_block.stmts {
-                cg_stmt(c, statement);
-            }
-            fmt.println("freeing scope", c.scope.vars);
-            free_cgscope(&c.scope)
-            fmt.println("freed scope");
-            c.scope = old;
-            if !check_rets(s.base_block) {
-                cwritefln(c, "\tbr label %%%s", end_label);
-            }
-        }
-        { // alts
-        }
-
-        cwritefln(c, "%s:", end_label);
-    }*/
-    {
+    case IfElse: {
         c.tmp_id += 1;
         id_suffix := c.tmp_id
         end_label := aprintf(c, "end_label%d", id_suffix);
@@ -345,7 +331,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             append(&alt_cond_labels, aprintf(c, "alt_cond_label%d_%d", id_suffix, i))
             append(&alt_body_labels, aprintf(c, "alt_block_label%d_%d", id_suffix, i))
         }
-        has_else := len(s.else_block.stmts) > 0
+        has_else := s.has_else_block;
         else_label := aprintf(c, "else_block_label%d", id_suffix);
 
         // what to jump to if the base condition is false
@@ -366,8 +352,11 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             cwritefln(c, "%s:", base_block);
             old := c.scope;
             c.scope = new_gcscope(&old);
-            for statement in s.base_block.stmts {
+            for statement, i in s.base_block.stmts {
                 cg_stmt(c, statement);
+                if stmt_ends_block(statement) && i != len(s.base_block.stmts) - 1 {
+                    panic("nothing past will be executed");
+                }
             }
             free_cgscope(&c.scope)
             c.scope = old;
@@ -394,8 +383,11 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             cwritefln(c, "%s:", alt_body_labels[i]);
             old := c.scope;
             c.scope = new_gcscope(&old);
-            for statement in a.block.stmts {
+            for statement, i in a.block.stmts {
                 cg_stmt(c, statement);
+                if stmt_ends_block(statement) && i != len(s.base_block.stmts) - 1 {
+                    panic("nothing past will be executed");
+                }
             }
             free_cgscope(&c.scope)
             c.scope = old;
@@ -409,8 +401,11 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             cwritefln(c, "%s:", else_label);
             old := c.scope;
             c.scope = new_gcscope(&old);
-            for statement in s.else_block.stmts {
+            for statement, i in s.else_block.stmts {
                 cg_stmt(c, statement);
+                if stmt_ends_block(statement) && i != len(s.base_block.stmts) - 1 {
+                    panic("nothing past will be executed");
+                }
             }
             free_cgscope(&c.scope)
             c.scope = old;
@@ -419,7 +414,18 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             }
         }
 
-        cwritefln(c, "%s:", end_label);
+        has_all_returns := has_else
+        if !check_rets(s.base_block) do has_all_returns = false;
+        for a in s.alt {
+            if !check_rets(a.block) do has_all_returns = false;
+        }
+        if has_else {
+            if !check_rets(s.else_block) do has_all_returns = false;
+        }
+        // returns in every branch, so never needs end label
+        if !has_all_returns {
+            cwritefln(c, "%s:", end_label);
+        }
     }
     case VarDec:{
         // get object
@@ -504,8 +510,11 @@ gen_item :: proc(c: ^CGCtx, id: ItemId) {
         cwriteln(c, "{");
         // entry block
         cwriteln(c, "entry:");
-        for s in i.block.stmts {
-            cg_stmt(c, s);
+        for statement, index in i.block.stmts {
+            cg_stmt(c, statement);
+            if stmt_ends_block(statement) && index != len(i.block.stmts) - 1 {
+                panic("nothing past will be executed");
+            }
         }
         cwriteln(c, "}");
         // reset scope
@@ -520,23 +529,8 @@ cg_ast :: proc(c: ^CGCtx, ast: ^AST) {
     }
 }
 check_rets :: proc(b: Block) -> bool {
-    for stmt in b.stmts {
-        switch s in get_stmt(stmt) {
-        case Return: return true
-        case IfElse: {
-            if !check_rets(s.base_block) do return false
-            for a in s.alt {
-               if !check_rets(a.block) do return false 
-            }
-            if !check_rets(s.else_block) do return false
-            return true
-        }
-        case Assignment: continue
-        case VarDec: continue
-        case ExprId: continue
-        }
-    }
-    return false
+    last := b.stmts[len(b.stmts)-1];
+    return stmt_ends_block(last); // check if last statement ends block
 }
 check_fn :: proc(f: FnDec) -> bool {
     if !check_rets(f.block) {
