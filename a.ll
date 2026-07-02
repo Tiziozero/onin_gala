@@ -5,23 +5,22 @@ target triple = "x86_64-pc-linux-gnu"
 declare i32 @printf(ptr, ...)
 declare ptr @malloc(i64)
 declare void @free(ptr)
-define i64 @main (i64 %argc, i64 %argv) {
+define i64 @main () {
 entry:
-	%t1 = sub i64 %argc, 1
 	%a = alloca i64
-	store i64 %t1, ptr %a
+	store i64 0, ptr %a
 	%t2 = load i64, ptr %a
-	%cond3 = icmp ne i64 %t2, 0
-	br i1 %cond3, label %base_block_label3, label %end_label3
-base_block_label3:
+	%t3 = icmp eq i64 %t2, 0
+	br i1 %t3, label %base_block_label1, label %alt_cond_label1_0
+base_block_label1:
+	ret i64 1
+alt_cond_label1_0:
+	%t4 = load i64, ptr %a
+	%t5 = icmp eq i64 %t4, 1
+	br i1 %t5, label %alt_block_label1_0, label %else_block_label1
+alt_block_label1_0:
+	ret i64 2
+else_block_label1:
 	ret i64 0
-	br label %end_label3
-end_label3:
-	%t4 = call i64 @b(i64 %argc)
-	ret i64 %t4
-}
-define i64 @b (i64 %i) {
-entry:
-	%t5 = add i64 %i, 67
-	ret i64 %t5
+end_label1:
 }

@@ -50,6 +50,7 @@ main :: proc() {
     new_type(&ctx.base_mod, Type{name="int", kind=.Integer});
     new_type(&ctx.base_mod, Type{name="flt", kind=.Float});
     new_type(&ctx.base_mod, Type{name="void", kind=.Void});
+    new_type(&ctx.base_mod, Type{name="bool", kind=.Bool});
     resolve_module_ast(&ast)
     typecheck_module(&ast)
     cg_module(&ast)

@@ -99,7 +99,11 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                 })
             }
         } else {
-            if buf[i] == ':' && buf[i+1] == '=' {
+            if  buf[i] == ':' && buf[i+1] == '=' ||
+                buf[i] == '<' && buf[i+1] == '=' ||
+                buf[i] == '>' && buf[i+1] == '=' ||
+                buf[i] == '!' && buf[i+1] == '=' ||
+                buf[i] == '=' && buf[i+1] == '=' {
                 append(&tokens, Token{
                     span = Span{i, i + 2},
                     kind = .Symbol,

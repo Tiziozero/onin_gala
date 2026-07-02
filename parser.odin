@@ -2,18 +2,19 @@ package main
 
 import "core:fmt"
 
-BinopKind :: enum { Addition, Subtraction, Multiply, Divide };
+BinopKind :: enum {
+    Addition,
+    Subtraction,
+    Multiply,
+    Divide,
+    Equal,
+    NotEqual,
+    LessEqual,
+    GreaterEqual,
+};
 Binop :: struct {
     kind: BinopKind,
     left, right: ExprId,
-}
-op_precedence :: proc(t: Token) -> int {
-    if t.kind != .Symbol { return -1 }
-    switch t.text {
-    case "+", "-": return 1
-    case "*", "/": return 2
-    }
-    return -1
 }
 Number :: struct {
     text: string,
@@ -31,17 +32,36 @@ FnCall :: struct {
     target: ExprId,
     args: [dynamic]ExprId,
 }
-op_is_right_assoc :: proc(t: Token) -> bool {
-    return false // extend for ** etc.
-}
+
 op_kind :: proc(t: Token) -> (kind: BinopKind, ok: bool) {
     switch t.text {
-    case "+": return .Addition,    true
-    case "-": return .Subtraction, true
-    case "*": return .Multiply,    true
-    case "/": return .Divide,      true
+    case "+":  return .Addition,     true
+    case "-":  return .Subtraction,  true
+    case "*":  return .Multiply,     true
+    case "/":  return .Divide,       true
+    case "==": return .Equal,        true
+    case "!=": return .NotEqual,     true
+    case "<=": return .LessEqual,    true
+    case ">=": return .GreaterEqual, true
     }
     return {}, false
+}
+
+// Standard precedence: comparisons bind looser than + -, which bind looser than * /
+op_precedence :: proc(t: Token) -> int {
+    switch t.text {
+    case "==", "!=", "<=", ">=":
+        return 1
+    case "+", "-":
+        return 2
+    case "*", "/":
+        return 3
+    }
+    return -1 // not a binop -> stops parse_binop loop
+}
+
+op_is_right_assoc :: proc(t: Token) -> bool {
+    return false // extend for ** etc.
 }
 // Entry point — replaces your old parse_binop
 parse_expr :: proc(p: ^Parser) -> ExprId {
@@ -96,9 +116,12 @@ Stmt :: union {
     ExprId,
     IfElse,
 }
+AltCon :: struct{cond:ExprId, block:Block}
 IfElse :: struct {
     base_con: ExprId,
     base_block: Block,
+    alt: []AltCon,
+    else_block: Block,
 }
 Parser::struct{
     tokens: []Token,
@@ -145,7 +168,7 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         expr := parse_expr(p);
         expect_symbol(p, ";");
         return new_stmt(Stmt(VarDec{name=name.text, type=nil, value=expr}));
-    } else if is_kw(p, .Return) {
+    } else if is_kw(current_token(p), .Return) {
         consume_token(p); // "return";
         if is_symbol(current_token(p), ";") {
             consume_token(p); // ";"
@@ -154,11 +177,26 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         e := parse_expr(p);
         expect_symbol(p, ";");
         return new_stmt(Stmt(Return{expr=e}));
-    } else if is_kw(p, .If) {
+    } else if is_kw(current_token(p), .If) {
         consume_token(p); // "if"
-        condition := parse_expr(p);
-        block := parse_block(p);
-        return new_stmt(IfElse{base_con=condition, base_block=block});
+        s := IfElse{}
+        s.base_con = parse_expr(p);
+        s.base_block = parse_block(p);
+        alts := make([dynamic]AltCon, allocator=context.temp_allocator);
+        for is_kw(current_token(p), .Else) && is_kw(next_token(p), .If) {
+            consume_token(p); // else
+            consume_token(p); // if
+            cond := parse_expr(p);
+            block := parse_block(p);
+            append(&alts, AltCon{cond, block})
+        }
+        s.alt = alts[:]
+        if is_kw(current_token(p), .Else) {
+            consume_token(p); // else
+            block := parse_block(p);
+            s.else_block = block
+        }
+        return new_stmt(s);
     } else { // otherwise try stmt
         expr := parse_expr(p);
         if is_symbol(current_token(p), "=") {
@@ -171,8 +209,12 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         return new_stmt(Stmt(ExprId(expr)));
     }
 }
-is_kw :: proc(p: ^Parser, k: Keyword) -> bool {
+is_current_kw :: proc(p: ^Parser, k: Keyword) -> bool {
     if current_token(p).kind == .Keyword && current_token(p).kw == k do return true
+    return false
+}
+is_kw :: proc(t: Token, k: Keyword) -> bool {
+    if t.kind == .Keyword && t.kw == k do return true
     return false
 }
 

@@ -1,17 +1,16 @@
 package main
 
-import "core:os/old"
-import "core:c"
 import "core:fmt"
 TypeKind :: enum {
+    Invalid,
     UntypedInteger,
     UntypedFloat,
-    Invalid,
     Function,
     Integer,
     Float,
     Rune,
     Byte,
+    Bool,
     Pointer,
     Void,
 }
@@ -271,6 +270,13 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
     case IfElse: {
         resolve_expr(s, stmt.base_con)
         b := stmt.base_block
+        resolve_block(s, &b)
+        for a in stmt.alt {
+            resolve_expr(s, a.cond)
+            b := a.block
+            resolve_block(s, &b)
+        }
+        b = stmt.else_block
         resolve_block(s, &b)
     }
     case: panic("Impl");

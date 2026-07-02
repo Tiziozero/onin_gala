@@ -68,11 +68,13 @@ compare_and_reduce_numerics :: proc(l, r: TypeId) -> (TypeId,bool) {
         panic("type mismatch")
 }
 compare_and_reduce_types :: proc(l, r: TypeId) -> (TypeId, bool) {
+    if l == r do return l, true
     if is_numeric(l) && is_numeric(r) {
         return compare_and_reduce_numerics(l, r);
     }
     fmt.println(get(l), get(r));
     fmt.println((l), (r));
+    dump_context(get_ctx());
     panic("impl");
 }
 can_binop :: proc(ty: TypeId) -> bool {
@@ -101,13 +103,26 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
     }
     case Binop:{
         fmt.println("is a binop")
+
         tc_expr(tc, expr.left);
         tc_expr(tc, expr.right);
         ty, ok := compare_and_reduce_types(expr_ty(expr.left), expr_ty(expr.right));
+        assert(ok)
+
         propagate_type(ty, expr.left); // propagate, wtf?
         propagate_type(ty, expr.right);
-        assert(ok)
-        assert(can_binop(ty))
+
+        #partial switch expr.kind {
+        case .Addition:     fallthrough
+        case .Subtraction:  fallthrough
+        case .Multiply:     fallthrough
+        case .Divide: {
+            assert(can_binop(ty))
+        }
+        case:
+            bool_ty, ok := get_ctx().base_mod.types["bool"]; assert(ok);
+            ty = bool_ty;
+        }
         get_ctx().expr_types[e] = ty
     }
     case FnCall: {
@@ -140,8 +155,21 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
     case IfElse: {
         tc_expr(tc, stmt.base_con);
         // make it numeric
-        assert(is_numeric(expr_ty(stmt.base_con)));
+        if get_type(expr_ty(stmt.base_con)).kind != .Bool {
+            fmt.println(get_type(expr_ty(stmt.base_con)))
+            panic("not a bool?");
+        }
         tc_block(tc, stmt.base_block);
+        for a in stmt.alt {
+            tc_expr(tc, a.cond);
+            // make it numeric
+            if get_type(expr_ty(a.cond)).kind != .Bool {
+                fmt.println(get_type(expr_ty(a.cond)))
+                panic("not a bool?");
+            }
+            tc_block(tc, a.block);
+        }
+        tc_block(tc, stmt.else_block);
     }
     case VarDec: {
         tc_expr(tc, stmt.value)

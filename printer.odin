@@ -18,6 +18,8 @@ dump_types :: proc(ctx: ^Context) {
         fmt.printf("[%d] %s\n", i, t.name)
 
         switch t.kind {
+        case .Bool: 
+            fmt.println("    kind: Bool")
         case .Void: 
             fmt.println("    kind: Void")
         case .Invalid:
@@ -44,6 +46,7 @@ dump_types :: proc(ctx: ^Context) {
             }
 
             fmt.printf("    ret: %s\n", type_name(ctx, t.fn.ret_ty))
+        case: panic("impl")
         }
     }
 }
@@ -67,13 +70,14 @@ dump_exprs :: proc(ctx: ^Context) {
     fmt.println("\n-- EXPRS --")
 
     for id, ty in ctx.expr_types {
-        fmt.printf("Expr %d -> type %s\n",
+        fmt.printf("Expr %d -> type %s (",
             id,
             type_name(ctx, ty),
         )
+            fmt.println(get(ty).kind, get_expr(id), ")");
 
         if obj, ok := ctx.expr_objects[id]; ok {
-            fmt.printf("    obj: %s (%d)\n",
+            fmt.printf("    obj: %s (%d)",
                 obj_name(ctx, obj),
                 obj,
             )
