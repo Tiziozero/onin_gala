@@ -112,6 +112,12 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
 }
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
+    case Cast: {
+        ty := resolve_type_specifier(s, e.to);
+        resolve_expr(s, e.target);
+        // store in context. why not atp
+        get_ctx().expr_cast_types[id] = ty;
+    }
     case Binop: {
         resolve_expr(s, e.left);
         resolve_expr(s, e.right);
@@ -231,15 +237,20 @@ get_untyped_default :: proc(t: TypeId) -> TypeId {
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
     fmt.println("propagating:", get_type(ty), "to", get_expr(expr));
     switch e in get_expr(expr) {
+    case Cast: { // should have a fixed type
+        return
+    }
     case Binop: {
         propagate_type(ty, e.left)
         propagate_type(ty, e.right)
     }
     case Number: {
     }
-    case Symbol: {
+    case Symbol: { // should have a fixed type
+        return
     }
-    case FnCall: {
+    case FnCall: { // should have a fixed type
+        return
     }
     case: panic("impl");
     }

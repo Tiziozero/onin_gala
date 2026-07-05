@@ -101,7 +101,11 @@ cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
     panic("no");
 }
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
-    #partial switch e in get_expr(id) {
+    switch e in get_expr(id) {
+    case Cast: {
+        panic("impl");
+    }
+
     case Number: {
         return {kind=.Number, v=e.text};
     }
@@ -115,7 +119,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
 
         op := ""
         if get_type(operand_ty).kind == .Integer {
-            #partial switch e.kind {
+            switch e.kind {
             case .Addition:     op = "add"
             case .Subtraction:  op = "sub"
             case .Multiply:     op = "mul"
@@ -127,7 +131,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
             case: panic("impl")
             }
         } else if get_type(operand_ty).kind == .Float {
-            #partial switch e.kind {
+            switch e.kind {
             case .Addition:     op = "fadd"
             case .Subtraction:  op = "fsub"
             case .Multiply:     op = "fmul"
@@ -153,7 +157,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
     case Symbol: {
         // v := cgscope_get(&c.scope, e.name);
         v := cgscope_get(&c.scope, e.name);
-        #partial switch v.kind {
+        switch v.kind {
         case .Variable: fallthrough
         case .Symbol: {
             t := new_tmp(c)
@@ -295,7 +299,8 @@ expr_result :: struct {
     v: string,
 }
 stmt_ends_block :: proc(stmt: StmtId) -> bool {
-    #partial switch s in get(stmt) {
+    switch s in get(stmt) {
+    case ExprId: panic("impl");
     case IfElse: {
         has_all_returns := s.has_else_block
         if !check_rets(s.base_block) do has_all_returns = false;
@@ -315,7 +320,8 @@ stmt_ends_block :: proc(stmt: StmtId) -> bool {
     panic("impl");
 }
 cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
-    #partial switch s in get_stmt(id) {
+    switch s in get_stmt(id) {
+    case ExprId: panic("impl");
     case IfElse: {
         c.tmp_id += 1;
         id_suffix := c.tmp_id

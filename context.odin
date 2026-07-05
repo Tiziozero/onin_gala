@@ -11,6 +11,10 @@ Context :: struct {
     expr_objects:       map[ExprId]ObjId,
     item_objects:       map[ItemId]ObjId,
     stmt_objects:       map[StmtId]ObjId,
+
+    // for casts
+    expr_cast_types:    map[ExprId]TypeId,
+
     base_mod:           ModuleScope,
 }
 new_stmt :: proc(stmt:=Stmt{}) -> StmtId {

@@ -55,13 +55,13 @@ compare_and_reduce_numerics :: proc(l, r: TypeId) -> (TypeId,bool) {
         // One untyped — typed wins only if compatible
         if l_untyped {
             if lk == .UntypedFloat && rk == .Integer do panic("type mismatch: float into integer")
-                if lk == .UntypedInteger && rk == .Float  do panic("type mismatch: integer into float") // or allow? up to you
-                    return r, true
+            if lk == .UntypedInteger && rk == .Float  do panic("type mismatch: integer into float") // or allow? up to you
+            return r, true
         }
         if r_untyped {
             if rk == .UntypedFloat && lk == .Integer do panic("type mismatch: float into integer")
-                if rk == .UntypedInteger && lk == .Float  do panic("type mismatch: integer into float")
-                    return l, true
+            if rk == .UntypedInteger && lk == .Float  do panic("type mismatch: integer into float")
+            return l, true
         }
 
         // Both typed, different IDs — mismatch
@@ -81,10 +81,41 @@ can_binop :: proc(ty: TypeId) -> bool {
     if is_numeric(ty) do return true
         return false
 }
+can_cast_to :: proc(target_id, to_id: TypeId) -> bool {
+    target := get_type(target_id);
+    to := get_type(to_id);
+    #partial switch target.kind {
+    case .Integer: {
+        #partial switch to.kind {
+        case .Integer, .Float, .Byte, .Bool: return true;
+        }
+        return false
+    }
+    case .Float: {
+        #partial switch to.kind {
+        case .Integer, .Float: return true;
+        }
+        return false
+    }
+    case .Bool: {
+    }
+    }
+    panic("impl")
+}
 tc_expr :: proc(tc: ^TcContext, e: ExprId) {
     fmt.println("tc expr:", e)
 
     switch expr in get(e) {
+    case Cast: {
+        tc_expr(tc, expr.target)
+        to := get_ctx().expr_cast_types[e]
+        if is_untyped(expr_ty(expr.target)) {
+            t := get_untyped_default(expr_ty(expr.target));
+            propagate_type(t, expr.target);
+        }
+        assert(can_cast_to(expr_ty(expr.target), to));
+        get_ctx().expr_types[e] = to
+    }
     case Symbol: {
         fmt.println("is a symbol")
         obj := get_ctx().expr_objects[e];

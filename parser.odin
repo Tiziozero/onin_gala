@@ -22,11 +22,16 @@ Number :: struct {
 Symbol :: struct {
     name: string,
 }
+Cast :: struct {
+    to: TypeSpecifier,
+    target: ExprId,
+}
 Expr :: union {
     Binop,
     Number,
     Symbol,
     FnCall,
+    Cast,
 }
 FnCall :: struct {
     target: ExprId,
@@ -68,8 +73,19 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
     return parse_binop(p, 0)
 }
 
+parse_potential_cast :: proc(p: ^Parser) -> ExprId {
+    if current_token(p).kind == .Cast {
+        consume_token(p); // "cast"
+        expect_symbol(p, "(");
+        ty := parse_type(p);
+        expect_symbol(p, ")");
+        expr := parse_expr(p);
+        return new_expr(Expr(Cast{ty, expr}));
+    }
+    return parse_postfix(p);
+}
 parse_binop :: proc(p: ^Parser, min_prec: int) -> ExprId {
-    lhs := parse_postfix(p)
+    lhs := parse_potential_cast(p)
 
     for {
         op := current_token(p)

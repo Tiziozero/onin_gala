@@ -8,6 +8,7 @@ TokenKind :: enum {
     Ident,
     Symbol,
     Keyword,
+    Cast,
     Number,
     EOF,
 }
@@ -90,6 +91,12 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                     span = Span{start, i},
                     kind = .Keyword,
                     kw   = .Else,
+                })
+            }else if ident == "cast" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .Cast,
+                    kw   = .Invalid,
                 })
             } else {
                 append(&tokens, Token{

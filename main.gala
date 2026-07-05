@@ -1,11 +1,9 @@
 fn main(): int {
-    a := 0;
-    if a == 0 {
+    a := cast(flt)0;
+    if a == 0.0 {
         return 1;
-    } else if a == 1 {
+    } else if a == 1.0 {
         return 2;
     }
-    v := 67;
-    return v;
-
+    return 0;
 }

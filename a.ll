@@ -21,8 +21,5 @@ alt_cond_label1_0:
 alt_block_label1_0:
 	ret i64 2
 end_label1:
-	%v = alloca i64
-	store i64 67, ptr %v
-	%t6 = load i64, ptr %v
-	ret i64 %t6
+	ret i64 0
 }
