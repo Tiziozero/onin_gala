@@ -1,5 +1,5 @@
 package main
-import "core:fmt";
+
 TcContext :: struct {
     in_function: bool,
     fn_ret_ty: Maybe(TypeId),
@@ -7,7 +7,7 @@ TcContext :: struct {
 expr_ty :: proc(id: ExprId) -> TypeId {
     t, ok  := get_ctx().expr_types[id];
     if !ok {
-        fmt.println(id, "has no type")
+        debugln(id, "has no type")
     }
     assert(ok);
     return t
@@ -35,46 +35,52 @@ is_untyped :: proc(t: TypeId) -> bool {
     case: return false
     }
 }
-compare_and_reduce_numerics :: proc(l, r: TypeId) -> (TypeId,bool) {
-    if l == r do return l, true
+compare_and_reduce_numerics :: proc(l, r: TypeId) -> (TypeId, bool, string) {
+    if l == r do return l, true, ""
+    lk := get_type(l).kind
+    rk := get_type(r).kind
+    l_untyped := lk == .UntypedInteger || lk == .UntypedFloat
+    r_untyped := rk == .UntypedInteger || rk == .UntypedFloat
 
-        lk := get_type(l).kind
-        rk := get_type(r).kind
-
-        l_untyped := lk == .UntypedInteger || lk == .UntypedFloat
-        r_untyped := rk == .UntypedInteger || rk == .UntypedFloat
-
-        // Both untyped — UntypedFloat dominates
-        if l_untyped && r_untyped {
-            if lk == .UntypedFloat || rk == .UntypedFloat {
-                return intern_type(Type{kind = .UntypedFloat}), true
-            }
-            return l, true // both UntypedInteger, intern guarantees same ID, already caught above
+    // Both untyped — UntypedFloat dominates
+    if l_untyped && r_untyped {
+        if lk == .UntypedFloat || rk == .UntypedFloat {
+            return intern_type(Type{kind = .UntypedFloat}), true, ""
         }
+        return l, true, "" // both UntypedInteger, intern guarantees same ID, already caught above
+    }
 
-        // One untyped — typed wins only if compatible
-        if l_untyped {
-            if lk == .UntypedFloat && rk == .Integer do panic("type mismatch: float into integer")
-            if lk == .UntypedInteger && rk == .Float  do panic("type mismatch: integer into float") // or allow? up to you
-            return r, true
+    // One untyped — typed wins only if compatible
+    if l_untyped {
+        if lk == .UntypedFloat && rk == .Integer {
+            return TypeId(0), false, "type mismatch: float into integer"
         }
-        if r_untyped {
-            if rk == .UntypedFloat && lk == .Integer do panic("type mismatch: float into integer")
-            if rk == .UntypedInteger && lk == .Float  do panic("type mismatch: integer into float")
-            return l, true
+        if lk == .UntypedInteger && rk == .Float {
+            return TypeId(0), false, "type mismatch: integer into float" // or allow? up to you
         }
+        return r, true, ""
+    }
+    if r_untyped {
+        if rk == .UntypedFloat && lk == .Integer {
+            return TypeId(0), false, "type mismatch: float into integer"
+        }
+        if rk == .UntypedInteger && lk == .Float {
+            return TypeId(0), false, "type mismatch: integer into float"
+        }
+        return l, true, ""
+    }
 
-        // Both typed, different IDs — mismatch
-        panic("type mismatch")
+    // Both typed, different IDs — mismatch
+    return TypeId(0), false, "type mismatch"
 }
-compare_and_reduce_types :: proc(l, r: TypeId) -> (TypeId, bool) {
-    if l == r do return l, true
+compare_and_reduce_types :: proc(l, r: TypeId) -> (TypeId, bool, string) {
+    if l == r do return l, true, ""
     if is_numeric(l) && is_numeric(r) {
         return compare_and_reduce_numerics(l, r);
     }
-    fmt.println(get(l), get(r));
-    fmt.println((l), (r));
-    dump_context(get_ctx());
+    debugln(get(l), get(r));
+    debugln((l), (r));
+    //dump_context(get_ctx());
     panic("impl");
 }
 can_binop :: proc(ty: TypeId) -> bool {
@@ -103,7 +109,7 @@ can_cast_to :: proc(target_id, to_id: TypeId) -> bool {
     panic("impl")
 }
 tc_expr :: proc(tc: ^TcContext, e: ExprId) {
-    fmt.println("tc expr:", e)
+    debugln("tc expr:", e)
 
     switch expr in get(e) {
     case Cast: {
@@ -113,16 +119,19 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
             t := get_untyped_default(expr_ty(expr.target));
             propagate_type(t, expr.target);
         }
-        assert(can_cast_to(expr_ty(expr.target), to));
+        if !can_cast_to(expr_ty(expr.target), to) {
+            highlight_lines(get_span(e).span);
+            panic("can't cast expression to desired type")
+        }
         get_ctx().expr_types[e] = to
     }
     case Symbol: {
-        fmt.println("is a symbol")
+        debugln(e, "is a symbol", get(e))
         obj := get_ctx().expr_objects[e];
         get_ctx().expr_types[e] = get_obj(obj).type.(TypeId)
     }
     case Number: {
-        fmt.println("is a number")
+        debugln("is a number")
         // check if it's an untyped float or int
         for c in expr.text {
             if c == '.' {
@@ -133,12 +142,15 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
         get_ctx().expr_types[e] = intern_type(Type{kind=.UntypedInteger})
     }
     case Binop:{
-        fmt.println("is a binop")
+        debugln("is a binop")
 
         tc_expr(tc, expr.left);
         tc_expr(tc, expr.right);
-        ty, ok := compare_and_reduce_types(expr_ty(expr.left), expr_ty(expr.right));
-        assert(ok)
+        ty, ok, s := compare_and_reduce_types(expr_ty(expr.left), expr_ty(expr.right));
+        if !ok {
+            highlight_lines(get_span(e).span)
+            panic(s)
+        }
 
         propagate_type(ty, expr.left); // propagate, wtf?
         propagate_type(ty, expr.right);
@@ -148,7 +160,10 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
         case .Subtraction:  fallthrough
         case .Multiply:     fallthrough
         case .Divide: {
-            assert(can_binop(ty))
+            if !can_binop(ty) {
+                highlight_lines(get_span(e).span);
+                panic("can't perform a binop on these two expressions");
+            }
         }
         case:
             bool_ty, ok := get_ctx().base_mod.types["bool"]; assert(ok);
@@ -162,15 +177,18 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
         assert(ty.kind == .Function)
         fargs := ty.fn.args;
         if len(fargs) != len(expr.args) {
-            fmt.println(len(fargs), len(expr.args))
+            debugln(len(fargs), len(expr.args))
             panic("args count for function don't match");
         }
         for i in 0..<len(fargs) {
             earg := expr.args[i];
             farg := fargs[i];
             tc_expr(tc, earg);
-            r, ok := compare_and_reduce_types(farg.type, expr_ty(earg));
-            assert(ok);
+            r, ok, s := compare_and_reduce_types(farg.type, expr_ty(earg));
+            if !ok {
+                highlight_lines(get_span(e).span);
+                panic(s);
+            }
             assert(r == farg.type); // should always match
             propagate_type(r, earg);
         }
@@ -182,12 +200,12 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
 
 tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
     switch stmt in get_stmt(s) {
-    case ExprId: panic("impl");
+    case ExprId: tc_expr(tc, stmt);
     case IfElse: {
         tc_expr(tc, stmt.base_con);
         // make it numeric
         if get_type(expr_ty(stmt.base_con)).kind != .Bool {
-            fmt.println(get_type(expr_ty(stmt.base_con)))
+            debugln(get_type(expr_ty(stmt.base_con)))
             panic("not a bool?");
         }
         tc_block(tc, stmt.base_block);
@@ -195,7 +213,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             tc_expr(tc, a.cond);
             // make it numeric
             if get_type(expr_ty(a.cond)).kind != .Bool {
-                fmt.println(get_type(expr_ty(a.cond)))
+                debugln(get_type(expr_ty(a.cond)))
                 panic("not a bool?");
             }
             tc_block(tc, a.block);
@@ -213,17 +231,17 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             resolved_ty = expr_ty(stmt.value);
             // if it's untyped then get default type
             if is_untyped(resolved_ty.(TypeId)) {
-                fmt.println("it's untyped")
+                debugln("it's untyped")
                 t := get_untyped_default(resolved_ty.(TypeId))
-                fmt.println("got:", t, get(t));
+                debugln("got:", t, get(t));
                 propagate_type(t, stmt.value)
             }
             // set obj type to expr type
             resolved_ty = expr_ty(stmt.value);
-            fmt.println("setting vardec type to:", get_type(resolved_ty.(TypeId)))
+            debugln("setting vardec type to:", get_type(resolved_ty.(TypeId)))
             get_obj(get_ctx().stmt_objects[s]).type = resolved_ty;
         } else { // otherwise if the vardec has a specified type compare
-            if t, ok := compare_and_reduce_types(resolved_ty.(TypeId), expr_ty(stmt.value)); ok {
+            if t, ok, s := compare_and_reduce_types(resolved_ty.(TypeId), expr_ty(stmt.value)); ok {
                 propagate_type(t, stmt.value)
             } else {
                 panic("types don't match");
@@ -241,8 +259,11 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
                 panic("no return value expected");
             }
             // compare return expr type with fn return type
-            ty, ok := compare_and_reduce_types(expr_ty(e), tc.fn_ret_ty.(TypeId));
-            assert(ok);
+            ty, ok, s := compare_and_reduce_types(expr_ty(e), tc.fn_ret_ty.(TypeId));
+            if !ok {
+                highlight_lines(get_span(e).span);
+                panic(s);
+            }
             propagate_type(ty, e);
         // otherwise make sure function doesn't expect a value
         } else  {
@@ -260,8 +281,11 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
         tc_expr(tc, stmt.value);
         // target must have a type
         _, tyok := get_ctx().expr_types[stmt.target]; assert(tyok);
-        t, ok := compare_and_reduce_types(expr_ty(stmt.target), expr_ty(stmt.value))
-        assert(ok);
+        t, ok, err := compare_and_reduce_types(expr_ty(stmt.target), expr_ty(stmt.value))
+        if !ok {
+            highlight_lines(get_span(s).span);
+            panic(err);
+        }
         propagate_type(t, stmt.value);
 
     }
@@ -276,6 +300,9 @@ tc_block :: proc(tc: ^TcContext, b: Block) {
 tc_item :: proc(tc: ^TcContext, id: ItemId) {
     item := get_item(id)
     switch i in item {
+    case ExternFnDec: {
+        // ok ig?
+    }
     case FnDec: {
         fn, ok := get_ctx().item_objects[id]; assert(ok);
         type := get_type(get_obj(fn).type.(TypeId));

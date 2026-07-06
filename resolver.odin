@@ -1,6 +1,5 @@
 package main
 
-import "core:fmt"
 TypeKind :: enum {
     Invalid,
     UntypedInteger,
@@ -14,15 +13,16 @@ TypeKind :: enum {
     Pointer,
     Void,
 }
-Arg :: struct {
-    name: string,
-    type: TypeId
-}
 Type :: struct {
     name: string,
     kind: TypeKind,
     ptr: TypeId,
     fn: struct { args: []Arg, ret_ty: TypeId},
+}
+Arg :: struct {
+    name: string,
+    type: TypeId,
+    span: Span,
 }
 ObjectKind :: enum {
     Invalid,
@@ -68,7 +68,7 @@ new_object :: proc(s: ^Scope, o: Object) -> ObjId {
     append(&ctx.objs, o);
     id := ObjId(len(ctx.objs)-1);
     s.objects[o.name] = id
-    fmt.println("new object:", o.name, o.kind);
+    debugln("new object:", o.name, o.kind);
     return id
 }
 new_type :: proc(s: ^Scope, t: Type) -> TypeId {
@@ -127,7 +127,7 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     case Symbol: {
         obj, ok := scope_get_object(s, e.name);
         if !ok {
-            fmt.println("Couldn't find", e.name, "in scope.");
+            debugln("Couldn't find", e.name, "in scope.");
             assert(ok)
         }
         get_ctx().expr_objects[id] = obj
@@ -191,15 +191,15 @@ scope_get_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
         if ok { return id, true }
         scope = scope.parent
     }
-    fmt.println(n)
+    debugln(n)
 
-    fmt.println("existing:")
+    debugln("existing:")
     t := s;
     for t != nil {
         for ty in s.types {
-            fmt.println(ty)
+            debugln(ty)
         }
-        fmt.println("scope:", t.parent)
+        debugln("scope:", t.parent)
         t = t.parent
     }
     return 0, false
@@ -207,12 +207,17 @@ scope_get_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
 resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
     switch k in t {
     case BaseType: { // will get declared type id
-        ty, ok := scope_get_type(s, string(k));
+        ty, ok := scope_get_type(s, string(k.ident));
+        if !ok {
+            lines := get_file_lines(get_ctx().current_file, k.span);
+            print_lines(lines, k.span)
+            panic("type doesn't exist");
+        }
         assert(ok)
         return ty
     }
     case PointerType: { // creates a pointer and will ge that one
-        id := resolve_type_specifier(s, k^)
+        id := resolve_type_specifier(s, k.ptr^)
         return intern_type({kind=.Pointer, ptr=id})
     }
     case: panic("impl");
@@ -221,12 +226,12 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
 get_untyped_default :: proc(t: TypeId) -> TypeId {
     #partial switch get_type(t).kind {
     case .UntypedInteger: {
-        fmt.println("returning int for untyped int");
+        debugln("returning int for untyped int");
         v, ok := get_ctx().base_mod.types["int"]; assert(ok);
         return v
     }
     case .UntypedFloat: {
-        fmt.println("returning float for untyped float");
+        debugln("returning float for untyped float");
         v, ok := get_ctx().base_mod.types["flt"]; assert(ok);
         return v
     }
@@ -235,7 +240,7 @@ get_untyped_default :: proc(t: TypeId) -> TypeId {
     }
 }
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
-    fmt.println("propagating:", get_type(ty), "to", get_expr(expr));
+    debugln("propagating:", get_type(ty), "to", get_expr(expr));
     switch e in get_expr(expr) {
     case Cast: { // should have a fixed type
         return
@@ -292,6 +297,9 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
             resolve_block(s, &b)
         }
     }
+    case ExprId: {
+        resolve_expr(s, stmt);
+    }
     case: panic("Impl");
     }
 }
@@ -306,6 +314,51 @@ void_type :: proc() -> TypeId {
     v, ok := get_ctx().base_mod.types["void"];
     assert(ok);
     return v;
+}
+resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
+    fndec, ok := get(id).(ExternFnDec); assert(ok); // assert it's a fn dec
+    oid, ook := s.obj_foreward[fndec.name]; assert(ook); // make sure fd exists
+    obj := get(oid); // gets pointer, so modify that
+
+    // create fn type
+    fnty := Type{}
+    fnty.kind = .Function;
+    // return type
+    if fndec.ret_ty != nil {
+        fnty.fn.ret_ty = resolve_type_specifier(s, fndec.ret_ty.(TypeSpecifier))
+    } else {
+        fnty.fn.ret_ty = void_type();
+    }
+    // new scope for args
+    // args
+    new_scope := new_scope(s);
+    args := make([]Arg, len(fndec.args), allocator=context.temp_allocator)
+    declared := make(map[string]Arg)
+    for a, i in fndec.args {
+        t := resolve_type_specifier(&new_scope, a.t)
+        if da, ok := declared[a.name]; ok {
+            debugln(a, da);
+            // print declared arf
+            print_lines(get_file_lines(get_ctx().current_file, da.span), da.span)
+            panic("Duplicate argument. Arg already declared here.")
+        }
+        args[i] = Arg{a.name, t, a.span}
+        declared[a.name] = Arg{a.name, t, a.span}
+        new_object(&new_scope, Object{.Argument, a.name, t});
+    }
+    fnty.fn.args = args
+    // free args scope
+    free_scope(&new_scope);
+
+    // intern type
+    tyid := intern_type(fnty);
+
+    obj.type = tyid
+    obj.name = fndec.name;
+
+    delete_key(&s.obj_foreward, fndec.name); // delete fd and create object
+    s.objects[fndec.name] = oid; // recreate link
+    get_ctx().item_objects[id] = oid;
 }
 resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     fndec, ok := get(id).(FnDec); assert(ok); // assert it's a fn dec
@@ -329,11 +382,13 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     for a, i in fndec.args {
         t := resolve_type_specifier(&new_scope, a.t)
         if da, ok := declared[a.name]; ok {
-            fmt.println(a, da);
-            panic("arg already exists")
+            debugln(a, da);
+            // print declared arf
+            print_lines(get_file_lines(get_ctx().current_file, da.span), da.span)
+            panic("Duplicate argument. Arg already declared here.")
         }
-        args[i] = Arg{a.name, t}
-        declared[a.name] = Arg{a.name, t}
+        args[i] = Arg{a.name, t, a.span}
+        declared[a.name] = Arg{a.name, t, a.span}
         new_object(&new_scope, Object{.Argument, a.name, t});
     }
     fnty.fn.args = args
@@ -358,6 +413,7 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     // foreward
     switch i in item {
     case FnDec:         new_object_fd(s, Object{kind=.Variable, name=i.name});
+    case ExternFnDec:   new_object_fd(s, Object{kind=.Variable, name=i.name});
     case:               panic("impl")
     }
 }
@@ -366,6 +422,7 @@ resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
 
     switch _ in item {
     case FnDec:         resolve_fn_dec_item(s, id);
+    case ExternFnDec:   resolve_extern_fn_dec_item(s, id);
     case:               panic("impl")
     }
 }

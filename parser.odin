@@ -75,12 +75,17 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
 
 parse_potential_cast :: proc(p: ^Parser) -> ExprId {
     if current_token(p).kind == .Cast {
-        consume_token(p); // "cast"
+        token := consume_token(p); // "cast"
         expect_symbol(p, "(");
         ty := parse_type(p);
         expect_symbol(p, ")");
-        expr := parse_expr(p);
-        return new_expr(Expr(Cast{ty, expr}));
+        expr := parse_postfix(p);
+        id := new_expr(Expr(Cast{ty, expr}));
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span=token.span,
+        }
+        return id
     }
     return parse_postfix(p);
 }
@@ -98,18 +103,27 @@ parse_binop :: proc(p: ^Parser, min_prec: int) -> ExprId {
         rhs := parse_binop(p, next_min)
 
         kind, _ := op_kind(op)
+        prev := lhs
         lhs = new_expr(Expr(Binop{
             kind  = kind,
             left  = lhs,
             right = rhs,
         }))
+        // start at lhs start and end at rhs end
+        get_ctx().spans.exprs[lhs] = {
+            file_name=get_ctx().current_file,
+            span={
+                start=get_ctx().spans.exprs[prev].span.start,
+                end=get_ctx().spans.exprs[rhs].span.end,
+            }
+        }
     }
 
     return lhs
 }
-BaseType :: distinct string;
+BaseType :: struct { ident: string, span: Span};
 // can't have ptr to itself
-PointerType :: distinct ^TypeSpecifier;
+PointerType :: struct {ptr:^TypeSpecifier, span: Span};;
 TypeSpecifier :: union {
     BaseType,
     PointerType,
@@ -141,6 +155,7 @@ IfElse :: struct {
     else_block: Block,
 }
 Parser::struct{
+    file: string,
     tokens: []Token,
     i: int,
 }
@@ -184,18 +199,40 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         consume_token(p);
         expr := parse_expr(p);
         expect_symbol(p, ";");
-        return new_stmt(Stmt(VarDec{name=name.text, type=nil, value=expr}));
+        id := new_stmt(Stmt(VarDec{name=name.text, type=nil, value=expr}));
+        get_ctx().spans.stmts[id] = {
+            file_name=get_ctx().current_file,
+            span=name.span,
+        }
+        return id
     } else if is_kw(current_token(p), .Return) {
-        consume_token(p); // "return";
+        token := consume_token(p); // "return";
+        
         if is_symbol(current_token(p), ";") {
-            consume_token(p); // ";"
-            return new_stmt(Stmt(Return{expr=nil}));
+            end_semi := consume_token(p); // ";"
+            id := new_stmt(Stmt(Return{expr=nil}));
+            get_ctx().spans.stmts[id] = {
+                file_name=get_ctx().current_file,
+                span={
+                    start=token.span.start,
+                    end=end_semi.span.end
+                }
+            }
+            return id
         }
         e := parse_expr(p);
-        expect_symbol(p, ";");
-        return new_stmt(Stmt(Return{expr=e}));
+        end_semi := expect_symbol(p, ";");
+        id := new_stmt(Stmt(Return{expr=e}));
+        get_ctx().spans.stmts[id] = {
+            file_name=get_ctx().current_file,
+            span={
+                start=token.span.start,
+                end=end_semi.span.end
+            }
+        }
+        return id
     } else if is_kw(current_token(p), .If) {
-        consume_token(p); // "if"
+        token := consume_token(p); // "if"
         s := IfElse{}
         s.base_con = parse_expr(p);
         s.base_block = parse_block(p);
@@ -214,17 +251,36 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
             s.else_block = block
             s.has_else_block = true
         }
-        return new_stmt(s);
+        id := new_stmt(s);
+        get_ctx().spans.stmts[id] = {
+            file_name=get_ctx().current_file,
+            span=token.span
+        }
+        return id;
     } else { // otherwise try stmt
         expr := parse_expr(p);
         if is_symbol(current_token(p), "=") {
-            consume_token(p); // "="
+            token := consume_token(p); // "="
             v := parse_expr(p);
             expect_symbol(p, ";");
-            return new_stmt(Stmt(Assignment{target=expr, value=v}));
+            id := new_stmt(Stmt(Assignment{target=expr, value=v}));
+            get_ctx().spans.stmts[id] = {
+                file_name=get_ctx().current_file,
+                span={
+                    start=get_ctx().spans.exprs[expr].span.start,
+                    end=token.span.end
+                }
+            }
+
+            return id;
         }
         expect_symbol(p, ";");
-        return new_stmt(Stmt(ExprId(expr)));
+        id := new_stmt(Stmt(ExprId(expr)));
+        get_ctx().spans.stmts[id] = {
+            file_name=get_ctx().current_file,
+            span=get_ctx().spans.exprs[expr].span
+        }
+        return id;
     }
 }
 is_current_kw :: proc(p: ^Parser, k: Keyword) -> bool {
@@ -240,9 +296,9 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
     t := parse_primary(p);
     for {
         if is_symbol(current_token(p), "(") {
-            consume_token(p); // "("
-                              // "until it meets a ")"
+            start := consume_token(p); // "("
             args := make([dynamic]ExprId, allocator=context.temp_allocator);
+            // "until it meets a ")"
             for !is_symbol(current_token(p), ")") {
                 e := parse_expr(p);
                 append(&args, e)
@@ -250,20 +306,38 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
                     consume_token(p); // ","
                 } else do break
             }
-            expect_symbol(p, ")"); // expect ")"
-            t = new_expr(FnCall{target=t, args=args});
+            end := expect_symbol(p, ")"); // expect ")"
+
+            id := new_expr(FnCall{target=t, args=args});
+            get_ctx().spans.exprs[id] = {
+                file_name=get_ctx().current_file,
+                span={start=start.span.start,end=end.span.end}
+            }
+            t = id
         } else do break
     }
     return t;
 }
 parse_primary :: proc(p: ^Parser) -> ExprId {
     if current_token(p).kind == .Ident {
-        e :=  Expr(Symbol{consume_token(p).text});
-        return new_expr(e)
+        token := consume_token(p)
+        e :=  Expr(Symbol{token.text});
+        id := new_expr(e)
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span=token.span
+        }
+        return id
     } else if current_token(p).kind == .Number {
-        return new_expr(Expr(Number{consume_token(p).text}));
+        token := consume_token(p)
+        id := new_expr(Expr(Number{token.text}));
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span=token.span
+        }
+        return id
     }
-    fmt.println(current_token(p));
+    debugln(current_token(p));
     panic("invalid primary token")
 }
 parse_block :: proc(p: ^Parser) -> Block{
@@ -278,21 +352,28 @@ parse_block :: proc(p: ^Parser) -> Block{
     return Block{stmts=stmts[:]}
 }
 
-FnDecArg :: struct{name: string, t: TypeSpecifier}
+FnDecArg :: struct{name: string, t: TypeSpecifier, span: Span}
 FnDec :: struct {
     name: string,
     args: [dynamic]FnDecArg, 
     ret_ty: Maybe(TypeSpecifier),
     block: Block,
 }
+ExternFnDec :: struct {
+    name: string,
+    args: [dynamic]FnDecArg, 
+    ret_ty: Maybe(TypeSpecifier),
+}
 
 Item :: union {
     FnDec,
+    ExternFnDec,
 }
 
 parse_type :: proc(p: ^Parser) -> TypeSpecifier {
     if current_token(p).kind == .Ident {
-        return TypeSpecifier(BaseType(consume_token(p).text));
+        token := consume_token(p)
+        return TypeSpecifier(BaseType({token.text, token.span}));
     }
     panic("impl");
 }
@@ -301,8 +382,8 @@ parse_kw :: proc(p: ^Parser) -> ItemId {
     case .Fn: {
         f := FnDec{}
         kw := consume_token(p);
-        name := expect_ident(p).text;
-        f.name = name;
+        name := expect_ident(p);
+        f.name = name.text;
         // args
         args := make([dynamic]FnDecArg)
         expect_symbol(p, "(");
@@ -310,7 +391,7 @@ parse_kw :: proc(p: ^Parser) -> ItemId {
             name := expect_ident(p);
             expect_symbol(p, ":")
             ty := parse_type(p);
-            append(&args, FnDecArg{name=name.text, t=ty})
+            append(&args, FnDecArg{name=name.text, t=ty, span=name.span})
             if is_symbol(current_token(p), ",") {
                 consume_token(p);
             } else {
@@ -327,7 +408,50 @@ parse_kw :: proc(p: ^Parser) -> ItemId {
         b := parse_block(p);
         f.block = b;
 
-        return new_item(Item(f))
+        id := new_item(Item(f))
+        get_ctx().spans.items[id] = {
+            file_name=get_ctx().current_file,
+            span=name.span
+        }
+
+        return id
+    }
+    case .Extern: {
+        token := consume_token(p); // "extern"
+        kw := consume_token(p); // "extern"
+        assert(kw.kind == .Keyword && kw.kw == .Fn);
+        f := ExternFnDec{};
+        name := expect_ident(p);
+        f.name = name.text;
+        // args
+        args := make([dynamic]FnDecArg)
+        expect_symbol(p, "(");
+        for !is_symbol(current_token(p), ")") {
+            name := expect_ident(p);
+            expect_symbol(p, ":")
+            ty := parse_type(p);
+            append(&args, FnDecArg{name=name.text, t=ty, span=name.span})
+            if is_symbol(current_token(p), ",") {
+                consume_token(p);
+            } else {
+                break;
+            }
+        }
+        expect_symbol(p, ")");
+        f.args = args
+
+        if is_symbol(current_token(p), ":") {
+            consume_token(p); // ":"
+            f.ret_ty = parse_type(p);
+        }
+        expect_symbol(p, ";");
+
+        id := new_item(Item(f))
+        get_ctx().spans.items[id] = {
+            file_name=get_ctx().current_file,
+            span=name.span
+        }
+        return id;
     }
     case: panic("impl");
     }
@@ -335,11 +459,11 @@ parse_kw :: proc(p: ^Parser) -> ItemId {
 expect_symbol :: proc(p: ^Parser, str: string) -> Token {
     c := current_token(p);
     if c.kind != .Symbol {
-        fmt.println("Expected symbol, got:", c);
+        debugln("Expected symbol, got:", c);
         panic("");
     }
     if c.text != str {
-        fmt.println("Expected", str, "got:", c.text);
+        debugln("Expected", str, "got:", c.text);
         panic("");
     }
     return consume_token(p)
@@ -347,7 +471,7 @@ expect_symbol :: proc(p: ^Parser, str: string) -> Token {
 expect_ident :: proc(p: ^Parser) -> Token {
     c := current_token(p);
     if c.kind != .Ident {
-        fmt.println("Expected ident got:", c);
+        debugln("Expected ident got:", c);
         panic("");
     }
     return consume_token(p)
@@ -355,8 +479,8 @@ expect_ident :: proc(p: ^Parser) -> Token {
 AST :: struct {
     items: []ItemId,
 }
-parse_tokens :: proc(tokens: []Token) -> AST {
-    _p:= Parser{tokens, 0};
+parse_tokens :: proc(file_name: string, tokens: []Token) -> AST {
+    _p:= Parser{file_name, tokens, 0};
     p := &_p
     items := make([dynamic]ItemId, allocator=context.temp_allocator)
     for current_token(p).kind != .EOF {

@@ -3,23 +3,14 @@ target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:
 target triple = "x86_64-pc-linux-gnu"
 ; external functions (declare, not define)
 declare i32 @printf(ptr, ...)
-declare ptr @malloc(i64)
-declare void @free(ptr)
+declare ptr @malloc (i64 %size)
+declare void @free (ptr %size)
 define i64 @main () {
 entry:
-	%a = alloca i64
-	store i64 0, ptr %a
-	%t2 = load i64, ptr %a
-	%t3 = icmp eq i64 %t2, 0
-	br i1 %t3, label %base_block_label1, label %alt_cond_label1_0
-base_block_label1:
-	ret i64 1
-alt_cond_label1_0:
-	%t4 = load i64, ptr %a
-	%t5 = icmp eq i64 %t4, 1
-	br i1 %t5, label %alt_block_label1_0, label %end_label1
-alt_block_label1_0:
-	ret i64 2
-end_label1:
+	%t1 = call ptr @malloc(i64 8)
+	%ptr = alloca ptr
+	store ptr %t1, ptr %ptr
+	%t2 = load ptr, ptr %ptr
+	call void @free(ptr %t2)
 	ret i64 0
 }

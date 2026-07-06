@@ -17,6 +17,7 @@ Keyword :: enum {
     Fn,
     Return,
     If, Else,
+    Extern,
 }
 
 Token :: struct {
@@ -91,6 +92,12 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                     span = Span{start, i},
                     kind = .Keyword,
                     kw   = .Else,
+                })
+            }else if ident == "extern" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .Keyword,
+                    kw   = .Extern,
                 })
             }else if ident == "cast" {
                 append(&tokens, Token{

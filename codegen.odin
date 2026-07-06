@@ -103,15 +103,29 @@ cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
     switch e in get_expr(id) {
     case Cast: {
-        panic("impl");
+        target := cg_expr(c, e.target)
+        target_ty := expr_ty(e.target);
+        to_ty := expr_ty(id)
+        op, ok := ty_to_llvm_cast_op(target_ty, to_ty);
+        if !ok {
+            return target
+        }
+        reduced_target, returns := reduce_expr_to_single_value(c, target);
+        assert(returns);
+        t := new_tmp(c);
+        cwritefln(c, "\t%s = %s %s %s to %s", t, op,
+            ty_to_llvm_str(c, target_ty), reduced_target, ty_to_llvm_str(c, to_ty));
+        return {kind=.SingleRes, v=t};
     }
 
     case Number: {
         return {kind=.Number, v=e.text};
     }
     case Binop: {
-        l_v := reduce_expr_to_single_value(c, cg_expr(c, e.left))
-        r_v := reduce_expr_to_single_value(c, cg_expr(c, e.right))
+        l_v, returns_l := reduce_expr_to_single_value(c, cg_expr(c, e.left))
+        assert(returns_l);
+        r_v, returns_r := reduce_expr_to_single_value(c, cg_expr(c, e.right))
+        assert(returns_r);
 
         // Use the OPERAND type, not expr_ty(id) — comparisons return Bool
         // but the instruction needs the type of the things being compared.
@@ -177,130 +191,149 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
     case FnCall: {
         t := cg_fn_call_target(c, e.target);
         fn_ty := get_type(expr_ty(e.target));
-        new_t := new_tmp(c);
         //gen args
         args:=make([dynamic]string)
         for a, i in e.args {
-            r := reduce_expr_to_single_value(c, cg_expr(c, a));
+            r, returns := reduce_expr_to_single_value(c, cg_expr(c, a));
+            assert(returns);
             v := aprintf(c, "%s %s", ty_to_llvm_str(c, expr_ty(a)), r);
                append(&args, v);
         }
 
-        cwritef(c, "\t%s = call %s %s", new_t, ty_to_llvm_str(c, fn_ty.fn.ret_ty), t);
-        cwrite(c, "(");
-        for a, i in args {
-            cwritef(c, "%s", a);
-            if i < len(args) - 1 {
-                fmt.println(i, len(fn_ty.fn.args))
-                cwritef(c, ", ")
+        if get(fn_ty.fn.ret_ty).kind == .Void {
+            cwritef(c, "\tcall %s %s", ty_to_llvm_str(c, fn_ty.fn.ret_ty), t);
+            cwrite(c, "(");
+            for a, i in args {
+                cwritef(c, "%s", a);
+                if i < len(args) - 1 {
+                    fmt.println(i, len(fn_ty.fn.args))
+                    cwritef(c, ", ")
+                }
             }
-        }
-        cwriteln(c, ")");
-        return {kind=.SingleRes, v=new_t};
-    }
-    case: panic("impl");
-    }
-}
-cg_expr_old :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
-    #partial switch e in get_expr(id) {
-    case Number: {
-        return {kind=.Number, v=e.text};
-    }
-    case Binop: {
-        ty := expr_ty(id);
-        l_v := reduce_expr_to_single_value(c, cg_expr(c, e.left))
-        r_v := reduce_expr_to_single_value(c, cg_expr(c, e.right))
-        // get op kind
-        op := ""
-        if get_type(expr_ty(id)).kind == .Integer {
-            #partial switch e.kind {
-            case .Addition: op = "add"
-            case .Subtraction: op = "sub"
-            case: panic("impl")
-            }
-        } else if get_type(expr_ty(id)).kind == .Float {
-            #partial switch e.kind {
-            case .Addition: op = "fadd"
-            case .Subtraction: op = "fsub"
-            case: panic("impl")
-            }
-        } else if get_type(expr_ty(id)).kind == .Void {
-            dump_context(get_ctx())
-            panic("can't binop voids");
+            cwriteln(c, ")");
+            return {.None, ""}
         } else {
-            fmt.println(get_type(expr_ty(id)).kind)
-            fmt.println(get_expr(id))
-            panic("handle");
-        }
-        return {kind=.Binop,
-            v=aprintf(c, "%s %s %s, %s", op, ty_to_llvm_str(c, ty), l_v, r_v)};
-    }
-    case Symbol: {
-        // v := cgscope_get(&c.scope, e.name);
-        v := cgscope_get(&c.scope, e.name);
-        #partial switch v.kind {
-        case .Variable: fallthrough
-        case .Symbol: {
-            t := new_tmp(c)
-            cwritefln(c, "\t%s = load %s, ptr %s",
-                t, ty_to_llvm_str(c, expr_ty(id)), v.name);
-            return {kind=.SingleRes,v=t};
-        }
-        case .Argument: {
-            return {kind=.SingleRes,v=v.name};
-        }
-        case .Invalid: {
-            panic("invalid object");
-        }
-        }
-        panic("impl");
-    }
-    case FnCall: {
-        t := cg_fn_call_target(c, e.target);
-        new_t := new_tmp(c);
-
-        fn_ty := get_type(expr_ty(e.target));
-        cwritef(c, "\t%s = call %s %s", new_t, ty_to_llvm_str(c, fn_ty.fn.ret_ty), t);
-        cwrite(c, "(");
-        for a, i in e.args {
-            r := reduce_expr_to_single_value(c, cg_expr(c, a));
-            cwritef(c, "%s %s", ty_to_llvm_str(c, expr_ty(a)), r);
-            if i < len(fn_ty.fn.args) - 1 {
-                fmt.println(i, len(fn_ty.fn.args))
-                cwritef(c, ", ")
+            new_t := new_tmp(c);
+            cwritef(c, "\t%s = call %s %s", new_t, ty_to_llvm_str(c, fn_ty.fn.ret_ty), t);
+            cwrite(c, "(");
+            for a, i in args {
+                cwritef(c, "%s", a);
+                if i < len(args) - 1 {
+                    fmt.println(i, len(fn_ty.fn.args))
+                    cwritef(c, ", ")
+                }
             }
+            cwriteln(c, ")");
+            return {kind=.SingleRes, v=new_t};
         }
-        cwriteln(c, ")");
-        return {kind=.SingleRes, v=new_t};
     }
     case: panic("impl");
     }
 }
+bit_width_of :: proc(k: TypeKind) -> int {
+    #partial switch k {
+    case .Bool:   return 1
+    case .Byte:   return 8
+    case .Rune:   return 32
+    case .Integer: return 64
+    case .Float:  return 64 // double
+    case: panic("bit_width_of: not a scalar numeric kind")
+    }
+}
 
-reduce_expr_to_single_value :: proc(c: ^CGCtx, e: expr_result) -> string {
+is_signed :: proc(k: TypeKind) -> bool {
+    #partial switch k {
+    case .Integer: return true
+    case .Byte, .Rune, .Bool: return false
+    case: panic("is_signed: not an integer-ish kind")
+    }
+}
+
+is_int_kind :: proc(k: TypeKind) -> bool {
+    return k == .Integer || k == .Byte || k == .Rune || k == .Bool
+}
+
+// Returns the LLVM instruction mnemonic needed to convert `target` -> `to`.
+// Assumes can_cast_to(target_id, to_id) has already been checked and is true;
+// panics on invalid pairs so a mismatch between the two tables is caught loudly.
+ty_to_llvm_cast_op :: proc(target_id, to_id: TypeId) -> (string, bool) {
+    target := get_type(target_id)
+    to := get_type(to_id)
+
+    if target.kind == to.kind {
+        // same kind: Pointer->Pointer (bitcast, or no-op with opaque ptrs),
+        // otherwise truly identical, no instruction needed
+        #partial switch target.kind {
+        case .Pointer: return "bitcast", true // safe even if often a no-op with opaque ptrs
+        case: return "", false // identity — caller should skip emitting anything
+        }
+    }
+
+    tk, ok := target.kind, to.kind
+
+    // --- int-family -> int-family (includes Bool/Byte/Rune/Integer combos) ---
+    if is_int_kind(tk) && is_int_kind(ok) {
+        from_w := bit_width_of(tk)
+        to_w   := bit_width_of(ok)
+        if from_w < to_w {
+            return is_signed(tk) ? "sext" : "zext", true
+        } else if from_w > to_w {
+            return "trunc", true
+        }
+        return "", false // same width, different kind label (e.g. Byte <-> Bool at same width) — bitcast-free no-op
+    }
+
+    // --- int-family -> Float ---
+    if is_int_kind(tk) && ok == .Float {
+        return is_signed(tk) ? "sitofp" : "uitofp", true
+    }
+
+    // --- Float -> int-family ---
+    if tk == .Float && is_int_kind(ok) {
+        return is_signed(ok) ? "fptosi" : "fptoui", true
+    }
+
+    // --- Float -> Float (different width, if you ever add f32) ---
+    if tk == .Float && ok == .Float {
+        return "", false // no change
+    }
+
+    // --- Pointer <-> Integer ---
+    if tk == .Pointer && is_int_kind(ok) {
+        return "ptrtoint", true
+    }
+    if is_int_kind(tk) && ok == .Pointer {
+        return "inttoptr", true
+    }
+
+    panic("ty_to_llvm_cast_op: no cast op for this pair — check can_cast_to table")
+}
+
+// some expressions (fn calls with void returns) don't return so are invalid
+reduce_expr_to_single_value :: proc(c: ^CGCtx, e: expr_result) -> (string, bool) {
     switch e.kind {
     case .Invalid: panic("invalid")
+    case .None: return "", false
     case .SingleRes: {
-        return e.v
+        return e.v, true
     }
     case .Number: {
-        return e.v
+        return e.v, true
     }
     case .Binop: {
         t := new_tmp(c)
         cwritefln(c, "\t%s = %s", t, e.v);
-        return t
+        return t, true
     }
     }
     panic("impl");
 }
 expr_result :: struct {
-    kind: enum {Invalid, SingleRes,Binop,Number},
+    kind: enum {Invalid, SingleRes,Binop,Number,None},
     v: string,
 }
 stmt_ends_block :: proc(stmt: StmtId) -> bool {
     switch s in get(stmt) {
-    case ExprId: panic("impl");
     case IfElse: {
         has_all_returns := s.has_else_block
         if !check_rets(s.base_block) do has_all_returns = false;
@@ -315,13 +348,15 @@ stmt_ends_block :: proc(stmt: StmtId) -> bool {
     case Return: return true
     case VarDec: return false
     case Assignment: return false
+    case ExprId: return false;
     case: panic("impl");
     }
     panic("impl");
 }
 cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     switch s in get_stmt(id) {
-    case ExprId: panic("impl");
+    case ExprId:
+        reduce_expr_to_single_value(c, cg_expr(c, s));
     case IfElse: {
         c.tmp_id += 1;
         id_suffix := c.tmp_id
@@ -350,7 +385,8 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
 
         // --- base condition ---
         {
-            cond := reduce_expr_to_single_value(c, cg_expr(c, s.base_con));
+            cond, returns := reduce_expr_to_single_value(c, cg_expr(c, s.base_con));
+            assert(returns);
             ty := get_type(expr_ty(s.base_con));
             assert(ty.kind == .Bool);
             cwritefln(c, "\tbr i1 %s, label %%%s, label %%%s", cond, base_block, next_after_base);
@@ -381,7 +417,8 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             }
 
             cwritefln(c, "%s:", alt_cond_labels[i]);
-            cond := reduce_expr_to_single_value(c, cg_expr(c, a.cond));
+            cond, returns := reduce_expr_to_single_value(c, cg_expr(c, a.cond));
+            assert(returns);
             ty := get_type(expr_ty(a.cond));
             assert(ty.kind == .Bool);
             cwritefln(c, "\tbr i1 %s, label %%%s, label %%%s", cond, alt_body_labels[i], next);
@@ -437,7 +474,8 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         // get object
         obj := get_obj(get_ctx().stmt_objects[id]);
         // gen value
-        value :=  reduce_expr_to_single_value(c, cg_expr(c, s.value));
+        value, returns :=  reduce_expr_to_single_value(c, cg_expr(c, s.value));
+        assert(returns);
         // write name to scope
         c.scope.vars[s.name] = {.Variable, aprintf(c, "%%%s", s.name)};
         // allocate
@@ -449,7 +487,8 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     }
     case Return: {
         if e, ok := s.expr.(ExprId); ok {
-            r := reduce_expr_to_single_value(c, cg_expr(c, e));
+            r, returns := reduce_expr_to_single_value(c, cg_expr(c, e));
+            assert(returns);
             cwritefln(c, "\tret %s %s", ty_to_llvm_str(c, expr_ty(e)), r)
         } else {
             cwriteln(c, "\tret void")
@@ -458,7 +497,8 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     case Assignment: {
         #partial switch e in get_expr(s.target) {
         case Symbol: {
-            value :=  reduce_expr_to_single_value(c, cg_expr(c, s.value));
+            value, returns :=  reduce_expr_to_single_value(c, cg_expr(c, s.value));
+            assert(returns);
             t := cgscope_get(&c.scope, e.name);
             assert(t.kind == .Variable);
             cwritefln(c, "\tstore %s %s, ptr %s",
@@ -482,6 +522,31 @@ cg_lvalue :: proc(c: ^CGCtx, id: ExprId) -> string {
 }
 gen_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
+    case ExternFnDec: {
+        // get type
+        objid :=get_ctx().item_objects[id]
+        obj := get_ctx().objs[objid]
+        fn_ty := get_type(obj.type.(TypeId))
+
+        // write
+        cwrite(c, "declare ");
+        // write return type
+        cwritef(c, "%s ", ty_to_llvm_str(c, fn_ty.fn.ret_ty));
+        // write name
+        cwritef(c, "@%s ", obj.name);
+        // write args
+        cwrite(c, "(");
+        for a, i in fn_ty.fn.args {
+            // write name to scope
+            c.scope.vars[a.name] = {.Argument, aprintf(c, "%%%s", a.name)};
+            cwritef(c, "%s %s", ty_to_llvm_str(c, a.type), c.scope.vars[a.name].name);
+            if i < len(fn_ty.fn.args) - 1 {
+                fmt.println(i, len(fn_ty.fn.args))
+                cwritef(c, ", ")
+            }
+        }
+        cwriteln(c, ")");
+    }
     case FnDec: {
         // double check type is a function
         assert(check_fn(i));
@@ -571,11 +636,16 @@ cg_module :: proc(ast: ^AST) {
 
     fmt.sbprintfln(cgctx.b, "; external functions (declare, not define)")
     fmt.sbprintfln(cgctx.b, "declare i32 @printf(ptr, ...)")
-    fmt.sbprintfln(cgctx.b, "declare ptr @malloc(i64)")
-    fmt.sbprintfln(cgctx.b, "declare void @free(ptr)")
+    // fmt.sbprintfln(cgctx.b, "declare ptr @malloc(i64)")
+    // fmt.sbprintfln(cgctx.b, "declare void @free(ptr)")
     for i in ast.items {
         switch s in get_item(i) {
         case FnDec: { 
+            // declare first;
+            // it's a function , so use "@main" instead of "%main"
+            cgctx.scope.vars[s.name] = {.Symbol, aprintf(&cgctx, "@%s", s.name)};
+        }
+        case ExternFnDec: { 
             // declare first;
             // it's a function , so use "@main" instead of "%main"
             cgctx.scope.vars[s.name] = {.Symbol, aprintf(&cgctx, "@%s", s.name)};

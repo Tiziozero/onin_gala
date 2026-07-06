@@ -12,11 +12,13 @@ ObjId  :: distinct u32
 
 
 main :: proc() {
-    data, err := os.read_entire_file("main.gala", context.allocator)
+    file_name := "main.gala"
+    data, err := os.read_entire_file(file_name, context.allocator)
     if err != io.Error.None {
         fmt.eprintln("Failed to read file")
         os.exit(1)
     }
+    files[file_name] = string(data)
     defer delete(data)
     dyn_arena: mem.Dynamic_Arena
     mem.dynamic_arena_init(&dyn_arena)
@@ -27,6 +29,7 @@ main :: proc() {
     defer mem.dynamic_arena_destroy(&dyn_arena)                        // ← prefer defer
 
     ctx := Context{}
+    ctx.debug = true;
     ctx.items =         make([dynamic]Item, allocator=context.temp_allocator)
     ctx.exprs =         make([dynamic]Expr, allocator=context.temp_allocator)
     ctx.stmts =         make([dynamic]Stmt, allocator=context.temp_allocator)
@@ -40,17 +43,20 @@ main :: proc() {
     defer delete(ctx.expr_types)
     defer delete(ctx.item_objects)
     defer delete(ctx.stmt_objects)
+
+    ctx.current_file = file_name;
     context.user_ptr = &ctx
 
     tokens := lex_file(data)
     defer delete(tokens)
-    ast := parse_tokens(tokens[:])
+    ast := parse_tokens(file_name, tokens[:])
     // create base type first
     ctx.base_mod = new_module_scope();
     new_type(&ctx.base_mod, Type{name="int", kind=.Integer});
     new_type(&ctx.base_mod, Type{name="flt", kind=.Float});
     new_type(&ctx.base_mod, Type{name="void", kind=.Void});
     new_type(&ctx.base_mod, Type{name="bool", kind=.Bool});
+    new_type(&ctx.base_mod, Type{name="rawptr", kind=.Pointer});
     resolve_module_ast(&ast)
     typecheck_module(&ast)
     cg_module(&ast)
