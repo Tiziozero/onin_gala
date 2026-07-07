@@ -11,6 +11,7 @@ TypeKind :: enum {
     Byte,
     Bool,
     Pointer,
+    FixedSizeArray,
     Void,
 }
 Type :: struct {
@@ -18,6 +19,7 @@ Type :: struct {
     kind: TypeKind,
     ptr: TypeId,
     fn: struct { args: []Arg, ret_ty: TypeId},
+    fixed_size_array: struct { type: TypeId, size: int },
 }
 Arg :: struct {
     name: string,
@@ -220,6 +222,11 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
         id := resolve_type_specifier(s, k.ptr^)
         return intern_type({kind=.Pointer, ptr=id})
     }
+    case FixedArray: { // creates a pointer and will ge that one
+        id := resolve_type_specifier(s, k.base^)
+        return intern_type({kind=.FixedSizeArray,
+            fixed_size_array={type=id, size=k.size}})
+    }
     case: panic("impl");
     }
 }
@@ -352,9 +359,12 @@ resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 
     // intern type
     tyid := intern_type(fnty);
+    debugln("EXTERN FN RETURN TYPE:", fnty.fn.ret_ty, fndec.name, tyid);
 
     obj.type = tyid
     obj.name = fndec.name;
+    // update object
+    get_ctx().objs[oid] = obj^
 
     delete_key(&s.obj_foreward, fndec.name); // delete fd and create object
     s.objects[fndec.name] = oid; // recreate link
@@ -403,6 +413,8 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 
     obj.type = tyid
     obj.name = fndec.name;
+    // update object
+    get_ctx().objs[oid] = obj^
 
     delete_key(&s.obj_foreward, fndec.name); // delete fd and create object
     s.objects[fndec.name] = oid; // recreate link

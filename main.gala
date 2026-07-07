@@ -1,7 +1,16 @@
 extern fn malloc(size: int): rawptr;
-extern fn free(size: rawptr);
+extern fn memcpy(dest: rawptr, src: rawptr, size: int): rawptr;
+extern fn free(size: rawptr): void;
 fn main(): int {
+    data: [8]byte = {};
     ptr := malloc(8);
     free(ptr);
     return 0;
+}
+fn b(f: flt) : int {
+    if f >= 5.0 {
+        return 0;
+    } else {
+        return 67;
+    }
 }

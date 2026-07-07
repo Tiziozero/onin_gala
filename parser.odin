@@ -1,6 +1,6 @@
 package main
 
-import "core:fmt"
+import "core:strconv"
 
 BinopKind :: enum {
     Addition,
@@ -26,12 +26,14 @@ Cast :: struct {
     to: TypeSpecifier,
     target: ExprId,
 }
+ZeroInit :: struct {}
 Expr :: union {
     Binop,
     Number,
     Symbol,
     FnCall,
     Cast,
+    ZeroInit,
 }
 FnCall :: struct {
     target: ExprId,
@@ -70,6 +72,20 @@ op_is_right_assoc :: proc(t: Token) -> bool {
 }
 // Entry point — replaces your old parse_binop
 parse_expr :: proc(p: ^Parser) -> ExprId {
+    if is_symbol(current_token(p), "{") {
+        open_b := consume_token(p); // "{"
+        close_b := expect_symbol(p, "}");
+        id := new_expr(Expr(ZeroInit{}))
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span={
+                start=open_b.span.start,
+                end=close_b.span.end
+            }
+        }
+        return id;
+
+    }
     return parse_binop(p, 0)
 }
 
@@ -124,9 +140,11 @@ parse_binop :: proc(p: ^Parser, min_prec: int) -> ExprId {
 BaseType :: struct { ident: string, span: Span};
 // can't have ptr to itself
 PointerType :: struct {ptr:^TypeSpecifier, span: Span};;
+FixedArray :: struct { size: int, base: ^TypeSpecifier, span: Span};
 TypeSpecifier :: union {
     BaseType,
     PointerType,
+    FixedArray,
 }
 VarDec :: struct {
     name: string,
@@ -200,6 +218,19 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         expr := parse_expr(p);
         expect_symbol(p, ";");
         id := new_stmt(Stmt(VarDec{name=name.text, type=nil, value=expr}));
+        get_ctx().spans.stmts[id] = {
+            file_name=get_ctx().current_file,
+            span=name.span,
+        }
+        return id
+    } else if current_token(p).kind == .Ident &&
+        is_symbol(next_token(p), ":") {
+        name := consume_token(p);
+        consume_token(p); // ":"
+        ty := parse_type(p);
+        expect_symbol(p, "=");
+        expr := parse_expr(p);
+        id := new_stmt(Stmt(VarDec{name=name.text, type=ty, value=expr}));
         get_ctx().spans.stmts[id] = {
             file_name=get_ctx().current_file,
             span=name.span,
@@ -374,6 +405,25 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
     if current_token(p).kind == .Ident {
         token := consume_token(p)
         return TypeSpecifier(BaseType({token.text, token.span}));
+    }
+    if is_symbol(current_token(p), "[") {
+        token := consume_token(p); // "["
+        n := consume_token(p);
+        assert(n.kind == .Number);
+        size, ok := strconv.parse_int(n.text)
+        assert(ok);
+        end := expect_symbol(p, "]");
+
+        base_specifier := new(TypeSpecifier, allocator=context.temp_allocator);
+        base_specifier^ = parse_type(p);
+
+        return TypeSpecifier(FixedArray{
+            size=size,base=base_specifier,
+            span={
+                start=token.span.start,
+                end=end.span.end
+            }
+        })
     }
     panic("impl");
 }
