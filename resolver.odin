@@ -4,6 +4,7 @@ TypeKind :: enum {
     Invalid,
     UntypedInteger,
     UntypedFloat,
+    ZeroInit,
     Function,
     Integer,
     Float,
@@ -114,6 +115,8 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
 }
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
+    case ZeroInit: {
+    }
     case Cast: {
         ty := resolve_type_specifier(s, e.to);
         resolve_expr(s, e.target);
@@ -141,7 +144,7 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         }
     }
 
-    case: panic("impl");
+    case: gala_panic("impl");
     }
 }
 cmp_types :: proc(l, r: Type) -> bool {
@@ -164,7 +167,8 @@ cmp_types :: proc(l, r: Type) -> bool {
 // only intern function and pointers
 intern_type :: proc(t: Type) -> TypeId {
     assert(t.kind == .Pointer || t.kind == .Function || 
-            t.kind == .UntypedInteger || t.kind == .UntypedFloat)
+            t.kind == .UntypedInteger || t.kind == .UntypedFloat || 
+            t.kind == .FixedSizeArray || t.kind == .ZeroInit)
     for ty, id in get_ctx().types {
         if cmp_types(ty, t) { return TypeId(id) }
     }
@@ -213,7 +217,7 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
         if !ok {
             lines := get_file_lines(get_ctx().current_file, k.span);
             print_lines(lines, k.span)
-            panic("type doesn't exist");
+            gala_panic("type doesn't exist");
         }
         assert(ok)
         return ty
@@ -227,7 +231,7 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
         return intern_type({kind=.FixedSizeArray,
             fixed_size_array={type=id, size=k.size}})
     }
-    case: panic("impl");
+    case: gala_panic("impl");
     }
 }
 get_untyped_default :: proc(t: TypeId) -> TypeId {
@@ -243,12 +247,14 @@ get_untyped_default :: proc(t: TypeId) -> TypeId {
         return v
     }
 
-    case: panic("impl");
+    case: gala_panic("impl");
     }
 }
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
     debugln("propagating:", get_type(ty), "to", get_expr(expr));
     switch e in get_expr(expr) {
+    case ZeroInit: {
+    }
     case Cast: { // should have a fixed type
         return
     }
@@ -264,7 +270,7 @@ propagate_type :: proc(ty: TypeId, expr: ExprId) {
     case FnCall: { // should have a fixed type
         return
     }
-    case: panic("impl");
+    case: gala_panic("impl");
     }
     // set to all
     get_ctx().expr_types[expr] = ty;
@@ -307,7 +313,7 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
     case ExprId: {
         resolve_expr(s, stmt);
     }
-    case: panic("Impl");
+    case: gala_panic("Impl");
     }
 }
 resolve_block :: proc(s: ^Scope, b: ^Block) {
@@ -347,7 +353,7 @@ resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
             debugln(a, da);
             // print declared arf
             print_lines(get_file_lines(get_ctx().current_file, da.span), da.span)
-            panic("Duplicate argument. Arg already declared here.")
+            gala_panic("Duplicate argument. Arg already declared here.")
         }
         args[i] = Arg{a.name, t, a.span}
         declared[a.name] = Arg{a.name, t, a.span}
@@ -395,7 +401,7 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
             debugln(a, da);
             // print declared arf
             print_lines(get_file_lines(get_ctx().current_file, da.span), da.span)
-            panic("Duplicate argument. Arg already declared here.")
+            gala_panic("Duplicate argument. Arg already declared here.")
         }
         args[i] = Arg{a.name, t, a.span}
         declared[a.name] = Arg{a.name, t, a.span}
@@ -426,7 +432,7 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     switch i in item {
     case FnDec:         new_object_fd(s, Object{kind=.Variable, name=i.name});
     case ExternFnDec:   new_object_fd(s, Object{kind=.Variable, name=i.name});
-    case:               panic("impl")
+    case:               gala_panic("impl")
     }
 }
 resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
@@ -435,7 +441,7 @@ resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
     switch _ in item {
     case FnDec:         resolve_fn_dec_item(s, id);
     case ExternFnDec:   resolve_extern_fn_dec_item(s, id);
-    case:               panic("impl")
+    case:               gala_panic("impl")
     }
 }
 new_scope :: proc(parent:^Scope=nil) -> Scope {

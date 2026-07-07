@@ -70,7 +70,7 @@ op_precedence :: proc(t: Token) -> int {
 op_is_right_assoc :: proc(t: Token) -> bool {
     return false // extend for ** etc.
 }
-// Entry point — replaces your old parse_binop
+// Entry point
 parse_expr :: proc(p: ^Parser) -> ExprId {
     if is_symbol(current_token(p), "{") {
         open_b := consume_token(p); // "{"
@@ -230,6 +230,7 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         ty := parse_type(p);
         expect_symbol(p, "=");
         expr := parse_expr(p);
+        expect_symbol(p, ";");
         id := new_stmt(Stmt(VarDec{name=name.text, type=ty, value=expr}));
         get_ctx().spans.stmts[id] = {
             file_name=get_ctx().current_file,
@@ -369,7 +370,7 @@ parse_primary :: proc(p: ^Parser) -> ExprId {
         return id
     }
     debugln(current_token(p));
-    panic("invalid primary token")
+    gala_panic("invalid primary token")
 }
 parse_block :: proc(p: ^Parser) -> Block{
     expect_symbol(p, "{");
@@ -425,7 +426,7 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
             }
         })
     }
-    panic("impl");
+    gala_panic("impl");
 }
 parse_kw :: proc(p: ^Parser) -> ItemId {
     #partial switch current_token(p).kw {
@@ -503,18 +504,18 @@ parse_kw :: proc(p: ^Parser) -> ItemId {
         }
         return id;
     }
-    case: panic("impl");
+    case: gala_panic("impl");
     }
 }
 expect_symbol :: proc(p: ^Parser, str: string) -> Token {
     c := current_token(p);
     if c.kind != .Symbol {
         debugln("Expected symbol, got:", c);
-        panic("");
+        gala_panic("");
     }
     if c.text != str {
         debugln("Expected", str, "got:", c.text);
-        panic("");
+        gala_panic("");
     }
     return consume_token(p)
 }
@@ -522,7 +523,7 @@ expect_ident :: proc(p: ^Parser) -> Token {
     c := current_token(p);
     if c.kind != .Ident {
         debugln("Expected ident got:", c);
-        panic("");
+        gala_panic("");
     }
     return consume_token(p)
 }
@@ -538,7 +539,7 @@ parse_tokens :: proc(file_name: string, tokens: []Token) -> AST {
         case .Keyword: {
             append(&items,parse_kw(p));
         }
-        case: panic("impl");
+        case: gala_panic("impl");
         }
     }
     return AST{items=items[:]}

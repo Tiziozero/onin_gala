@@ -81,7 +81,7 @@ compare_and_reduce_types :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     debugln(get(l), get(r));
     debugln((l), (r));
     //dump_context(get_ctx());
-    panic("impl");
+    gala_panic("impl");
 }
 can_binop :: proc(ty: TypeId) -> bool {
     if is_numeric(ty) do return true
@@ -106,12 +106,15 @@ can_cast_to :: proc(target_id, to_id: TypeId) -> bool {
     case .Bool: {
     }
     }
-    panic("impl")
+    gala_panic("impl")
 }
 tc_expr :: proc(tc: ^TcContext, e: ExprId) {
     debugln("tc expr:", e)
 
     switch expr in get(e) {
+    case ZeroInit: {
+        get_ctx().expr_types[e]=intern_type({kind=.ZeroInit})
+    }
     case Cast: {
         tc_expr(tc, expr.target)
         to := get_ctx().expr_cast_types[e]
@@ -121,7 +124,7 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
         }
         if !can_cast_to(expr_ty(expr.target), to) {
             highlight_lines(get_span(e).span);
-            panic("can't cast expression to desired type")
+            gala_panic("can't cast expression to desired type")
         }
         get_ctx().expr_types[e] = to
     }
@@ -149,7 +152,7 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
         ty, ok, s := compare_and_reduce_types(expr_ty(expr.left), expr_ty(expr.right));
         if !ok {
             highlight_lines(get_span(e).span)
-            panic(s)
+            gala_panic(s)
         }
 
         propagate_type(ty, expr.left); // propagate, wtf?
@@ -162,7 +165,7 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
         case .Divide: {
             if !can_binop(ty) {
                 highlight_lines(get_span(e).span);
-                panic("can't perform a binop on these two expressions");
+                gala_panic("can't perform a binop on these two expressions");
             }
         }
         case:
@@ -178,7 +181,7 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
         fargs := ty.fn.args;
         if len(fargs) != len(expr.args) {
             debugln(len(fargs), len(expr.args))
-            panic("args count for function don't match");
+            gala_panic("args count for function don't match");
         }
         for i in 0..<len(fargs) {
             earg := expr.args[i];
@@ -187,14 +190,14 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
             r, ok, s := compare_and_reduce_types(farg.type, expr_ty(earg));
             if !ok {
                 highlight_lines(get_span(e).span);
-                panic(s);
+                gala_panic(s);
             }
             assert(r == farg.type); // should always match
             propagate_type(r, earg);
         }
         get_ctx().expr_types[e] = ty.fn.ret_ty
     }
-    case: panic("impl tc expr")
+    case: gala_panic("impl tc expr")
     }
 }
 
@@ -206,7 +209,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
         // make it numeric
         if get_type(expr_ty(stmt.base_con)).kind != .Bool {
             debugln(get_type(expr_ty(stmt.base_con)))
-            panic("not a bool?");
+            gala_panic("not a bool?");
         }
         tc_block(tc, stmt.base_block);
         for a in stmt.alt {
@@ -214,7 +217,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             // make it numeric
             if get_type(expr_ty(a.cond)).kind != .Bool {
                 debugln(get_type(expr_ty(a.cond)))
-                panic("not a bool?");
+                gala_panic("not a bool?");
             }
             tc_block(tc, a.block);
         }
@@ -235,6 +238,9 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
                 t := get_untyped_default(resolved_ty.(TypeId))
                 debugln("got:", t, get(t));
                 propagate_type(t, stmt.value)
+            } else if get(resolved_ty.(TypeId)).kind == .ZeroInit {
+                highlight_lines(get_span(s).span);
+                gala_panic("can't have zero initialiser here. Type required");
             }
             // set obj type to expr type
             resolved_ty = expr_ty(stmt.value);
@@ -244,25 +250,25 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             if t, ok, s := compare_and_reduce_types(resolved_ty.(TypeId), expr_ty(stmt.value)); ok {
                 propagate_type(t, stmt.value)
             } else {
-                panic("types don't match");
+                gala_panic("types don't match");
             }
         }
     }
     case Return: {
         if !tc.in_function {
-            panic("return stmt not it a function");
+            gala_panic("return stmt not it a function");
         }
         // if it has a value
         if e, ok := stmt.expr.(ExprId); ok {
             tc_expr(tc, e);
             if tc.fn_ret_ty == nil { // if function expects no value
-                panic("no return value expected");
+                gala_panic("no return value expected");
             }
             // compare return expr type with fn return type
             ty, ok, s := compare_and_reduce_types(expr_ty(e), tc.fn_ret_ty.(TypeId));
             if !ok {
                 highlight_lines(get_span(e).span);
-                panic(s);
+                gala_panic(s);
             }
             propagate_type(ty, e);
         // otherwise make sure function doesn't expect a value
@@ -271,7 +277,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
                 if get_type(tc.fn_ret_ty.(TypeId)).kind == .Void {
                     // returning voiud
                 } else { // not in function
-                    panic("return value expected");
+                    gala_panic("return value expected");
                 }
             }
         }
@@ -284,12 +290,12 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
         t, ok, err := compare_and_reduce_types(expr_ty(stmt.target), expr_ty(stmt.value))
         if !ok {
             highlight_lines(get_span(s).span);
-            panic(err);
+            gala_panic(err);
         }
         propagate_type(t, stmt.value);
 
     }
-    case: panic("impl");
+    case: gala_panic("impl");
     }
 }
 tc_block :: proc(tc: ^TcContext, b: Block) {
@@ -313,7 +319,7 @@ tc_item :: proc(tc: ^TcContext, id: ItemId) {
         tc_block(&new_tc, i.block);
 
     }
-    case: panic("impl")
+    case: gala_panic("impl")
     }
 }
 typecheck_module :: proc(ast: ^AST) {

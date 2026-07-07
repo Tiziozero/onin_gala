@@ -68,7 +68,7 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
             }
             ident := cast(string)buf[start:i];
             if ident == "_" {
-                panic("invalid ident \"_\".");
+                gala_panic("invalid ident \"_\".");
             }else if ident == "fn" {
                 append(&tokens, Token{
                     span = Span{start, i},

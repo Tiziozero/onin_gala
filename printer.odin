@@ -18,7 +18,10 @@ dump_types :: proc(ctx: ^Context) {
         fmt.printf("[%d] %s\n", i, t.name)
 
         switch t.kind {
-        case .FixedSizeArray: panic("impl");
+        case .FixedSizeArray: 
+            fmt.println("    kind: Fixed Size Array")
+        case .ZeroInit: 
+            panic("impl")
         case .Bool: 
             fmt.println("    kind: Bool")
         case .Void: 

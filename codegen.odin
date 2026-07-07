@@ -57,7 +57,7 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     case .UntypedInteger: fallthrough
     case .UntypedFloat: 
         dump_context(get_ctx())
-        panic("bug")
+        gala_panic("bug")
     case .Pointer: {
         s := fmt.aprintf("ptr", allocator=c.arena.block_allocator )
         llvm_ty[id]=s
@@ -78,7 +78,7 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     case .Bool: return "i1";
     case .Function: return "ptr"; // functions are just pointers
     }
-    panic("impl")
+    gala_panic("impl")
 }
 // eg "%t1"
 new_tmp::proc(c: ^CGCtx) -> string {
@@ -98,10 +98,13 @@ cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
             return v.name;
         }
     }
-    panic("no");
+    gala_panic("no");
 }
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
     switch e in get_expr(id) {
+    case ZeroInit: {
+        gala_panic("impl");
+    }
     case Cast: {
         target := cg_expr(c, e.target)
         target_ty := expr_ty(e.target);
@@ -142,7 +145,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
             case .NotEqual:     op = "icmp ne"
             case .LessEqual:    op = "icmp sle"
             case .GreaterEqual: op = "icmp sge"
-            case: panic("impl")
+            case: gala_panic("impl")
             }
         } else if get_type(operand_ty).kind == .Float {
             switch e.kind {
@@ -154,15 +157,15 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
             case .NotEqual:     op = "fcmp one"
             case .LessEqual:    op = "fcmp ole"
             case .GreaterEqual: op = "fcmp oge"
-            case: panic("impl")
+            case: gala_panic("impl")
             }
         } else if get_type(operand_ty).kind == .Void {
             dump_context(get_ctx())
-            panic("can't binop voids")
+            gala_panic("can't binop voids")
         } else {
             fmt.println(get_type(operand_ty).kind)
             fmt.println(get_expr(id))
-            panic("handle")
+            gala_panic("handle")
         }
 
         return {kind=.Binop,
@@ -183,10 +186,10 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
             return {kind=.SingleRes,v=v.name};
         }
         case .Invalid: {
-            panic("invalid object");
+            gala_panic("invalid object");
         }
         }
-        panic("impl");
+        gala_panic("impl");
     }
     case FnCall: {
         t := cg_fn_call_target(c, e.target);
@@ -227,7 +230,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
             return {kind=.SingleRes, v=new_t};
         }
     }
-    case: panic("impl");
+    case: gala_panic("impl");
     }
 }
 bit_width_of :: proc(k: TypeKind) -> int {
@@ -237,7 +240,7 @@ bit_width_of :: proc(k: TypeKind) -> int {
     case .Rune:   return 32
     case .Integer: return 64
     case .Float:  return 64 // double
-    case: panic("bit_width_of: not a scalar numeric kind")
+    case: gala_panic("bit_width_of: not a scalar numeric kind")
     }
 }
 
@@ -245,7 +248,7 @@ is_signed :: proc(k: TypeKind) -> bool {
     #partial switch k {
     case .Integer: return true
     case .Byte, .Rune, .Bool: return false
-    case: panic("is_signed: not an integer-ish kind")
+    case: gala_panic("is_signed: not an integer-ish kind")
     }
 }
 
@@ -255,7 +258,7 @@ is_int_kind :: proc(k: TypeKind) -> bool {
 
 // Returns the LLVM instruction mnemonic needed to convert `target` -> `to`.
 // Assumes can_cast_to(target_id, to_id) has already been checked and is true;
-// panics on invalid pairs so a mismatch between the two tables is caught loudly.
+// gala_panics on invalid pairs so a mismatch between the two tables is caught loudly.
 ty_to_llvm_cast_op :: proc(target_id, to_id: TypeId) -> (string, bool) {
     target := get_type(target_id)
     to := get_type(to_id)
@@ -306,13 +309,13 @@ ty_to_llvm_cast_op :: proc(target_id, to_id: TypeId) -> (string, bool) {
         return "inttoptr", true
     }
 
-    panic("ty_to_llvm_cast_op: no cast op for this pair — check can_cast_to table")
+    gala_panic("ty_to_llvm_cast_op: no cast op for this pair — check can_cast_to table")
 }
 
 // some expressions (fn calls with void returns) don't return so are invalid
 reduce_expr_to_single_value :: proc(c: ^CGCtx, e: expr_result) -> (string, bool) {
     switch e.kind {
-    case .Invalid: panic("invalid")
+    case .Invalid: gala_panic("invalid")
     case .None: return "", false
     case .SingleRes: {
         return e.v, true
@@ -326,7 +329,7 @@ reduce_expr_to_single_value :: proc(c: ^CGCtx, e: expr_result) -> (string, bool)
         return t, true
     }
     }
-    panic("impl");
+    gala_panic("impl");
 }
 expr_result :: struct {
     kind: enum {Invalid, SingleRes,Binop,Number,None},
@@ -349,9 +352,9 @@ stmt_ends_block :: proc(stmt: StmtId) -> bool {
     case VarDec: return false
     case Assignment: return false
     case ExprId: return false;
-    case: panic("impl");
+    case: gala_panic("impl");
     }
-    panic("impl");
+    gala_panic("impl");
 }
 cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     switch s in get_stmt(id) {
@@ -397,7 +400,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             for statement, i in s.base_block.stmts {
                 cg_stmt(c, statement);
                 if stmt_ends_block(statement) && i != len(s.base_block.stmts) - 1 {
-                    panic("nothing past will be executed");
+                    gala_panic("nothing past will be executed");
                 }
             }
             free_cgscope(&c.scope)
@@ -429,7 +432,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             for statement, i in a.block.stmts {
                 cg_stmt(c, statement);
                 if stmt_ends_block(statement) && i != len(s.base_block.stmts) - 1 {
-                    panic("nothing past will be executed");
+                    gala_panic("nothing past will be executed");
                 }
             }
             free_cgscope(&c.scope)
@@ -447,7 +450,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             for statement, i in s.else_block.stmts {
                 cg_stmt(c, statement);
                 if stmt_ends_block(statement) && i != len(s.base_block.stmts) - 1 {
-                    panic("nothing past will be executed");
+                    gala_panic("nothing past will be executed");
                 }
             }
             free_cgscope(&c.scope)
@@ -505,20 +508,20 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
                 ty_to_llvm_str(c, expr_ty(s.target)), value,
                 t.name);
         }
-        case: panic("impl");
+        case: gala_panic("impl");
         }
     }
-    case:panic("impl");
+    case:gala_panic("impl");
     }
 }
 cg_lvalue :: proc(c: ^CGCtx, id: ExprId) -> string {
     #partial switch e in get_expr(id) {
     case Symbol: {
-        panic("impl");
+        gala_panic("impl");
     }
-    case: panic("impl")
+    case: gala_panic("impl")
     }
-    panic("impl")
+    gala_panic("impl")
 }
 gen_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
@@ -584,14 +587,14 @@ gen_item :: proc(c: ^CGCtx, id: ItemId) {
         for statement, index in i.block.stmts {
             cg_stmt(c, statement);
             if stmt_ends_block(statement) && index != len(i.block.stmts) - 1 {
-                panic("nothing past will be executed");
+                gala_panic("nothing past will be executed");
             }
         }
         cwriteln(c, "}");
         // reset scope
         c.scope = old_scope
     }
-    case: panic("impl")
+    case: gala_panic("impl")
     }
 }
 cg_ast :: proc(c: ^CGCtx, ast: ^AST) {
@@ -605,7 +608,7 @@ check_rets :: proc(b: Block) -> bool {
 }
 check_fn :: proc(f: FnDec) -> bool {
     if !check_rets(f.block) {
-        panic("function must return at all branches")
+        gala_panic("function must return at all branches")
     }
     return true
 }
@@ -616,7 +619,7 @@ cgscope_get :: proc(scope: ^CGScope, v: string) -> CGObj {
         if ok do return n
         s = s.parent
     }
-    panic("doesn't exist")
+    gala_panic("doesn't exist")
 }
 cg_module :: proc(ast: ^AST) {
     cgctx := CGCtx{}

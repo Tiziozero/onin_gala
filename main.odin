@@ -1,5 +1,14 @@
 package main
 
+gala_panic :: proc(args: ..any) -> ! {
+    fmt.println(..args)
+    os.exit(1);
+}
+gala_panicf :: proc(f: string, args: ..any) -> ! {
+    fmt.printfln(f, ..args)
+    os.exit(1);
+}
+
 import "core:mem"
 import "core:fmt"
 import "core:os"
@@ -56,6 +65,7 @@ main :: proc() {
     new_type(&ctx.base_mod, Type{name="flt", kind=.Float});
     new_type(&ctx.base_mod, Type{name="void", kind=.Void});
     new_type(&ctx.base_mod, Type{name="bool", kind=.Bool});
+    new_type(&ctx.base_mod, Type{name="byte", kind=.Byte});
     new_type(&ctx.base_mod, Type{name="rawptr", kind=.Pointer});
     resolve_module_ast(&ast)
     typecheck_module(&ast)
