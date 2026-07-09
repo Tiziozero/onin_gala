@@ -387,9 +387,14 @@ parse_block :: proc(p: ^Parser) -> Block{
 FnDecArg :: struct{name: string, t: TypeSpecifier, span: Span}
 FnDec :: struct {
     name: string,
-    args: [dynamic]FnDecArg, 
+    args: []FnDecArg, 
     ret_ty: Maybe(TypeSpecifier),
     block: Block,
+}
+StructField :: struct{name: string, t: TypeSpecifier, span: Span}
+StructDec :: struct {
+    name: string,
+    fields: []StructField,
 }
 ExternFnDec :: struct {
     name: string,
@@ -398,6 +403,7 @@ ExternFnDec :: struct {
 }
 
 Item :: union {
+    StructDec,
     FnDec,
     ExternFnDec,
 }
@@ -428,8 +434,32 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
     }
     gala_panic("impl");
 }
-parse_kw :: proc(p: ^Parser) -> ItemId {
+parse_module_kw :: proc(p: ^Parser) -> ItemId {
     #partial switch current_token(p).kw {
+    case .Struct: {
+        kw := consume_token(p); // "struct"
+        name := expect_ident(p);
+        expect_symbol(p, "{");
+        fields := make([dynamic]StructField, allocator=context.temp_allocator);
+        for !is_symbol(current_token(p), "}") {
+            name := expect_ident(p);
+            expect_symbol(p, ":");
+            ty := parse_type(p);
+            append(&fields, StructField{name=name.text, t=ty, span=name.span});
+        }
+        expect_symbol(p, "}");
+        sd := StructDec{
+            name=name.text,
+            fields=fields[:],
+        }
+        id := new_item(sd)
+        get_ctx().spans.items[id] = {
+            file_name=get_ctx().current_file,
+            span=name.span
+        }
+
+        return id
+    }
     case .Fn: {
         f := FnDec{}
         kw := consume_token(p);
@@ -450,7 +480,7 @@ parse_kw :: proc(p: ^Parser) -> ItemId {
             }
         }
         expect_symbol(p, ")");
-        f.args = args
+        f.args = args[:]
 
         if is_symbol(current_token(p), ":") {
             consume_token(p); // ":"
@@ -537,7 +567,7 @@ parse_tokens :: proc(file_name: string, tokens: []Token) -> AST {
     for current_token(p).kind != .EOF {
         #partial switch current_token(p).kind {
         case .Keyword: {
-            append(&items,parse_kw(p));
+            append(&items,parse_module_kw(p));
         }
         case: gala_panic("impl");
         }

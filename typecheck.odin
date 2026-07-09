@@ -247,7 +247,8 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             debugln("setting vardec type to:", get_type(resolved_ty.(TypeId)))
             get_obj(get_ctx().stmt_objects[s]).type = resolved_ty;
         } else { // otherwise if the vardec has a specified type compare
-            if t, ok, s := compare_and_reduce_types(resolved_ty.(TypeId), expr_ty(stmt.value)); ok {
+            expected_type := resolved_ty.(TypeId)
+            if t, ok, s := compare_and_reduce_types(expected_type, expr_ty(stmt.value)); ok {
                 propagate_type(t, stmt.value)
             } else {
                 gala_panic("types don't match");

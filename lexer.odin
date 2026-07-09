@@ -18,6 +18,7 @@ Keyword :: enum {
     Return,
     If, Else,
     Extern,
+    Struct,
 }
 
 Token :: struct {
@@ -74,6 +75,12 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                     span = Span{start, i},
                     kind = .Keyword,
                     kw   = .Fn,
+                })
+            }else if ident == "struct" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .Keyword,
+                    kw   = .Struct,
                 })
             }else if ident == "return" {
                 append(&tokens, Token{

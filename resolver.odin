@@ -12,6 +12,7 @@ TypeKind :: enum {
     Byte,
     Bool,
     Pointer,
+    Struct,
     FixedSizeArray,
     Void,
 }
@@ -328,6 +329,13 @@ void_type :: proc() -> TypeId {
     assert(ok);
     return v;
 }
+resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
+    sd, ok := get_item(id).(StructDec); assert(ok); // assert it's a fn dec
+    tid, iok := s.ty_foreward[sd.name]; assert(iok); // make sure fd exists
+    ty := get_type(tid); // gets pointer, so modify that
+    // create fn type
+    panic("impl");
+}
 resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     fndec, ok := get(id).(ExternFnDec); assert(ok); // assert it's a fn dec
     oid, ook := s.obj_foreward[fndec.name]; assert(ook); // make sure fd exists
@@ -430,6 +438,7 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     item := get(id)
     // foreward
     switch i in item {
+    case StructDec:     new_type_fd(s, Type{kind=.Struct})
     case FnDec:         new_object_fd(s, Object{kind=.Variable, name=i.name});
     case ExternFnDec:   new_object_fd(s, Object{kind=.Variable, name=i.name});
     case:               gala_panic("impl")
@@ -439,6 +448,7 @@ resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
     item := get(id)
 
     switch _ in item {
+    case StructDec:     resolve_struct_dec_item(s, id);
     case FnDec:         resolve_fn_dec_item(s, id);
     case ExternFnDec:   resolve_extern_fn_dec_item(s, id);
     case:               gala_panic("impl")

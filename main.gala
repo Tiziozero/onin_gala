@@ -1,4 +1,7 @@
+struct vec2 {
+    x: flt, y:flt
+}
 fn main(): int {
-    data: [8]byte = {};
     return 0;
 }
+
