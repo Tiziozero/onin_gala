@@ -9,6 +9,7 @@ gala_panicf :: proc(f: string, args: ..any) -> ! {
     os.exit(1);
 }
 
+import "core:mem/virtual"
 import "core:mem"
 import "core:fmt"
 import "core:os"
@@ -21,6 +22,8 @@ ObjId  :: distinct u32
 
 
 main :: proc() {
+    ctx := Context{}
+    context.user_ptr = &ctx
     file_name := "main.gala"
     data, err := os.read_entire_file(file_name, context.allocator)
     if err != io.Error.None {
@@ -29,21 +32,23 @@ main :: proc() {
     }
     files[file_name] = string(data)
     defer delete(data)
-    dyn_arena: mem.Dynamic_Arena
-    mem.dynamic_arena_init(&dyn_arena)
+    // arena
+    dyn_arena: virtual.Arena
+    aerr := virtual.arena_init_growing(&dyn_arena)
+    assert(aerr == virtual.Allocator_Error.None);
     // create dynamic allocator with dynamic arena and use that, not the
     // arenas allocator
-    context.temp_allocator = mem.dynamic_arena_allocator(&dyn_arena)  // ← this
+    context.temp_allocator = mem.panic_allocator()
+    get_ctx().allocator = virtual.arena_allocator(&dyn_arena)
     // destroy, not free
-    defer mem.dynamic_arena_destroy(&dyn_arena)                        // ← prefer defer
+    defer virtual.arena_destroy(&dyn_arena)
 
-    ctx := Context{}
     ctx.debug = true;
-    ctx.items =         make([dynamic]Item, allocator=context.temp_allocator)
-    ctx.exprs =         make([dynamic]Expr, allocator=context.temp_allocator)
-    ctx.stmts =         make([dynamic]Stmt, allocator=context.temp_allocator)
-    ctx.objs =          make([dynamic]Object, allocator=context.temp_allocator)
-    ctx.types =         make([dynamic]Type, allocator=context.temp_allocator)
+    ctx.items =         make([dynamic]Item, allocator=get_ctx().allocator)
+    ctx.exprs =         make([dynamic]Expr, allocator=get_ctx().allocator)
+    ctx.stmts =         make([dynamic]Stmt, allocator=get_ctx().allocator)
+    ctx.objs =          make([dynamic]Object, allocator=get_ctx().allocator)
+    ctx.types =         make([dynamic]Type, allocator=get_ctx().allocator)
     ctx.expr_objects =  make(map[ExprId]ObjId)
     ctx.expr_types =    make(map[ExprId]TypeId)
     ctx.item_objects =    make(map[ItemId]ObjId)
@@ -54,7 +59,6 @@ main :: proc() {
     defer delete(ctx.stmt_objects)
 
     ctx.current_file = file_name;
-    context.user_ptr = &ctx
 
     tokens := lex_file(data)
     defer delete(tokens)

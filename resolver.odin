@@ -21,7 +21,13 @@ Type :: struct {
     kind: TypeKind,
     ptr: TypeId,
     fn: struct { args: []Arg, ret_ty: TypeId},
+    structure: struct {fields: []Field},
     fixed_size_array: struct { type: TypeId, size: int },
+}
+Field :: struct {
+    name: string,
+    type: TypeId,
+    span: Span,
 }
 Arg :: struct {
     name: string,
@@ -116,6 +122,24 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
 }
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
+    case StructLit: {
+        // check type exists
+        tid, ok := scope_get_type(s, e.name); assert(ok);
+        ty := get_type(tid);
+        assert(ty.kind == .Struct);
+        assert(len(ty.structure.fields) == len(e.fields))
+        // check this exists
+        for sf in ty.structure.fields {
+            f, ok := e.fields[sf.name];
+            if !ok {
+                highlight_lines(get_span(id).span)
+                gala_panicf("Field %s doesn't exist in type",
+                    sf.name, e.name);
+            }
+            resolve_expr(s, f.expr);
+        }
+        get_ctx().expr_struct_types[id]=tid
+    }
     case ZeroInit: {
     }
     case Cast: {
@@ -251,31 +275,6 @@ get_untyped_default :: proc(t: TypeId) -> TypeId {
     case: gala_panic("impl");
     }
 }
-propagate_type :: proc(ty: TypeId, expr: ExprId) {
-    debugln("propagating:", get_type(ty), "to", get_expr(expr));
-    switch e in get_expr(expr) {
-    case ZeroInit: {
-    }
-    case Cast: { // should have a fixed type
-        return
-    }
-    case Binop: {
-        propagate_type(ty, e.left)
-        propagate_type(ty, e.right)
-    }
-    case Number: {
-    }
-    case Symbol: { // should have a fixed type
-        return
-    }
-    case FnCall: { // should have a fixed type
-        return
-    }
-    case: gala_panic("impl");
-    }
-    // set to all
-    get_ctx().expr_types[expr] = ty;
-}
 resolve_stmt :: proc(s: ^Scope, id: StmtId) {
     #partial switch stmt in get(id) {
     case VarDec: {
@@ -332,9 +331,29 @@ void_type :: proc() -> TypeId {
 resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     sd, ok := get_item(id).(StructDec); assert(ok); // assert it's a fn dec
     tid, iok := s.ty_foreward[sd.name]; assert(iok); // make sure fd exists
-    ty := get_type(tid); // gets pointer, so modify that
-    // create fn type
-    panic("impl");
+    // ty := get_type(tid); // gets pointer, so modify that
+    // check duplicate fields
+    declared := make( map[string]Field);
+    defer delete(declared);
+
+    for f in sd.fields {
+        if d, ok := declared[f.name]; ok {
+            highlight_lines(f.span);
+            gala_panic("Field already exists.");
+        }
+        t := resolve_type_specifier(s, f.t);
+        field := Field{name=f.name, type=t, span=f.span}
+        declared[f.name] = field;
+    }
+    sfields := make([]Field, len(declared), allocator=get_ctx().allocator);
+    i := 0
+    for _, f in declared {
+        sfields[i] = f
+        i += 1;
+    }
+    // redefine type
+    t := Type{kind=.Struct, structure={fields=sfields}}
+    get_ctx().types[tid] = t;
 }
 resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     fndec, ok := get(id).(ExternFnDec); assert(ok); // assert it's a fn dec
@@ -353,7 +372,7 @@ resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     // new scope for args
     // args
     new_scope := new_scope(s);
-    args := make([]Arg, len(fndec.args), allocator=context.temp_allocator)
+    args := make([]Arg, len(fndec.args), allocator=get_ctx().allocator)
     declared := make(map[string]Arg)
     for a, i in fndec.args {
         t := resolve_type_specifier(&new_scope, a.t)
@@ -401,7 +420,7 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     // new scope for args
     // args
     new_scope := new_scope(s);
-    args := make([]Arg, len(fndec.args), allocator=context.temp_allocator)
+    args := make([]Arg, len(fndec.args), allocator=get_ctx().allocator)
     declared := make(map[string]Arg)
     for a, i in fndec.args {
         t := resolve_type_specifier(&new_scope, a.t)
@@ -438,7 +457,7 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     item := get(id)
     // foreward
     switch i in item {
-    case StructDec:     new_type_fd(s, Type{kind=.Struct})
+    case StructDec:     new_type_fd(s, Type{kind=.Struct, name=i.name})
     case FnDec:         new_object_fd(s, Object{kind=.Variable, name=i.name});
     case ExternFnDec:   new_object_fd(s, Object{kind=.Variable, name=i.name});
     case:               gala_panic("impl")

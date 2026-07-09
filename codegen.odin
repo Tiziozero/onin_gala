@@ -102,6 +102,7 @@ cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
 }
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
     switch e in get_expr(id) {
+    case StructLit: panic("impl");
     case ZeroInit: {
         gala_panic("impl");
     }
@@ -525,6 +526,7 @@ cg_lvalue :: proc(c: ^CGCtx, id: ExprId) -> string {
 }
 gen_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
+    case StructDec: {}
     case ExternFnDec: {
         // get type
         objid :=get_ctx().item_objects[id]
@@ -636,13 +638,9 @@ cg_module :: proc(ast: ^AST) {
     fmt.sbprintfln(cgctx.b, "; target info")
     fmt.sbprintfln(cgctx.b, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"");
     fmt.sbprintfln(cgctx.b, "target triple = \"x86_64-pc-linux-gnu\"")
-
-    fmt.sbprintfln(cgctx.b, "; external functions (declare, not define)")
-    fmt.sbprintfln(cgctx.b, "declare i32 @printf(ptr, ...)")
-    // fmt.sbprintfln(cgctx.b, "declare ptr @malloc(i64)")
-    // fmt.sbprintfln(cgctx.b, "declare void @free(ptr)")
     for i in ast.items {
         switch s in get_item(i) {
+        case StructDec: {}
         case FnDec: { 
             // declare first;
             // it's a function , so use "@main" instead of "%main"

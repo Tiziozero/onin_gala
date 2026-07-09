@@ -44,7 +44,7 @@ is_space :: proc(c: byte) -> bool {
 }
 
 lex_file :: proc(buf: []byte) -> [dynamic]Token {
-    tokens := make([dynamic]Token, context.temp_allocator)
+    tokens := make([dynamic]Token, get_ctx().allocator)
     i := 0
     for i < len(buf) {
         c := buf[i]

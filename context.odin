@@ -1,9 +1,12 @@
 package main
 
+import "core:mem"
 import "core:fmt"
 import "core:strings"
 
 Context :: struct {
+    arena:              mem.Dynamic_Arena,
+    allocator:          mem.Allocator,
     debug:              bool,
     current_file:       string,
     exprs:              [dynamic]Expr,
@@ -17,8 +20,10 @@ Context :: struct {
     item_objects:       map[ItemId]ObjId,
     stmt_objects:       map[StmtId]ObjId,
 
-    // for casts
+    // for other stuff that need to know things only available
+    // at resolution phase
     expr_cast_types:    map[ExprId]TypeId,
+    expr_struct_types:  map[ExprId]TypeId,
 
     base_mod:           ModuleScope,
 
@@ -41,7 +46,7 @@ FileLine :: struct {
 }
 
 get_file_lines :: proc(file_name: string, span: Span) -> []FileLine {
-    allocator := context.temp_allocator
+    allocator := get_ctx().allocator;
     src, ok := files[file_name]
     if !ok {
         panic(fmt.tprintf("get_file_lines: unknown file %q", file_name))
@@ -106,7 +111,7 @@ print_lines :: proc(lines: []FileLine, highlight: Span = {0, 0}) {
         }
 
         gutter := "       | " // 5 digits + " | " prefix width, matches "%5d | "
-        builder := strings.builder_make(context.temp_allocator)
+        builder := strings.builder_make(get_ctx().allocator)
         strings.write_string(&builder, gutter)
         for _ in 0..<col_start {
             strings.write_rune(&builder, ' ')

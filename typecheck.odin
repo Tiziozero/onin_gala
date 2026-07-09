@@ -112,6 +112,22 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
     debugln("tc expr:", e)
 
     switch expr in get(e) {
+    case StructLit: {
+        tid := get_ctx().expr_struct_types[e]
+        s := get_type(tid)
+        for sf in s.structure.fields {
+            f := expr.fields[sf.name].expr
+            tc_expr(tc, f);
+            r, ok, err := compare_and_reduce_types(sf.type, expr_ty(f))
+            if !ok {
+                span := expr.fields[sf.name].span
+                highlight_lines(span)
+                gala_panic("Type error:", err);
+            }
+            propagate_type(r, f);
+        }
+        get_ctx().expr_types[e]=tid
+    }
     case ZeroInit: {
         get_ctx().expr_types[e]=intern_type({kind=.ZeroInit})
     }
@@ -307,6 +323,9 @@ tc_block :: proc(tc: ^TcContext, b: Block) {
 tc_item :: proc(tc: ^TcContext, id: ItemId) {
     item := get_item(id)
     switch i in item {
+    case StructDec: {
+        // ok?
+    }
     case ExternFnDec: {
         // ok ig?
     }
@@ -328,4 +347,32 @@ typecheck_module :: proc(ast: ^AST) {
     for i in ast.items {
         tc_item(&tc, i);
     }
+}
+propagate_type :: proc(ty: TypeId, expr: ExprId) {
+    debugln("propagating:", get_type(ty), "to", get_expr(expr));
+    switch e in get_expr(expr) {
+    case StructLit: {
+        return // already has type
+    }
+    case ZeroInit: {
+    }
+    case Cast: { // should have a fixed type
+        return
+    }
+    case Binop: {
+        propagate_type(ty, e.left)
+        propagate_type(ty, e.right)
+    }
+    case Number: {
+    }
+    case Symbol: { // should have a fixed type
+        return
+    }
+    case FnCall: { // should have a fixed type
+        return
+    }
+    case: gala_panic("impl");
+    }
+    // set to all
+    get_ctx().expr_types[expr] = ty;
 }

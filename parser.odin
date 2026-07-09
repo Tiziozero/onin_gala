@@ -27,7 +27,12 @@ Cast :: struct {
     target: ExprId,
 }
 ZeroInit :: struct {}
+StructLit :: struct {
+    name: string,
+    fields: map[string]struct{expr:ExprId,span:Span},
+}
 Expr :: union {
+    StructLit,
     Binop,
     Number,
     Symbol,
@@ -72,7 +77,28 @@ op_is_right_assoc :: proc(t: Token) -> bool {
 }
 // Entry point
 parse_expr :: proc(p: ^Parser) -> ExprId {
-    if is_symbol(current_token(p), "{") {
+    if current_token(p).kind ==.Ident && is_symbol(next_token(p), "{") {
+        name := expect_ident(p); // "name
+        consume_token(p); // "{"
+        fields := make(map[string]struct{expr: ExprId,span:Span}, allocator=get_ctx().allocator);
+        for !is_symbol(current_token(p), "}") {
+            fname := expect_ident(p);
+            expect_symbol(p, "=");
+            expr:=parse_expr(p);
+            if f, ok := fields[fname.text]; ok {
+                highlight_lines(fname.span)
+                gala_panic("duplicate fields.");
+            }
+            fields[fname.text] = {expr, fname.span}
+            if is_symbol(current_token(p), ",") {
+                consume_token(p); // ","
+            } else do break
+        }
+        expect_symbol(p, "}");
+        id := new_expr(StructLit{name.text, fields})
+        get_ctx().spans.exprs[id] = {file_name=get_ctx().current_file, span=name.span}
+        return id;
+    } else if is_symbol(current_token(p), "{") {
         open_b := consume_token(p); // "{"
         close_b := expect_symbol(p, "}");
         id := new_expr(Expr(ZeroInit{}))
@@ -83,7 +109,8 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
                 end=close_b.span.end
             }
         }
-        return id;
+        panic("not implemented yet")
+        // return id;
 
     }
     return parse_binop(p, 0)
@@ -268,7 +295,7 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         s := IfElse{}
         s.base_con = parse_expr(p);
         s.base_block = parse_block(p);
-        alts := make([dynamic]AltCon, allocator=context.temp_allocator);
+        alts := make([dynamic]AltCon, allocator=get_ctx().allocator);
         for is_kw(current_token(p), .Else) && is_kw(next_token(p), .If) {
             consume_token(p); // else
             consume_token(p); // if
@@ -329,7 +356,7 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
     for {
         if is_symbol(current_token(p), "(") {
             start := consume_token(p); // "("
-            args := make([dynamic]ExprId, allocator=context.temp_allocator);
+            args := make([dynamic]ExprId, allocator=get_ctx().allocator);
             // "until it meets a ")"
             for !is_symbol(current_token(p), ")") {
                 e := parse_expr(p);
@@ -374,7 +401,7 @@ parse_primary :: proc(p: ^Parser) -> ExprId {
 }
 parse_block :: proc(p: ^Parser) -> Block{
     expect_symbol(p, "{");
-    stmts := make([dynamic]StmtId, allocator=context.temp_allocator);
+    stmts := make([dynamic]StmtId, allocator=get_ctx().allocator);
     for !(current_token(p).kind == .Symbol && current_token(p).text == "}") &&
         (current_token(p).kind != .EOF) {
         stmt := parse_stmt(p);
@@ -421,7 +448,7 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
         assert(ok);
         end := expect_symbol(p, "]");
 
-        base_specifier := new(TypeSpecifier, allocator=context.temp_allocator);
+        base_specifier := new(TypeSpecifier, allocator=get_ctx().allocator);
         base_specifier^ = parse_type(p);
 
         return TypeSpecifier(FixedArray{
@@ -440,12 +467,15 @@ parse_module_kw :: proc(p: ^Parser) -> ItemId {
         kw := consume_token(p); // "struct"
         name := expect_ident(p);
         expect_symbol(p, "{");
-        fields := make([dynamic]StructField, allocator=context.temp_allocator);
+        fields := make([dynamic]StructField, allocator=get_ctx().allocator);
         for !is_symbol(current_token(p), "}") {
             name := expect_ident(p);
             expect_symbol(p, ":");
             ty := parse_type(p);
             append(&fields, StructField{name=name.text, t=ty, span=name.span});
+            if is_symbol(current_token(p), ",") {
+                consume_token(p); // ","
+            } else do break
         }
         expect_symbol(p, "}");
         sd := StructDec{
@@ -563,7 +593,7 @@ AST :: struct {
 parse_tokens :: proc(file_name: string, tokens: []Token) -> AST {
     _p:= Parser{file_name, tokens, 0};
     p := &_p
-    items := make([dynamic]ItemId, allocator=context.temp_allocator)
+    items := make([dynamic]ItemId, allocator=get_ctx().allocator)
     for current_token(p).kind != .EOF {
         #partial switch current_token(p).kind {
         case .Keyword: {

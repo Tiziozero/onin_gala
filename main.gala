@@ -2,6 +2,7 @@ struct vec2 {
     x: flt, y:flt
 }
 fn main(): int {
+    v := vec2{x=0.0, y=0.0};
     return 0;
 }
 
