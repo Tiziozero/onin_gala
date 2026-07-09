@@ -18,7 +18,9 @@ Context :: struct {
     expr_types:         map[ExprId]TypeId,
     expr_objects:       map[ExprId]ObjId,
     item_objects:       map[ItemId]ObjId,
+    item_types:         map[ItemId]TypeId,
     stmt_objects:       map[StmtId]ObjId,
+    stmt_types:         map[StmtId]TypeId,
 
     // for other stuff that need to know things only available
     // at resolution phase

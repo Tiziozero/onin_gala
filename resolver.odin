@@ -354,6 +354,8 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     // redefine type
     t := Type{kind=.Struct, structure={fields=sfields}}
     get_ctx().types[tid] = t;
+    // link item to type
+    get_ctx().item_types[id] = tid;
 }
 resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     fndec, ok := get(id).(ExternFnDec); assert(ok); // assert it's a fn dec

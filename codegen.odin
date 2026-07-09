@@ -102,7 +102,9 @@ cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
 }
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
     switch e in get_expr(id) {
-    case StructLit: panic("impl");
+    case StructLit: {
+        panic("impl");
+    }
     case ZeroInit: {
         gala_panic("impl");
     }
@@ -526,7 +528,19 @@ cg_lvalue :: proc(c: ^CGCtx, id: ExprId) -> string {
 }
 gen_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
-    case StructDec: {}
+    case StructDec: {
+        cwritef(c, "%%%s = ", i.name);
+        cwrite(c, "type {")
+        ty :=get_type(get_ctx().item_types[id])
+        for f, i in ty.structure.fields {
+            fmt.printfln("%s", ty_to_llvm_str(c,f.type));
+            cwritef(c, "%s", ty_to_llvm_str(c,f.type));
+            if i != len(get_type(get_ctx().item_types[id]).structure.fields) -1 {
+                cwrite(c, ",");
+            }
+        }
+        cwriteln(c, "}")
+    }
     case ExternFnDec: {
         // get type
         objid :=get_ctx().item_objects[id]
