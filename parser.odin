@@ -37,8 +37,13 @@ Expr :: union {
     Number,
     Symbol,
     FnCall,
+    FieldAccess,
     Cast,
     ZeroInit,
+}
+FieldAccess :: struct {
+    target: ExprId,
+    field: string,
 }
 FnCall :: struct {
     target: ExprId,
@@ -371,6 +376,15 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
             get_ctx().spans.exprs[id] = {
                 file_name=get_ctx().current_file,
                 span={start=start.span.start,end=end.span.end}
+            }
+            t = id
+        } else if is_symbol(current_token(p), ".") {
+            token := consume_token(p); // "."
+            ident := expect_ident(p);
+            id := new_expr(FieldAccess{target=t, field=ident.text});
+            get_ctx().spans.exprs[id] = {
+                file_name=get_ctx().current_file,
+                span={start=token.span.start,end=ident.span.end}
             }
             t = id
         } else do break

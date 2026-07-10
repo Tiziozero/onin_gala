@@ -81,7 +81,7 @@ compare_and_reduce_types :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     debugln(get(l), get(r));
     debugln((l), (r));
     //dump_context(get_ctx());
-    gala_panic("impl");
+    panic("impl");
 }
 can_binop :: proc(ty: TypeId) -> bool {
     if is_numeric(ty) do return true
@@ -106,12 +106,27 @@ can_cast_to :: proc(target_id, to_id: TypeId) -> bool {
     case .Bool: {
     }
     }
-    gala_panic("impl")
+    panic("impl")
 }
 tc_expr :: proc(tc: ^TcContext, e: ExprId) {
     debugln("tc expr:", e)
 
     switch expr in get(e) {
+    case FieldAccess: {
+        tc_expr(tc, expr.target);
+        target_tid := expr_ty(expr.target);
+        target_ty := get_type(target_tid);
+        assert(target_ty.kind == .Struct);
+        fields := target_ty.structure.fields;
+        for f in fields {
+            if f.name == expr.field {
+                get_ctx().expr_types[e] = f.type;
+                return; // ok
+            }
+        }
+        highlight_lines(get_span(e).span);
+        gala_panic("Field %s doesn't exist in type %s.", expr.field, target_ty.name);
+    }
     case StructLit: {
         tid := get_ctx().expr_struct_types[e]
         s := get_type(tid)
@@ -312,7 +327,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
         propagate_type(t, stmt.value);
 
     }
-    case: gala_panic("impl");
+    case: panic("impl");
     }
 }
 tc_block :: proc(tc: ^TcContext, b: Block) {
@@ -339,7 +354,7 @@ tc_item :: proc(tc: ^TcContext, id: ItemId) {
         tc_block(&new_tc, i.block);
 
     }
-    case: gala_panic("impl")
+    case: panic("impl")
     }
 }
 typecheck_module :: proc(ast: ^AST) {
@@ -351,6 +366,9 @@ typecheck_module :: proc(ast: ^AST) {
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
     debugln("propagating:", get_type(ty), "to", get_expr(expr));
     switch e in get_expr(expr) {
+    case FieldAccess: {
+        return // already typed
+    }
     case StructLit: {
         return // already has type
     }
@@ -371,7 +389,7 @@ propagate_type :: proc(ty: TypeId, expr: ExprId) {
     case FnCall: { // should have a fixed type
         return
     }
-    case: gala_panic("impl");
+    case: panic("impl");
     }
     // set to all
     get_ctx().expr_types[expr] = ty;

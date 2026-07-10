@@ -1,8 +1,12 @@
 struct vec2 {
-    x: flt, y:flt
+    x: flt, y:abc,
+}
+struct abc {
+    a: int, b:flt
 }
 fn main(): int {
-    v := vec2{x=0.0, y=0.0};
-    return 0;
+    v := vec2{y=abc{a=7, b=3.0}, x=2.9};
+    v.x = 9.1;
+    return cast(int)v.x;
 }
 

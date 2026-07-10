@@ -68,60 +68,64 @@ name_exists :: proc(scope: ^Scope, n: string) -> bool {
     return false
 }
 new_object :: proc(s: ^Scope, o: Object) -> ObjId {
-    ctx := get_ctx()
+    get_ctx := get_ctx()
     assert(o.kind != .Invalid);
     assert(len(o.name) > 0);
 
     // make sure they're not already declared
     assert(!name_exists(s, o.name));
 
-    append(&ctx.objs, o);
-    id := ObjId(len(ctx.objs)-1);
+    append(&get_ctx.objs, o);
+    id := ObjId(len(get_ctx.objs)-1);
     s.objects[o.name] = id
     debugln("new object:", o.name, o.kind);
     return id
 }
 new_type :: proc(s: ^Scope, t: Type) -> TypeId {
-    ctx := get_ctx();
+    get_ctx := get_ctx();
     assert(t.kind != .Invalid);
     assert(len(t.name) > 0);
 
     // make sure it doesn't exist
     assert(!name_exists(s, t.name));
 
-    append(&ctx.types, t);
-    id := TypeId(len(ctx.types)-1);  // allocate type
+    append(&get_ctx.types, t);
+    id := TypeId(len(get_ctx.types)-1);  // allocate type
     s.types[t.name] = id
     return id
 }
 new_object_fd :: proc(s: ^ModuleScope, o: Object) -> ObjId {
-    ctx := get_ctx()
+    get_ctx := get_ctx()
     assert(o.kind != .Invalid);
     assert(len(o.name) > 0);
 
     // make sure it doesn't exist
     assert(!name_exists(s, o.name));
 
-    append(&ctx.objs, o);
-    id := ObjId(len(ctx.objs)-1);
+    append(&get_ctx.objs, o);
+    id := ObjId(len(get_ctx.objs)-1);
     s.obj_foreward[o.name] = id
     return id
 }
 new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
-    ctx := get_ctx()
+    get_ctx := get_ctx()
     assert(t.kind != .Invalid);
     assert(len(t.name) > 0);
 
     // make sure it doesn't exist
     assert(!name_exists(s, t.name));
 
-    append(&ctx.types, t);
-    id := TypeId(len(ctx.types)-1); 
+    append(&get_ctx.types, t);
+    id := TypeId(len(get_ctx.types)-1); 
     s.ty_foreward[t.name] = id
     return id
 }
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
+    case FieldAccess: {
+        // check field in type checking
+        resolve_expr(s, e.target);
+    }
     case StructLit: {
         // check type exists
         tid, ok := scope_get_type(s, e.name); assert(ok);
@@ -129,12 +133,24 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         assert(ty.kind == .Struct);
         assert(len(ty.structure.fields) == len(e.fields))
         // check this exists
-        for sf in ty.structure.fields {
+        /*for sf in ty.structure.fields {
             f, ok := e.fields[sf.name];
             if !ok {
                 highlight_lines(get_span(id).span)
-                gala_panicf("Field %s doesn't exist in type",
-                    sf.name, e.name);
+                gala_panicf("Field doesn't exist in type %s.",
+                    e.name);
+            }
+            resolve_expr(s, f.expr);
+        }*/
+        for name, f in e.fields {
+            found := false
+            for k in ty.structure.fields {
+                if k.name == name do found = true
+            }
+            if !found {
+                highlight_lines(f.span)
+                gala_panicf("Field %s doesn't exist in type %s.",
+                    name, e.name);
             }
             resolve_expr(s, f.expr);
         }
@@ -352,7 +368,7 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
         i += 1;
     }
     // redefine type
-    t := Type{kind=.Struct, structure={fields=sfields}}
+    t := Type{name=sd.name, kind=.Struct, structure={fields=sfields}}
     get_ctx().types[tid] = t;
     // link item to type
     get_ctx().item_types[id] = tid;

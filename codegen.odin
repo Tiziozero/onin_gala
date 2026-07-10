@@ -5,6 +5,14 @@ import "core:io"
 import "core:fmt"
 import "core:strings"
 import "core:mem"
+expr_result :: struct {
+    id: ExprId,
+    kind: enum {Invalid, SingleRes, Binop, Number, Struct, None},
+    v: string,
+    struct_lit: struct {
+        fields: []string, // string of results
+    }
+}
 
 CGCtx :: struct {
     arena: ^mem.Dynamic_Arena,
@@ -77,8 +85,18 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     }
     case .Bool: return "i1";
     case .Function: return "ptr"; // functions are just pointers
+    case .Struct: {
+        if ty.name != "" {
+            n := aprintf(c, "%%%s", ty.name);
+            llvm_ty[id]=n;
+            return llvm_ty[id]
+        } else {
+            debugln(ty);
+            panic("impl")
+        }
     }
-    gala_panic("impl")
+    }
+    panic("impl")
 }
 // eg "%t1"
 new_tmp::proc(c: ^CGCtx) -> string {
@@ -102,8 +120,41 @@ cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
 }
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
     switch e in get_expr(id) {
+    case FieldAccess: {
+        r, ok := reduce_expr_to_single_value(c, cg_expr(c, e.target));
+        assert(ok);
+
+        target_ty := expr_ty(e.target)
+        ty := get_type(target_ty)
+
+        idx := -1
+        for f, k in ty.structure.fields {
+            if f.name == e.field {
+                idx = k
+                break
+            }
+        }
+        assert(idx != -1)
+
+        t := new_tmp(c)
+        cwritefln(c, "\t%s = extractvalue %s %s, %d",
+            t, ty_to_llvm_str(c, target_ty), r, idx)
+
+        return {kind=.SingleRes, v=t}
+    }
     case StructLit: {
-        panic("impl");
+        ty := get_ctx().expr_struct_types[id]
+        fields := make([]string, len(get_type(ty).structure.fields), allocator=get_ctx().allocator)
+        for f,k in get_type(ty).structure.fields {
+            r, ok := reduce_expr_to_single_value(c, cg_expr(c, e.fields[f.name].expr));
+            assert(ok);
+            fields[k] = r
+        }
+        r: expr_result
+        r.struct_lit.fields=fields
+        r.id=id
+        r.kind = .Struct
+        return r;
     }
     case ZeroInit: {
         gala_panic("impl");
@@ -217,7 +268,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
                 }
             }
             cwriteln(c, ")");
-            return {.None, ""}
+            return {kind=.None, id=id}
         } else {
             new_t := new_tmp(c);
             cwritef(c, "\t%s = call %s %s", new_t, ty_to_llvm_str(c, fn_ty.fn.ret_ty), t);
@@ -230,7 +281,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
                 }
             }
             cwriteln(c, ")");
-            return {kind=.SingleRes, v=new_t};
+            return {kind=.SingleRes, v=new_t, id=id};
         }
     }
     case: gala_panic("impl");
@@ -318,6 +369,26 @@ ty_to_llvm_cast_op :: proc(target_id, to_id: TypeId) -> (string, bool) {
 // some expressions (fn calls with void returns) don't return so are invalid
 reduce_expr_to_single_value :: proc(c: ^CGCtx, e: expr_result) -> (string, bool) {
     switch e.kind {
+    case .Struct: {
+        lit := get_expr(e.id).(StructLit)
+        tid := expr_ty(e.id)
+        ty := get_type(tid);
+        ty_str := ty_to_llvm_str(c, tid)
+
+        cur := "undef"   // starting aggregate — a literal LLVM keyword, not a register
+        i := 0;
+        for field in ty.structure.fields {
+            f := lit.fields[field.name]
+            fv, returns := reduce_expr_to_single_value(c, cg_expr(c, f.expr))
+            assert(returns)
+            next := new_tmp(c)
+            cwritefln(c, "\t%s = insertvalue %s %s, %s %s, %d",
+                next, ty_str, cur, ty_to_llvm_str(c, expr_ty(f.expr)), fv, i)
+            cur = next
+            i+=1;
+        }
+        return cur, true
+    }
     case .Invalid: gala_panic("invalid")
     case .None: return "", false
     case .SingleRes: {
@@ -333,10 +404,6 @@ reduce_expr_to_single_value :: proc(c: ^CGCtx, e: expr_result) -> (string, bool)
     }
     }
     gala_panic("impl");
-}
-expr_result :: struct {
-    kind: enum {Invalid, SingleRes,Binop,Number,None},
-    v: string,
 }
 stmt_ends_block :: proc(stmt: StmtId) -> bool {
     switch s in get(stmt) {
@@ -480,16 +547,38 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         // get object
         obj := get_obj(get_ctx().stmt_objects[id]);
         // gen value
-        value, returns :=  reduce_expr_to_single_value(c, cg_expr(c, s.value));
-        assert(returns);
+        v := cg_expr(c, s.value)
         // write name to scope
         c.scope.vars[s.name] = {.Variable, aprintf(c, "%%%s", s.name)};
-        // allocate
-        cwritefln(c, "\t%s = alloca %s",c.scope.vars[s.name].name, 
-            ty_to_llvm_str(c, obj.type.(TypeId)));
-        // init
-        cwritefln(c, "\tstore %s %s, ptr %s", ty_to_llvm_str(c, obj.type.(TypeId)),
-            value, c.scope.vars[s.name].name);
+        name := c.scope.vars[s.name].name
+        if true {
+            value, returns :=  reduce_expr_to_single_value(c, v);
+            assert(returns);
+            // allocate
+            cwritefln(c, "\t%s = alloca %s", name,
+                ty_to_llvm_str(c, obj.type.(TypeId)));
+            // init
+            cwritefln(c, "\tstore %s %s, ptr %s", ty_to_llvm_str(c, obj.type.(TypeId)),
+                value, name);
+        } else {
+            cwritefln(c, "\t%s = alloca %s",name, 
+                ty_to_llvm_str(c, obj.type.(TypeId)));
+            tid := get_ctx().expr_struct_types[v.id]
+            ty := get_type(tid);
+            for v, i in v.struct_lit.fields {
+                // load
+                // %y_addr = getelementptr inbounds %Vec2, %Vec2* %ptr, i32 0, i32 1
+                t := new_tmp(c)
+                llvm_t := ty_to_llvm_str(c, tid)
+                cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d",
+                            t, llvm_t, name, i)
+                // store
+                // store float 3.0, float* %y_addr
+                field_ty := ty_to_llvm_str(c, ty.structure.fields[i].type);
+                cwritefln(c, "\tstore %s %s, ptr %s",
+                            field_ty, v, t)
+            }
+        }
     }
     case Return: {
         if e, ok := s.expr.(ExprId); ok {
@@ -501,30 +590,43 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         }
     }
     case Assignment: {
-        #partial switch e in get_expr(s.target) {
-        case Symbol: {
-            value, returns :=  reduce_expr_to_single_value(c, cg_expr(c, s.value));
-            assert(returns);
-            t := cgscope_get(&c.scope, e.name);
-            assert(t.kind == .Variable);
-            cwritefln(c, "\tstore %s %s, ptr %s",
-                ty_to_llvm_str(c, expr_ty(s.target)), value,
-                t.name);
-        }
-        case: gala_panic("impl");
-        }
+        value, returns := reduce_expr_to_single_value(c, cg_expr(c, s.value))
+        assert(returns)
+        target_ptr := cg_lvalue(c, s.target)
+        cwritefln(c, "\tstore %s %s, ptr %s",
+            ty_to_llvm_str(c, expr_ty(s.target)), value, target_ptr)
     }
-    case:gala_panic("impl");
+    case:panic("impl");
     }
 }
 cg_lvalue :: proc(c: ^CGCtx, id: ExprId) -> string {
     #partial switch e in get_expr(id) {
     case Symbol: {
-        gala_panic("impl");
+        v := cgscope_get(&c.scope, e.name)
+        assert(v.kind == .Variable) // args aren't addressable — can't assign to a by-value param
+        return v.name
     }
-    case: gala_panic("impl")
+    case FieldAccess: {
+        base_ptr := cg_lvalue(c, e.target) // recurse — handles a.b.c chains
+        base_ty := expr_ty(e.target)
+        ty := get_type(base_ty)
+
+        idx := -1
+        for f, k in ty.structure.fields {
+            if f.name == e.field {
+                idx = k
+                break
+            }
+        }
+        assert(idx != -1)
+
+        t := new_tmp(c)
+        cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d",
+            t, ty_to_llvm_str(c, base_ty), base_ptr, idx)
+        return t
     }
-    gala_panic("impl")
+    case: gala_panic("not an lvalue")
+    }
 }
 gen_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
@@ -610,7 +712,7 @@ gen_item :: proc(c: ^CGCtx, id: ItemId) {
         // reset scope
         c.scope = old_scope
     }
-    case: gala_panic("impl")
+    case: panic("impl")
     }
 }
 cg_ast :: proc(c: ^CGCtx, ast: ^AST) {
