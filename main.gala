@@ -7,6 +7,15 @@ struct abc {
 fn main(): int {
     v := vec2{y=abc{a=7, b=3.0}, x=2.9};
     v.x = 9.1;
-    return cast(int)v.x;
+    v.y.a = cast(int)v.x;
+    x := abc{a=1, b=1.2};
+    v.y = abc_add(v.y, x);
+    return cast(int)v.y.a;
+}
+
+fn abc_add(a: abc, b: abc): abc {
+    a1 := a.a + b.a;
+    b1 := a.b + b.b;
+    return abc{a=a1, b=b1};
 }
 

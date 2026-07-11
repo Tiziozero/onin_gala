@@ -59,7 +59,7 @@ cwritefln :: proc(c: ^CGCtx, format: string, data: ..any) {
 llvm_ty: map[TypeId]string
 ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     t, ok := llvm_ty[id];
-    if ok { fmt.println("type found for:", id); return t }
+    if ok { /*debugln("type found for:", id);*/ return t }
     ty := get_type(id)
     #partial switch ty.kind {
     case .UntypedInteger: fallthrough
@@ -631,11 +631,14 @@ cg_lvalue :: proc(c: ^CGCtx, id: ExprId) -> string {
 gen_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
     case StructDec: {
+        item := i;
         cwritef(c, "%%%s = ", i.name);
         cwrite(c, "type {")
         ty :=get_type(get_ctx().item_types[id])
         for f, i in ty.structure.fields {
-            fmt.printfln("%s", ty_to_llvm_str(c,f.type));
+            fmt.printfln("for struct %s field %d (%s) type %s",
+                item.name, i, f.name,
+                ty_to_llvm_str(c,f.type));
             cwritef(c, "%s", ty_to_llvm_str(c,f.type));
             if i != len(get_type(get_ctx().item_types[id]).structure.fields) -1 {
                 cwrite(c, ",");

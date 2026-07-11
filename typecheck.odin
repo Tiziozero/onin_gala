@@ -78,10 +78,11 @@ compare_and_reduce_types :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     if is_numeric(l) && is_numeric(r) {
         return compare_and_reduce_numerics(l, r);
     }
-    debugln(get(l), get(r));
+    debugln(get(l));
+    debugln(get(r));
     debugln((l), (r));
     //dump_context(get_ctx());
-    panic("impl");
+    return 0, false, "types don't match"
 }
 can_binop :: proc(ty: TypeId) -> bool {
     if is_numeric(ty) do return true

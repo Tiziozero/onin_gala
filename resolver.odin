@@ -349,26 +349,24 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     tid, iok := s.ty_foreward[sd.name]; assert(iok); // make sure fd exists
     // ty := get_type(tid); // gets pointer, so modify that
     // check duplicate fields
-    declared := make( map[string]Field);
+    fields := make([]Field, len(sd.fields), allocator=get_ctx().allocator)
+    declared := make(map[string]Field);
     defer delete(declared);
 
-    for f in sd.fields {
+    for f,i in sd.fields {
+        debugln("STRUCT DEC FIELD RES %s %d", f.name, i);
         if d, ok := declared[f.name]; ok {
             highlight_lines(f.span);
             gala_panic("Field already exists.");
         }
         t := resolve_type_specifier(s, f.t);
         field := Field{name=f.name, type=t, span=f.span}
+        fields[i] = field;
         declared[f.name] = field;
     }
-    sfields := make([]Field, len(declared), allocator=get_ctx().allocator);
     i := 0
-    for _, f in declared {
-        sfields[i] = f
-        i += 1;
-    }
     // redefine type
-    t := Type{name=sd.name, kind=.Struct, structure={fields=sfields}}
+    t := Type{name=sd.name, kind=.Struct, structure={fields=fields}}
     get_ctx().types[tid] = t;
     // link item to type
     get_ctx().item_types[id] = tid;
