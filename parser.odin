@@ -26,6 +26,10 @@ Cast :: struct {
     to: TypeSpecifier,
     target: ExprId,
 }
+Transmute :: struct {
+    to: TypeSpecifier,
+    target: ExprId,
+}
 ZeroInit :: struct {}
 StructLit :: struct {
     name: string,
@@ -41,8 +45,17 @@ Expr :: union {
     Index,
     TakeSlice,
     Cast,
+    Transmute,
+    Reference,
+    Deref,
     FixedSizeArray,
     ZeroInit,
+}
+Deref :: struct {
+    expr: ExprId,
+}
+Reference :: struct {
+    expr: ExprId,
 }
 Index :: struct {
     target, index: ExprId,
@@ -169,6 +182,31 @@ parse_potential_cast :: proc(p: ^Parser) -> ExprId {
         expect_symbol(p, ")");
         expr := parse_postfix(p);
         id := new_expr(Expr(Cast{ty, expr}));
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span=token.span,
+        }
+        return id
+    } else if current_token(p).kind == .Transmute {
+        token := consume_token(p); // "transmute"
+        expect_symbol(p, "(");
+        ty := parse_type(p);
+        expect_symbol(p, ")");
+        expr := parse_postfix(p);
+        id := new_expr(Expr(Transmute{ty, expr}));
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span=token.span,
+        }
+        return id
+    }
+    return parse_unary(p);
+}
+parse_unary :: proc(p: ^Parser) -> ExprId {
+    if is_symbol(current_token(p), "&") {
+        token := consume_token(p); // "&"
+        expr := parse_expr(p);
+        id := new_expr(Expr(Reference{expr}));
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
             span=token.span,
@@ -450,6 +488,15 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
                 }
                 t = id
             }
+        } else if is_symbol(current_token(p), "^") {
+            token := consume_token(p); // "^"
+            id := new_expr(Deref{t});
+            get_ctx().spans.exprs[id] = {
+                file_name=get_ctx().current_file,
+                span=token.span
+            }
+            t = id
+
         } else do break
     }
     return t;
@@ -473,7 +520,8 @@ parse_primary :: proc(p: ^Parser) -> ExprId {
         }
         return id
     }
-    debugln(current_token(p));
+    // debugln(current_token(p));
+    highlight_lines(current_token(p).span);
     gala_panic("invalid primary token")
 }
 parse_block :: proc(p: ^Parser) -> Block{
@@ -535,8 +583,16 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
                 end=end.span.end
             }
         })
+    } else if is_symbol(current_token(p), "^") {
+        token := consume_token(p); // "^"
+        base_specifier := new(TypeSpecifier, allocator=get_ctx().allocator);
+        base_specifier^ = parse_type(p);
+        return TypeSpecifier(PointerType{
+            ptr=base_specifier,
+            span=token.span,
+        })
     }
-    gala_panic("impl");
+    panic("impl");
 }
 parse_module_kw :: proc(p: ^Parser) -> ItemId {
     #partial switch current_token(p).kw {

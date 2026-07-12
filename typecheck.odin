@@ -90,31 +90,61 @@ can_binop :: proc(ty: TypeId) -> bool {
     if is_numeric(ty) do return true
         return false
 }
+type_size :: proc(t: TypeId) -> int {
+    ty := get_type(t)
+    #partial switch ty.kind {
+    case .Integer, .Float, .Pointer: return 8
+    case .Rune: return 4
+    case .Byte, .Bool: return 1
+    case .FixedSizeArray:
+        return ty.fixed_size_array.size * type_size(ty.fixed_size_array.type)
+    case .Slice:
+        return 16 // { ptr, i64 } per ty_to_llvm_str
+    case .Struct:
+        // naive sum — see caveat below
+        total := 0
+        for f in ty.structure.fields {
+            total += type_size(f.type)
+        }
+        return total
+    }
+    panic("impl")
+}
+can_transmute_to :: proc(target_id, to_id: TypeId) -> bool {
+    if type_size(target_id) != type_size(to_id) {
+        return false
+    }
+    return true
+}
 can_cast_to :: proc(target_id, to_id: TypeId) -> bool {
     target := get_type(target_id);
     to := get_type(to_id);
-    #partial switch target.kind {
-    case .Integer: {
+
+    if is_int_kind(target.kind) {
         #partial switch to.kind {
-        case .Integer, .Float, .Byte, .Bool: return true;
+        case .Integer, .Float, .Byte, .Bool, .Rune, .Pointer: return true
         }
         return false
     }
+
+    #partial switch target.kind {
     case .Float: {
         #partial switch to.kind {
-        case .Integer, .Float: return true;
+        case .Integer, .Float, .Byte, .Rune: return true;
         }
         return false
     }
-    case .Bool: {
-    }
-    case .Byte: {
+    case .Pointer: {
         #partial switch to.kind {
-        case .Integer, .Float, .Byte, .Bool: return true;
+        case .Pointer, .Integer: return true
         }
         return false
     }
     }
+
+    // Struct, Slice, FixedSizeArray, Function, Void, ZeroInit, Untyped*, Invalid:
+    // no single-instruction cast exists for these. Array/slice->pointer decay,
+    // struct field extraction, etc. happen elsewhere, not here.
     debugln(target)
     debugln(to)
     panic("impl")
@@ -264,6 +294,20 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     case ZeroInit: {
         get_ctx().expr_types[id]=intern_type({kind=.ZeroInit})
     }
+    case Transmute: {
+        tc_expr(tc, e.target)
+        to := get_ctx().expr_resolution_types[id]
+        if is_untyped(expr_ty(e.target)) {
+            t := get_untyped_default(expr_ty(e.target));
+            propagate_type(t, e.target);
+        }
+        if !can_transmute_to(expr_ty(e.target), to) {
+            highlight_lines(get_span(id).span);
+            debugln(get(expr_ty(e.target)).kind, get(to).kind);
+            gala_panic("can't transmute expression to desired type")
+        }
+        get_ctx().expr_types[id] = to
+    }
     case Cast: {
         tc_expr(tc, e.target)
         to := get_ctx().expr_resolution_types[id]
@@ -273,6 +317,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         }
         if !can_cast_to(expr_ty(e.target), to) {
             highlight_lines(get_span(id).span);
+            debugln(get(expr_ty(e.target)).kind, get(to).kind);
             gala_panic("can't cast expression to desired type")
         }
         get_ctx().expr_types[id] = to
@@ -503,6 +548,9 @@ propagate_type :: proc(ty: TypeId, expr: ExprId) {
     }
     case Cast: { // should have a fixed type
         return
+    }
+    case Transmute: {
+        return // already should have a type
     }
     case Binop: {
         propagate_type(ty, e.left)

@@ -124,6 +124,12 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
 }
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
+    case Deref: {
+        resolve_expr(s, e.expr);
+    }
+    case Reference: {
+        resolve_expr(s, e.expr);
+    }
     case TakeSlice: {
         resolve_expr(s, e.target);
         resolve_expr(s, e.start);
@@ -172,6 +178,12 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         get_ctx().expr_resolution_types[id]=tid
     }
     case ZeroInit: {
+    }
+    case Transmute: {
+        ty := resolve_type_specifier(s, e.to);
+        resolve_expr(s, e.target);
+        // store in context. why not atp
+        get_ctx().expr_resolution_types[id] = ty;
     }
     case Cast: {
         ty := resolve_type_specifier(s, e.to);

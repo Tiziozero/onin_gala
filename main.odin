@@ -35,7 +35,7 @@ main :: proc() {
     context.temp_allocator = mem.panic_allocator()
     get_ctx().allocator = virtual.arena_allocator(&dyn_arena)
 
-    ctx.debug = false;
+    ctx.debug = true;
     ctx.items =         make([dynamic]Item, allocator=get_ctx().allocator)
     ctx.exprs =         make([dynamic]Expr, allocator=get_ctx().allocator)
     ctx.stmts =         make([dynamic]Stmt, allocator=get_ctx().allocator)
@@ -81,7 +81,7 @@ main :: proc() {
     new_type(&ctx.base_mod, Type{name="void", kind=.Void});
     new_type(&ctx.base_mod, Type{name="bool", kind=.Bool});
     new_type(&ctx.base_mod, Type{name="byte", kind=.Byte});
-    new_type(&ctx.base_mod, Type{name="rawptr", kind=.Pointer});
+    new_type(&ctx.base_mod, Type{name="rawptr", kind=.Pointer, ptr=void_type()});
 
 
     // parse main

@@ -128,8 +128,63 @@ cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
     }
     gala_panic("no");
 }
+// Only decides on a single-instruction fast path. Returns ok=false when
+// the pair needs the memory round-trip instead (structs, arrays, or any
+// combo bitcast doesn't support).
+ty_to_llvm_transmute_op :: proc(from_id, to_id: TypeId) -> (string, bool) {
+    from := get_type(from_id)
+    to := get_type(to_id)
+
+    if from.kind == to.kind do return "", false // identical layout, no-op
+
+    // int-family <-> Float, same width: true bit reinterpretation
+    if is_int_kind(from.kind) && to.kind == .Float && bit_width_of(from.kind) == bit_width_of(to.kind) {
+        return "bitcast", true
+    }
+    if from.kind == .Float && is_int_kind(to.kind) && bit_width_of(from.kind) == bit_width_of(to.kind) {
+        return "bitcast", true
+    }
+
+    // Pointer <-> Integer: NOT bitcast-legal in LLVM. ptrtoint/inttoptr
+    // are already the bit-preserving ops for equal widths.
+    if from.kind == .Pointer && is_int_kind(to.kind) do return "ptrtoint", true
+    if is_int_kind(from.kind) && to.kind == .Pointer do return "inttoptr", true
+
+    // int-family <-> int-family, same width, different label (e.g. Integer <-> Byte
+    // if you ever add a 64-bit byte-like kind): pure relabel, no instruction
+    if is_int_kind(from.kind) && is_int_kind(to.kind) && bit_width_of(from.kind) == bit_width_of(to.kind) {
+        return "", false
+    }
+
+    return "", false // signal "no fast path" — caller falls through to memory
+}
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
     switch e in get_expr(id) {
+            // in cg_expr:
+    case Transmute: {
+        from_ty := expr_ty(e.target)
+        to_ty := expr_ty(id)
+
+        reduced, returns := reduce_expr_to_single_value(c, cg_expr(c, e.target))
+        assert(returns)
+
+        if op, ok := ty_to_llvm_transmute_op(from_ty, to_ty); ok {
+            t := new_tmp(c)
+            cwritefln(c, "\t%s = %s %s %s to %s", t, op,
+                ty_to_llvm_str(c, from_ty), reduced, ty_to_llvm_str(c, to_ty))
+            return {kind=.Value, v=t}
+        }
+
+        // General fallback: reinterpret through memory. Correct for ANY pair —
+        // struct<->struct, struct<->array, scalar<->aggregate, whatever —
+        // because store/load don't care about type, only bytes.
+        slot := new_tmp(c)
+        cwritefln(c, "\t%s = alloca %s", slot, ty_to_llvm_str(c, from_ty))
+        cwritefln(c, "\tstore %s %s, ptr %s", ty_to_llvm_str(c, from_ty), reduced, slot)
+        t := new_tmp(c)
+        cwritefln(c, "\t%s = load %s, ptr %s", t, ty_to_llvm_str(c, to_ty), slot)
+        return {kind=.Value, v=t}
+    }
     case TakeSlice: {
         // compute length
         // gen ends

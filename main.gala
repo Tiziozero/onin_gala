@@ -1,11 +1,15 @@
+extern fn free(ptr: rawptr);
+extern fn calloc(n:int, size: int): rawptr;
+extern fn memcpy(dst: rawptr, src:rawptr, size:int);
 struct v2 {
     x: flt, y: flt
 }
 fn main(): int {
-    v := [1024]v2{};
-    a := v[10:11];
-    a[0] = v2{x=0.0,y=3.0};
-    return cast(int)v[10].y;
+    i := 10.2;
+    buf := [1024]byte{};
+    b(&buf);
+    return transmute(int)i;
 }
-
-
+fn b(buf: *[1024]byte) {
+    return ;
+}
