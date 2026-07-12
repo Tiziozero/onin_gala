@@ -512,9 +512,9 @@ resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
 }
 new_scope :: proc(parent:^Scope=nil) -> Scope {
     s := Scope{}
-    s.objects       = make(map[string]ObjId,  allocator=context.allocator);
-    s.types         = make(map[string]TypeId, allocator=context.allocator);
-    s.items         = make(map[string]ItemId, allocator=context.allocator);
+    s.objects       = make(map[string]ObjId,  allocator=get_ctx().allocator);
+    s.types         = make(map[string]TypeId, allocator=get_ctx().allocator);
+    s.items         = make(map[string]ItemId, allocator=get_ctx().allocator);
     s.parent = parent;
     return s;
 }
@@ -522,8 +522,8 @@ new_module_scope :: proc(parent:^Scope=nil) -> ModuleScope {
     s := ModuleScope{}
     s.scope = new_scope()
     s.parent = parent
-    s.obj_foreward  = make(map[string]ObjId,  allocator=context.allocator);
-    s.ty_foreward   = make(map[string]TypeId, allocator=context.allocator);
+    s.obj_foreward  = make(map[string]ObjId,  allocator=get_ctx().allocator);
+    s.ty_foreward   = make(map[string]TypeId, allocator=get_ctx().allocator);
     return s
 }
 free_scope :: proc(s: ^Scope) {

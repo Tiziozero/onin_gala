@@ -19,6 +19,7 @@ CGCtx :: struct {
     b: ^strings.Builder,
     tmp_id: int,
     scope: CGScope,
+    llvm_ty: map[TypeId]string,
 }
 CGObjectKind :: enum {
     Invalid,
@@ -36,12 +37,12 @@ CGScope :: struct {
 }
 new_gcscope :: proc(parent: ^CGScope) -> CGScope {
     s := CGScope{}
-    s.vars = make(map[string]CGObj);
+    s.vars = make(map[string]CGObj, allocator=get_ctx().allocator);
     s.parent = parent
     return s;
 }
 free_cgscope :: proc(s: ^CGScope) {
-    delete(s.vars);
+    // delete(s.vars);
 }
 cwritef :: proc(c: ^CGCtx, format: string, data: ..any) {
     fmt.sbprintf(c.b, format, ..data)
@@ -56,9 +57,8 @@ cwritefln :: proc(c: ^CGCtx, format: string, data: ..any) {
     fmt.sbprintfln(c.b, format, ..data);
 }
 
-llvm_ty: map[TypeId]string
 ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
-    t, ok := llvm_ty[id];
+    t, ok := c.llvm_ty[id];
     if ok { /*debugln("type found for:", id);*/ return t }
     ty := get_type(id)
     #partial switch ty.kind {
@@ -68,20 +68,20 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
         gala_panic("bug")
     case .Pointer: {
         s := fmt.aprintf("ptr", allocator=c.arena.block_allocator )
-        llvm_ty[id]=s
+        c.llvm_ty[id]=s
         return s
     }
     case .Float: {
-        llvm_ty[id]="double";
-        return llvm_ty[id]
+        c.llvm_ty[id]="double";
+        return c.llvm_ty[id]
     }
     case .Integer: {
-        llvm_ty[id]="i64";
-        return llvm_ty[id]
+        c.llvm_ty[id]="i64";
+        return c.llvm_ty[id]
     }
     case .Void: {
-        llvm_ty[id]="void";
-        return llvm_ty[id]
+        c.llvm_ty[id]="void";
+        return c.llvm_ty[id]
     }
     case .Byte: return "i8";
     case .Bool: return "i1";
@@ -89,8 +89,8 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     case .Struct: {
         if ty.name != "" {
             n := aprintf(c, "%%%s", ty.name);
-            llvm_ty[id]=n;
-            return llvm_ty[id]
+            c.llvm_ty[id]=n;
+            return c.llvm_ty[id]
         } else {
             debugln(ty);
             panic("impl")
@@ -99,8 +99,8 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     case .FixedSizeArray: {
             n := aprintf(c, "[%d x %s]", ty.fixed_size_array.size,
                    ty_to_llvm_str(c, ty.fixed_size_array.type));
-            llvm_ty[id]=n;
-            return llvm_ty[id]
+            c.llvm_ty[id]=n;
+            return c.llvm_ty[id]
     }
     case .Slice: {
         return "{ ptr, i64 }";
@@ -118,7 +118,6 @@ aprintf :: proc(c: ^CGCtx, format: string, data: ..any) -> string {
     res := fmt.aprintf(format, ..data, allocator=c.arena.block_allocator)
     return res
 }
-ssa_names: map[string]string;
 // returns value
 cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
     #partial switch e in get(id) {
@@ -287,9 +286,9 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
             dump_context(get_ctx())
             gala_panic("can't binop voids")
         } else {
-            fmt.println(get_type(operand_ty).kind)
-            fmt.println(get_expr(id))
-            gala_panic("handle")
+            debugln(get_type(operand_ty).kind)
+            debugln(get_expr(id))
+            panic("handle")
         }
 
         return {kind=.Binop,
@@ -319,7 +318,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
         t := cg_fn_call_target(c, e.target);
         fn_ty := get_type(expr_ty(e.target));
         //gen args
-        args:=make([dynamic]string)
+        args:=make([dynamic]string, allocator=get_ctx().allocator)
         for a, i in e.args {
             r, returns := reduce_expr_to_single_value(c, cg_expr(c, a));
             assert(returns);
@@ -333,7 +332,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
             for a, i in args {
                 cwritef(c, "%s", a);
                 if i < len(args) - 1 {
-                    fmt.println(i, len(fn_ty.fn.args))
+                    debugln(i, len(fn_ty.fn.args))
                     cwritef(c, ", ")
                 }
             }
@@ -346,7 +345,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
             for a, i in args {
                 cwritef(c, "%s", a);
                 if i < len(args) - 1 {
-                    fmt.println(i, len(fn_ty.fn.args))
+                    debugln(i, len(fn_ty.fn.args))
                     cwritef(c, ", ")
                 }
             }
@@ -509,8 +508,8 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         // can reference "the next check" before that block is emitted.
         base_block := aprintf(c, "base_block_label%d", id_suffix);
 
-        alt_cond_labels := make([dynamic]string, c.arena.block_allocator)
-        alt_body_labels := make([dynamic]string, c.arena.block_allocator)
+        alt_cond_labels := make([dynamic]string, get_ctx().allocator)
+        alt_body_labels := make([dynamic]string, get_ctx().allocator)
         for _, i in s.alt {
             append(&alt_cond_labels, aprintf(c, "alt_cond_label%d_%d", id_suffix, i))
             append(&alt_body_labels, aprintf(c, "alt_block_label%d_%d", id_suffix, i))
@@ -763,7 +762,7 @@ gen_item :: proc(c: ^CGCtx, id: ItemId) {
         cwrite(c, "type {")
         ty :=get_type(get_ctx().item_types[id])
         for f, i in ty.structure.fields {
-            fmt.printfln("for struct %s field %d (%s) type %s",
+            debugfln("for struct %s field %d (%s) type %s",
                 item.name, i, f.name,
                 ty_to_llvm_str(c,f.type));
             cwritef(c, "%s", ty_to_llvm_str(c,f.type));
@@ -792,7 +791,7 @@ gen_item :: proc(c: ^CGCtx, id: ItemId) {
             c.scope.vars[a.name] = {.Argument, aprintf(c, "%%%s", a.name)};
             cwritef(c, "%s %s", ty_to_llvm_str(c, a.type), c.scope.vars[a.name].name);
             if i < len(fn_ty.fn.args) - 1 {
-                fmt.println(i, len(fn_ty.fn.args))
+                debugln(i, len(fn_ty.fn.args))
                 cwritef(c, ", ")
             }
         }
@@ -824,7 +823,7 @@ gen_item :: proc(c: ^CGCtx, id: ItemId) {
             c.scope.vars[a.name] = {.Argument, aprintf(c, "%%%s", a.name)};
             cwritef(c, "%s %s", ty_to_llvm_str(c, a.type), c.scope.vars[a.name].name);
             if i < len(fn_ty.fn.args) - 1 {
-                fmt.println(i, len(fn_ty.fn.args))
+                debugln(i, len(fn_ty.fn.args))
                 cwritef(c, ", ")
             }
         }
@@ -873,10 +872,13 @@ cg_module :: proc(ast: ^AST) {
     cgctx := CGCtx{}
     arena : mem.Dynamic_Arena;
     mem.dynamic_arena_init(&arena)
+    defer mem.dynamic_arena_free_all(&arena);
     cgctx.arena = &arena
     sb : strings.Builder
     strings.builder_init(&sb)
+    defer strings.builder_destroy(&sb)
     cgctx.b = &sb
+    cgctx.llvm_ty = make(map[TypeId]string, allocator=get_ctx().allocator);
     cgctx.scope = new_gcscope(nil);
 
 
@@ -901,25 +903,79 @@ cg_module :: proc(ast: ^AST) {
     }
     // gen
     cg_ast(&cgctx, ast)
-    // print resuly
-    fmt.println(strings.to_string(sb))
+
+    // print result
+    debugln(strings.to_string(sb))
+
     // write
-    e := os.write_entire_file_from_string("a.ll", strings.to_string(sb))
-    assert(e == io.Error.None)
+    dir_err := os.make_directory(".gala_build")
+    if dir_err != io.Error.None {
+        if dir_err != .Exist {
+            gala_panic("Failed make .gala_build directory:", dir_err);
+        }
+    }
+    e := os.write_entire_file_from_string(".gala_build/a.ll", strings.to_string(sb))
+    if e != io.Error.None {
+        gala_panic("Failed to write to file:", e);
+    }
     
-    // compile llvm
-    p, err := os.process_start({command={"clang", "-o", "a.out", "a.ll"}});
-    assert(err == .NONE);
-    p_state, werr := os.process_wait(p)
-    assert(err == .NONE);
-    assert(p_state.exit_code == 0);
-    fmt.println("clang exit code:", p_state.exit_code);
+    {
+        // compile llvm "llc -filetype=obj a.ll -o a.o"
+        p, err := os.process_start({command={"llc", "-filetype=obj",
+            ".gala_build/a.ll", "-o", ".gala_build/a.o"}});
+        if err != .NONE {
+            gala_panic("Failed to start clang process:", err);
+        }
+        p_state, werr := os.process_wait(p)
+        if werr != .NONE {
+            gala_panic("Failed to wait for clang process:", werr);
+        }
+        if p_state.exit_code != 0 {
+            gala_panic("Failed to compile llvm ir. exit code:", p_state.exit_code);
+        }
+        debugln("clang exit code:", p_state.exit_code);
+    }
+    {
+        // link ld a.o -o a.out
+        /* ld \
+        /usr/lib/crt1.o \
+        /usr/lib/crti.o \
+        a.o \
+        -lc \
+        /usr/lib/crtn.o */
+        p, err := os.process_start({command={"ld",
+            "-dynamic-linker", "/lib64/ld-linux-x86-64.so.2",
+            "/usr/lib/crt1.o",
+            "/usr/lib/crti.o",
+            "-lc", 
+            ".gala_build/a.o",
+            "/usr/lib/crtn.o",
+            "-o", "a.out",
+        }});
+        if err != .NONE {
+            gala_panic("Failed to start link (ld) process:", err);
+        }
+        p_state, werr := os.process_wait(p)
+        if werr != .NONE {
+            gala_panic("Failed to wait for link (ld) process:", werr);
+        }
+        if p_state.exit_code != 0 {
+            gala_panic("Failed to link machine code. exit code:", p_state.exit_code);
+        }
+        debugln("clang exit code:", p_state.exit_code);
+    }
     
-    // run
-    p, err = os.process_start({command={"./a.out"}});
-    assert(err == .NONE);
-    p_state, werr = os.process_wait(p)
-    assert(err == .NONE);
-    fmt.println("program exit code:", p_state.exit_code);
+    {
+        // run
+        p, err := os.process_start({command={"./a.out"}});
+        if err != .NONE {
+            gala_panic("Failed to run compiled program:", err);
+        }
+        p_state, werr := os.process_wait(p)
+        if werr != .NONE {
+            gala_panic("Failed to wait program:", werr);
+        }
+        debugln("program exit code:", p_state.exit_code);
+    }
 
 }

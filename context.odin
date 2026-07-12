@@ -17,8 +17,10 @@ Context :: struct {
     // refs
     expr_types:         map[ExprId]TypeId,
     expr_objects:       map[ExprId]ObjId,
-    item_objects:       map[ItemId]ObjId,
+
     item_types:         map[ItemId]TypeId,
+    item_objects:       map[ItemId]ObjId,
+
     stmt_objects:       map[StmtId]ObjId,
     stmt_types:         map[StmtId]TypeId,
 
@@ -37,9 +39,9 @@ Context :: struct {
         items: map[ItemId]struct{file_name: string, span: Span},
         // includes item decs + regular vardecs since both use ObjId
         objs_decs: map[ObjId]struct{file_name: string, span: Span},
-    }
+    },
+    files: map[string]string,
 }
-files: map[string]string;
 
 FileLine :: struct {
     line_number: int,
@@ -50,7 +52,7 @@ FileLine :: struct {
 
 get_file_lines :: proc(file_name: string, span: Span) -> []FileLine {
     allocator := get_ctx().allocator;
-    src, ok := files[file_name]
+    src, ok := get_ctx().files[file_name]
     if !ok {
         panic(fmt.tprintf("get_file_lines: unknown file %q", file_name))
     }
