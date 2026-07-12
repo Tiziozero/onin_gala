@@ -1,5 +1,6 @@
 package main
 
+import "core:slice"
 TcContext :: struct {
     in_function: bool,
     fn_ret_ty: Maybe(TypeId),
@@ -18,6 +19,7 @@ is_numeric :: proc(t: TypeId) -> bool {
     case .UntypedInteger: return true
     case .Float: return true
     case .Integer: return true
+    case .Byte: return true
     case: return false
     }
 }
@@ -106,97 +108,212 @@ can_cast_to :: proc(target_id, to_id: TypeId) -> bool {
     }
     case .Bool: {
     }
+    case .Byte: {
+        #partial switch to.kind {
+        case .Integer, .Float, .Byte, .Bool: return true;
+        }
+        return false
     }
+    }
+    debugln(target)
+    debugln(to)
     panic("impl")
 }
-tc_expr :: proc(tc: ^TcContext, e: ExprId) {
-    debugln("tc expr:", e)
+is_array_type :: proc(t: TypeId) -> bool {
+    #partial switch get_type(t).kind {
+    case .FixedSizeArray: return true
+    case .Slice: return true
+    }
+    return false
+}
+can_index :: proc(t: TypeId) -> bool {
+    #partial switch get_type(t).kind {
+    case .Integer: return true
+    }
+    return false
+}
+get_array_base_type :: proc(t: TypeId) -> (TypeId, bool) {
+    ty := get_type(t)
+    #partial switch ty.kind {
+    case .FixedSizeArray: {
+        return ty.fixed_size_array.type, true
+    }
+    case .Slice: {
+        return ty.slice.type, true
+    }
+    }
+    panic("can't index")
+}
+tc_expr :: proc(tc: ^TcContext, id: ExprId) {
+    switch e in get_expr(id) {
+    case TakeSlice: {
+        tc_expr(tc, e.target)
+        target_ty := expr_ty(e.target)
 
-    switch expr in get(e) {
+        if !is_array_type(target_ty) {
+            gala_panic("can't index type:", get_type(target_ty))
+        }
+
+        tc_expr(tc, e.start)
+        s_ty := expr_ty(e.start)
+        tc_expr(tc, e.end)
+        e_ty := expr_ty(e.end)
+
+
+        if is_untyped(s_ty) {
+            if get(s_ty).kind == .UntypedInteger {
+                s_ty = integer_type()
+                get_ctx().expr_types[e.start] = s_ty
+            } else {
+                gala_panic("array index must be an integer")
+            }
+        }
+        if is_untyped(e_ty) {
+            if get(e_ty).kind == .UntypedInteger {
+                e_ty = integer_type()
+                get_ctx().expr_types[e.end] = e_ty
+            } else {
+                gala_panic("array index must be an integer")
+            }
+        }
+
+        if !can_index(s_ty) {
+            gala_panic("can't use type:", get_type(s_ty), "to index an array")
+        }
+        if !can_index(e_ty) {
+            gala_panic("can't use type:", get_type(e_ty), "to index an array")
+        }
+
+        ty, ok := get_array_base_type(target_ty)
+        assert(ok)
+        slice_t := Type {
+            kind=.Slice,
+            slice={type=ty},
+        }
+        tid := intern_type(slice_t);
+        get_ctx().expr_types[id] = tid
+    }
+    case Index: {
+        tc_expr(tc, e.target)
+        target_ty := expr_ty(e.target)
+
+        if !is_array_type(target_ty) {
+            gala_panic("can't index type:", get_type(target_ty))
+        }
+
+        tc_expr(tc, e.index)
+        i_ty := expr_ty(e.index)
+
+        if is_untyped(i_ty) {
+            if get(i_ty).kind == .UntypedInteger {
+                i_ty = integer_type()
+                get_ctx().expr_types[e.index] = i_ty
+            } else {
+                gala_panic("array index must be an integer")
+            }
+        }
+
+        if !can_index(i_ty) {
+            gala_panic("can't use type:", get_type(i_ty), "to index an array")
+        }
+
+        ty, ok := get_array_base_type(target_ty)
+        assert(ok)
+
+        get_ctx().expr_types[id] = ty
+    }
+    case FixedSizeArray: {
+        t := Type{};
+        t.kind = .FixedSizeArray
+        t.fixed_size_array.type = get_ctx().expr_resolution_types[id]
+        t.fixed_size_array.size = e.size;
+        tid := intern_type(t);
+        get_ctx().expr_types[id] = tid;
+    }
     case FieldAccess: {
-        tc_expr(tc, expr.target);
-        target_tid := expr_ty(expr.target);
+        tc_expr(tc, e.target);
+        target_tid := expr_ty(e.target);
         target_ty := get_type(target_tid);
         assert(target_ty.kind == .Struct);
         fields := target_ty.structure.fields;
         for f in fields {
-            if f.name == expr.field {
-                get_ctx().expr_types[e] = f.type;
+            if f.name == e.field {
+                get_ctx().expr_types[id] = f.type;
                 return; // ok
             }
         }
-        highlight_lines(get_span(e).span);
-        gala_panic("Field %s doesn't exist in type %s.", expr.field, target_ty.name);
+        highlight_lines(get_span(id).span);
+        gala_panic("Field %s doesn't exist in type %s.", e.field, target_ty.name);
     }
     case StructLit: {
-        tid := get_ctx().expr_struct_types[e]
+        tid := get_ctx().expr_resolution_types[id]
         s := get_type(tid)
         for sf in s.structure.fields {
-            f := expr.fields[sf.name].expr
+            f := e.fields[sf.name].expr
             tc_expr(tc, f);
             r, ok, err := compare_and_reduce_types(sf.type, expr_ty(f))
             if !ok {
-                span := expr.fields[sf.name].span
+                span := e.fields[sf.name].span
                 highlight_lines(span)
                 gala_panic("Type error:", err);
             }
             propagate_type(r, f);
         }
-        get_ctx().expr_types[e]=tid
+        get_ctx().expr_types[id]=tid
     }
     case ZeroInit: {
-        get_ctx().expr_types[e]=intern_type({kind=.ZeroInit})
+        get_ctx().expr_types[id]=intern_type({kind=.ZeroInit})
     }
     case Cast: {
-        tc_expr(tc, expr.target)
-        to := get_ctx().expr_cast_types[e]
-        if is_untyped(expr_ty(expr.target)) {
-            t := get_untyped_default(expr_ty(expr.target));
-            propagate_type(t, expr.target);
+        tc_expr(tc, e.target)
+        to := get_ctx().expr_resolution_types[id]
+        if is_untyped(expr_ty(e.target)) {
+            t := get_untyped_default(expr_ty(e.target));
+            propagate_type(t, e.target);
         }
-        if !can_cast_to(expr_ty(expr.target), to) {
-            highlight_lines(get_span(e).span);
+        if !can_cast_to(expr_ty(e.target), to) {
+            highlight_lines(get_span(id).span);
             gala_panic("can't cast expression to desired type")
         }
-        get_ctx().expr_types[e] = to
+        get_ctx().expr_types[id] = to
     }
     case Symbol: {
-        debugln(e, "is a symbol", get(e))
-        obj := get_ctx().expr_objects[e];
-        get_ctx().expr_types[e] = get_obj(obj).type.(TypeId)
+        debugln(e, "is a symbol", get_expr(id))
+        obj := get_ctx().expr_objects[id];
+        get_ctx().expr_types[id] = get_obj(obj).type.(TypeId)
     }
     case Number: {
         debugln("is a number")
         // check if it's an untyped float or int
-        for c in expr.text {
+        for c in e.text {
             if c == '.' {
-                get_ctx().expr_types[e] = intern_type(Type{kind=.UntypedFloat})
+                get_ctx().expr_types[id] = intern_type(Type{kind=.UntypedFloat})
                 return
             }
         }
-        get_ctx().expr_types[e] = intern_type(Type{kind=.UntypedInteger})
+        get_ctx().expr_types[id] = intern_type(Type{kind=.UntypedInteger})
     }
     case Binop:{
         debugln("is a binop")
 
-        tc_expr(tc, expr.left);
-        tc_expr(tc, expr.right);
-        ty, ok, s := compare_and_reduce_types(expr_ty(expr.left), expr_ty(expr.right));
+        tc_expr(tc, e.left);
+        tc_expr(tc, e.right);
+        ty, ok, s := compare_and_reduce_types(expr_ty(e.left), expr_ty(e.right));
         if !ok {
-            highlight_lines(get_span(e).span)
+            highlight_lines(get_span(id).span)
             gala_panic(s)
         }
 
-        propagate_type(ty, expr.left); // propagate, wtf?
-        propagate_type(ty, expr.right);
+        propagate_type(ty, e.left); // propagate, wtf?
+        propagate_type(ty, e.right);
 
-        #partial switch expr.kind {
+        #partial switch e.kind {
         case .Addition:     fallthrough
         case .Subtraction:  fallthrough
         case .Multiply:     fallthrough
         case .Divide: {
             if !can_binop(ty) {
-                highlight_lines(get_span(e).span);
+                highlight_lines(get_span(id).span);
                 gala_panic("can't perform a binop on these two expressions");
             }
         }
@@ -204,30 +321,30 @@ tc_expr :: proc(tc: ^TcContext, e: ExprId) {
             bool_ty, ok := get_ctx().base_mod.types["bool"]; assert(ok);
             ty = bool_ty;
         }
-        get_ctx().expr_types[e] = ty
+        get_ctx().expr_types[id] = ty
     }
     case FnCall: {
-        tc_expr(tc, expr.target);
-        ty := get_type(expr_ty(expr.target));
+        tc_expr(tc, e.target);
+        ty := get_type(expr_ty(e.target));
         assert(ty.kind == .Function)
         fargs := ty.fn.args;
-        if len(fargs) != len(expr.args) {
-            debugln(len(fargs), len(expr.args))
+        if len(fargs) != len(e.args) {
+            debugln(len(fargs), len(e.args))
             gala_panic("args count for function don't match");
         }
         for i in 0..<len(fargs) {
-            earg := expr.args[i];
+            earg := e.args[i];
             farg := fargs[i];
             tc_expr(tc, earg);
             r, ok, s := compare_and_reduce_types(farg.type, expr_ty(earg));
             if !ok {
-                highlight_lines(get_span(e).span);
+                highlight_lines(get_span(id).span);
                 gala_panic(s);
             }
             assert(r == farg.type); // should always match
             propagate_type(r, earg);
         }
-        get_ctx().expr_types[e] = ty.fn.ret_ty
+        get_ctx().expr_types[id] = ty.fn.ret_ty
     }
     case: gala_panic("impl tc expr")
     }
@@ -367,6 +484,15 @@ typecheck_module :: proc(ast: ^AST) {
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
     debugln("propagating:", get_type(ty), "to", get_expr(expr));
     switch e in get_expr(expr) {
+    case TakeSlice: {
+        return // already typed
+    }
+    case Index: {
+        return // already typed
+    }
+    case FixedSizeArray: {
+        return // already typed
+    }
     case FieldAccess: {
         return // already typed
     }

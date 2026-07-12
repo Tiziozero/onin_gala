@@ -18,6 +18,9 @@ dump_types :: proc(ctx: ^Context) {
         fmt.printf("[%d] %s\n", i, t.name)
 
         switch t.kind {
+        case .Slice: {
+            fmt.println("    kind: Slice")
+        }
         case .Struct:
             fmt.println("    kind: Struct")
         case .FixedSizeArray: 

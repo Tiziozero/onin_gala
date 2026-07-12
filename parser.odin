@@ -38,8 +38,22 @@ Expr :: union {
     Symbol,
     FnCall,
     FieldAccess,
+    Index,
+    TakeSlice,
     Cast,
+    FixedSizeArray,
     ZeroInit,
+}
+Index :: struct {
+    target, index: ExprId,
+}
+TakeSlice :: struct {
+    target, start, end: ExprId,
+}
+FixedSizeArray :: struct {
+    size: int,
+    ty: TypeSpecifier,
+    initialiser: any,
 }
 FieldAccess :: struct {
     target: ExprId,
@@ -103,6 +117,32 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
         id := new_expr(StructLit{name.text, fields})
         get_ctx().spans.exprs[id] = {file_name=get_ctx().current_file, span=name.span}
         return id;
+    } else if is_symbol(current_token(p), "[") {
+        // eg: "v := [1024]byte{}
+        open_b := consume_token(p); // "["
+        n := consume_token(p); // number
+        if n.kind != .Number {
+            highlight_lines(n.span);
+            gala_panic("expected number for fixed size array init");
+        }
+        size, ok := strconv.parse_int(n.text); assert(ok);
+        close_b := expect_symbol(p, "]");
+
+        t := parse_type(p);
+
+        // for now, only zero initialiser, so all 0s ("{}")
+        expect_symbol(p, "{");
+        expect_symbol(p, "}");
+
+        id := new_expr(Expr(FixedSizeArray{size=size,ty=t,initialiser=nil}))
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span={
+                start=open_b.span.start,
+                end=close_b.span.end
+            }
+        }
+        return id
     } else if is_symbol(current_token(p), "{") {
         open_b := consume_token(p); // "{"
         close_b := expect_symbol(p, "}");
@@ -387,6 +427,29 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
                 span={start=token.span.start,end=ident.span.end}
             }
             t = id
+        } else if is_symbol(current_token(p), "[") {
+            start := consume_token(p); // "["
+            index := parse_expr(p);
+
+            if is_symbol(current_token(p), "]") {
+                end := expect_symbol(p, "]");
+                id := new_expr(Index{target=t, index=index});
+                get_ctx().spans.exprs[id] = {
+                    file_name=get_ctx().current_file,
+                    span={start=start.span.start,end=end.span.end}
+                }
+                t = id
+            } else if is_symbol(current_token(p), ":") {
+                consume_token(p); // ":"
+                end_index := parse_expr(p);
+                end := expect_symbol(p, "]");
+                id := new_expr(TakeSlice{target=t, start=index, end=end_index});
+                get_ctx().spans.exprs[id] = {
+                    file_name=get_ctx().current_file,
+                    span={start=start.span.start,end=end.span.end}
+                }
+                t = id
+            }
         } else do break
     }
     return t;

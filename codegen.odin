@@ -7,7 +7,7 @@ import "core:strings"
 import "core:mem"
 expr_result :: struct {
     id: ExprId,
-    kind: enum {Invalid, SingleRes, Binop, Number, Struct, None},
+    kind: enum {Invalid, Value, Binop, Number, Struct, None},
     v: string,
     struct_lit: struct {
         fields: []string, // string of results
@@ -83,6 +83,7 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
         llvm_ty[id]="void";
         return llvm_ty[id]
     }
+    case .Byte: return "i8";
     case .Bool: return "i1";
     case .Function: return "ptr"; // functions are just pointers
     case .Struct: {
@@ -95,7 +96,17 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
             panic("impl")
         }
     }
+    case .FixedSizeArray: {
+            n := aprintf(c, "[%d x %s]", ty.fixed_size_array.size,
+                   ty_to_llvm_str(c, ty.fixed_size_array.type));
+            llvm_ty[id]=n;
+            return llvm_ty[id]
     }
+    case .Slice: {
+        return "{ ptr, i64 }";
+    }
+    }
+    debugln(ty);
     panic("impl")
 }
 // eg "%t1"
@@ -120,6 +131,65 @@ cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
 }
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
     switch e in get_expr(id) {
+    case TakeSlice: {
+        // compute length
+        // gen ends
+        start, sret := reduce_expr_to_single_value(c, cg_expr(c, e.start))
+        assert(sret);
+        end, eret := reduce_expr_to_single_value(c, cg_expr(c, e.end))
+        assert(eret);
+
+        // reduce both to int
+        if get(expr_ty(e.start)).kind != .Integer {
+            op, ok := ty_to_llvm_cast_op(expr_ty(e.start), integer_type());
+            if !ok {
+                // nothing?
+            }
+            t := new_tmp(c);
+            cwritefln(c, "\t%s = %s %s %s to %s", t, op,
+                ty_to_llvm_str(c, expr_ty(e.start)), start, ty_to_llvm_str(c, integer_type()));
+            start = t
+        }
+        if get(expr_ty(e.end)).kind != .Integer {
+            op, ok := ty_to_llvm_cast_op(expr_ty(e.end), integer_type());
+            if !ok {
+                // nothing?
+            }
+            t := new_tmp(c);
+            cwritefln(c, "\t%s = %s %s %s to %s", t, op,
+                ty_to_llvm_str(c, expr_ty(e.end)), end, ty_to_llvm_str(c, integer_type()));
+            end = t
+        }
+        len_s := new_tmp(c);
+        cwritefln(c, "\t%s = sub nsw nuw %s %s, %s",len_s,
+            ty_to_llvm_str(c,integer_type()), end, start);
+
+        llvm_int := ty_to_llvm_str(c, integer_type())
+        // get ptr
+        base_ptr, elem_ty := cg_data_ptr(c, e.target)
+        elem_ptr := new_tmp(c)
+        cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, %s %s",
+            elem_ptr, elem_ty, base_ptr, llvm_int, start)
+
+        v1 := new_tmp(c)
+        v2 := new_tmp(c)
+        cwritefln(c, "\t%s = insertvalue {{ ptr, %s }} undef, ptr %s, 0", v1, llvm_int, elem_ptr)
+        cwritefln(c, "\t%s = insertvalue {{ ptr, %s }} %s, %s %s, 1", v2, llvm_int, v1, llvm_int, len_s)
+        return {kind=.Value, v=v2}
+    }
+    // cg_expr's Index:
+    case Index: {
+        ptr := cg_elem_ptr(c, e.target, e.index)
+        v := new_tmp(c)
+        cwritefln(c, "\t%s = load %s, ptr %s", v, ty_to_llvm_str(c, expr_ty(id)), ptr)
+        return {kind=.Value, v=v}
+    }
+    case FixedSizeArray: {
+        assert(e.initialiser == nil);
+        ty := ty_to_llvm_str(c, expr_ty(id));
+        t := aprintf(c, "zeroinitializer");
+        return {kind=.Value, v=t}
+    }
     case FieldAccess: {
         r, ok := reduce_expr_to_single_value(c, cg_expr(c, e.target));
         assert(ok);
@@ -140,10 +210,10 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
         cwritefln(c, "\t%s = extractvalue %s %s, %d",
             t, ty_to_llvm_str(c, target_ty), r, idx)
 
-        return {kind=.SingleRes, v=t}
+        return {kind=.Value, v=t}
     }
     case StructLit: {
-        ty := get_ctx().expr_struct_types[id]
+        ty := get_ctx().expr_resolution_types[id]
         fields := make([]string, len(get_type(ty).structure.fields), allocator=get_ctx().allocator)
         for f,k in get_type(ty).structure.fields {
             r, ok := reduce_expr_to_single_value(c, cg_expr(c, e.fields[f.name].expr));
@@ -172,7 +242,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
         t := new_tmp(c);
         cwritefln(c, "\t%s = %s %s %s to %s", t, op,
             ty_to_llvm_str(c, target_ty), reduced_target, ty_to_llvm_str(c, to_ty));
-        return {kind=.SingleRes, v=t};
+        return {kind=.Value, v=t};
     }
 
     case Number: {
@@ -234,10 +304,10 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
             t := new_tmp(c)
             cwritefln(c, "\t%s = load %s, ptr %s",
                 t, ty_to_llvm_str(c, expr_ty(id)), v.name);
-            return {kind=.SingleRes,v=t};
+            return {kind=.Value,v=t};
         }
         case .Argument: {
-            return {kind=.SingleRes,v=v.name};
+            return {kind=.Value,v=v.name};
         }
         case .Invalid: {
             gala_panic("invalid object");
@@ -281,7 +351,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
                 }
             }
             cwriteln(c, ")");
-            return {kind=.SingleRes, v=new_t, id=id};
+            return {kind=.Value, v=new_t, id=id};
         }
     }
     case: gala_panic("impl");
@@ -391,7 +461,7 @@ reduce_expr_to_single_value :: proc(c: ^CGCtx, e: expr_result) -> (string, bool)
     }
     case .Invalid: gala_panic("invalid")
     case .None: return "", false
-    case .SingleRes: {
+    case .Value: {
         return e.v, true
     }
     case .Number: {
@@ -563,7 +633,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         } else {
             cwritefln(c, "\t%s = alloca %s",name, 
                 ty_to_llvm_str(c, obj.type.(TypeId)));
-            tid := get_ctx().expr_struct_types[v.id]
+            tid := get_ctx().expr_resolution_types[v.id]
             ty := get_type(tid);
             for v, i in v.struct_lit.fields {
                 // load
@@ -598,13 +668,66 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     }
     case:panic("impl");
     }
+    cwriteln(c, "");
+}
+cg_can_assign_to :: proc(id: ExprId) -> bool {
+    panic("impl");
+}
+// Resolves ANY indexable expression down to a pointer that already points at
+// element 0, plus that element's LLVM type string. This is the one place
+// that needs to know how array/slice/pointer differ — everything downstream
+// (Index, TakeSlice, and later `for x in ...`) is a uniform single-index GEP
+// off the result.
+cg_data_ptr :: proc(c: ^CGCtx, id: ExprId) -> (ptr: string, elem_ty_str: string) {
+    ty := get_type(expr_ty(id))
+    #partial switch ty.kind {
+    case .FixedSizeArray:
+        // arrays are always addressable, never SSA values — get its address,
+        // which (with opaque pointers) already IS "pointer to element 0"
+        return cg_lvalue(c, id), ty_to_llvm_str(c, ty.fixed_size_array.type)
+
+    case .Slice: {
+        // slices are a small by-value {ptr, i64} — get the value however it
+        // naturally arises (load, extractvalue, straight from TakeSlice,
+        // a function return, whatever cg_expr already knows how to do) and
+        // pull the data pointer straight out of it
+        v, ok := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(ok)
+        p := new_tmp(c)
+        cwritefln(c, "\t%s = extractvalue {{ ptr, i64 }} %s, 0", p, v)
+        return p, ty_to_llvm_str(c, ty.slice.type) // check your real field name
+    }
+
+    case .Pointer: {
+        // already IS a pointer to element 0
+        v, ok := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(ok)
+        return v, ty_to_llvm_str(c, ty.ptr) // check your real field name
+    }
+
+    case: gala_panic("cg_data_ptr: not indexable")
+    }
+}
+
+// Address of target[index]. Used by both cg_expr's Index (which loads
+// afterward) and cg_lvalue's Index (which just returns this).
+cg_elem_ptr :: proc(c: ^CGCtx, target: ExprId, index: ExprId) -> string {
+    base_ptr, elem_ty := cg_data_ptr(c, target)
+    idx_v, ok := reduce_expr_to_single_value(c, cg_expr(c, index)); assert(ok)
+    idx_ty := ty_to_llvm_str(c, expr_ty(index))
+
+    t := new_tmp(c)
+    cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, %s %s",
+        t, elem_ty, base_ptr, idx_ty, idx_v)
+    return t
 }
 cg_lvalue :: proc(c: ^CGCtx, id: ExprId) -> string {
     #partial switch e in get_expr(id) {
     case Symbol: {
         v := cgscope_get(&c.scope, e.name)
-        assert(v.kind == .Variable) // args aren't addressable — can't assign to a by-value param
-        return v.name
+        if v.kind == .Variable do return v.name
+
+        panic("impl");
+        // args aren't addressable — can't assign to a by-value param
+        // can however if args is a ptr/array
     }
     case FieldAccess: {
         base_ptr := cg_lvalue(c, e.target) // recurse — handles a.b.c chains
@@ -624,6 +747,10 @@ cg_lvalue :: proc(c: ^CGCtx, id: ExprId) -> string {
         cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d",
             t, ty_to_llvm_str(c, base_ty), base_ptr, idx)
         return t
+    }
+    // cg_lvalue's Index — this is the one that's never actually been fixed yet:
+    case Index: {
+        return cg_elem_ptr(c, e.target, e.index)
     }
     case: gala_panic("not an lvalue")
     }

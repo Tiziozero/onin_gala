@@ -13,6 +13,7 @@ TypeKind :: enum {
     Bool,
     Pointer,
     Struct,
+    Slice,
     FixedSizeArray,
     Void,
 }
@@ -23,6 +24,7 @@ Type :: struct {
     fn: struct { args: []Arg, ret_ty: TypeId},
     structure: struct {fields: []Field},
     fixed_size_array: struct { type: TypeId, size: int },
+    slice: struct{type: TypeId},
 }
 Field :: struct {
     name: string,
@@ -122,6 +124,19 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
 }
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
+    case TakeSlice: {
+        resolve_expr(s, e.target);
+        resolve_expr(s, e.start);
+        resolve_expr(s, e.end);
+    }
+    case Index: {
+        resolve_expr(s, e.target);
+        resolve_expr(s, e.index);
+    }
+    case FixedSizeArray: {
+        t := resolve_type_specifier(s, e.ty);
+        get_ctx().expr_resolution_types[id] = t;
+    }
     case FieldAccess: {
         // check field in type checking
         resolve_expr(s, e.target);
@@ -154,7 +169,7 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
             }
             resolve_expr(s, f.expr);
         }
-        get_ctx().expr_struct_types[id]=tid
+        get_ctx().expr_resolution_types[id]=tid
     }
     case ZeroInit: {
     }
@@ -162,7 +177,7 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         ty := resolve_type_specifier(s, e.to);
         resolve_expr(s, e.target);
         // store in context. why not atp
-        get_ctx().expr_cast_types[id] = ty;
+        get_ctx().expr_resolution_types[id] = ty;
     }
     case Binop: {
         resolve_expr(s, e.left);
@@ -209,7 +224,8 @@ cmp_types :: proc(l, r: Type) -> bool {
 intern_type :: proc(t: Type) -> TypeId {
     assert(t.kind == .Pointer || t.kind == .Function || 
             t.kind == .UntypedInteger || t.kind == .UntypedFloat || 
-            t.kind == .FixedSizeArray || t.kind == .ZeroInit)
+            t.kind == .FixedSizeArray || t.kind == .ZeroInit ||
+            t.kind == .Slice)
     for ty, id in get_ctx().types {
         if cmp_types(ty, t) { return TypeId(id) }
     }
@@ -341,6 +357,11 @@ resolve_block :: proc(s: ^Scope, b: ^Block) {
 }
 void_type :: proc() -> TypeId {
     v, ok := get_ctx().base_mod.types["void"];
+    assert(ok);
+    return v;
+}
+integer_type :: proc() -> TypeId {
+    v, ok := get_ctx().base_mod.types["int"];
     assert(ok);
     return v;
 }

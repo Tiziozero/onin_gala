@@ -24,8 +24,9 @@ Context :: struct {
 
     // for other stuff that need to know things only available
     // at resolution phase
-    expr_cast_types:    map[ExprId]TypeId,
-    expr_struct_types:  map[ExprId]TypeId,
+    // expr_cast_types:    map[ExprId]TypeId,
+    // expr_struct_types:  map[ExprId]TypeId,
+    expr_resolution_types:  map[ExprId]TypeId,
 
     base_mod:           ModuleScope,
 
