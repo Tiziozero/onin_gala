@@ -215,22 +215,35 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     case: gala_panic("impl");
     }
 }
-cmp_types :: proc(l, r: Type) -> bool {
-    if l.kind != r.kind { return false } 
-
-    if l.kind == .Function {
+type_cmp  :: proc(l, r: Type) -> bool {
+    if l.kind != r.kind { return false }
+    switch l.kind {
+    case .Function:
         if l.fn.ret_ty != r.fn.ret_ty { return false }
         if len(l.fn.args) != len(r.fn.args) { return false }
-        /// cehck each arg
         for i in 0..<len(l.fn.args) {
-            if l.fn.args[i] != r.fn.args[i] { return false }
+            if l.fn.args[i].type != r.fn.args[i].type { return false }
         }
-        return true // same type
-    } else if l.kind == .Pointer {
-        return cmp_types(get(l.ptr)^, get(r.ptr)^)
-    } else {
-        return true // same kind, same type for now
+        return true
+    case .Pointer: return type_cmp(get(l.ptr)^, get(r.ptr)^)
+    case .Struct:
+        if len(l.structure.fields) != len(r.structure.fields) { return false }
+        for i in 0..<len(l.structure.fields) {
+            lf := l.structure.fields[i]
+            rf := r.structure.fields[i]
+            if lf.name != rf.name { return false }
+            if lf.type != rf.type { return false }
+        }
+        return true
+    case .Slice: return l.slice.type == r.slice.type
+    case .FixedSizeArray:
+        return l.fixed_size_array.size == r.fixed_size_array.size &&
+        l.fixed_size_array.type == r.fixed_size_array.type
+    case .Integer, .Float, .Rune, .Byte, .Bool, .Void,
+         .UntypedInteger, .UntypedFloat, .ZeroInit: return true
+    case .Invalid: return false
     }
+    return false
 }
 // only intern function and pointers
 intern_type :: proc(t: Type) -> TypeId {
@@ -239,7 +252,7 @@ intern_type :: proc(t: Type) -> TypeId {
             t.kind == .FixedSizeArray || t.kind == .ZeroInit ||
             t.kind == .Slice)
     for ty, id in get_ctx().types {
-        if cmp_types(ty, t) { return TypeId(id) }
+        if type_cmp(ty, t) { return TypeId(id) }
     }
     append(&get_ctx().types, t);
     return TypeId(len(get_ctx().types)-1)
@@ -569,73 +582,4 @@ resolve_module_ast :: proc(ast: ^AST) {
         resolve_item(&global_scope, id)
     }
     free_module_scope(&global_scope)
-}
-
-import "core:fmt"
-import "core:strings"
-
-tts :: proc(t: TypeId) -> string {
-    ty := get_type(t)
-    if ty == nil {
-        return "<invalid>"
-    }
-
-    switch ty.kind {
-    case .Invalid:
-        return "invalid"
-    case .UntypedInteger:
-        return "untyped int"
-    case .UntypedFloat:
-        return "untyped float"
-    case .ZeroInit:
-        return "zero-init"
-    case .Void:
-        return "void"
-    case .Bool, .Integer, .Float, .Rune, .Byte:
-        // builtins carry their printable name (e.g. "i32", "f64", "bool")
-        return ty.name
-
-    case .Pointer:
-        return fmt.tprintf("^%s", tts(ty.ptr), )
-
-    case .Slice:
-        return fmt.tprintf("[]%s", tts(ty.slice.type))
-
-    case .FixedSizeArray:
-        return fmt.tprintf("[%d]%s", ty.fixed_size_array.size, tts(ty.fixed_size_array.type))
-
-    case .Struct:
-        if ty.name != "" {
-            return ty.name
-        }
-        // anonymous struct: expand fields
-        sb := strings.builder_make(allocator=get_ctx().allocator)
-        strings.write_string(&sb, "struct { ")
-        for field, i in ty.structure.fields {
-            if i > 0 do strings.write_string(&sb, ", ")
-            strings.write_string(&sb, field.name)
-            strings.write_string(&sb, ": ")
-            strings.write_string(&sb, tts(field.type))
-        }
-        strings.write_string(&sb, " }")
-        return strings.to_string(sb)
-
-    case .Function:
-        sb := strings.builder_make()
-        strings.write_string(&sb, "proc(")
-        for arg, i in ty.fn.args {
-            if i > 0 do strings.write_string(&sb, ", ")
-            strings.write_string(&sb, tts(arg.type))
-        }
-        strings.write_string(&sb, ")")
-
-        ret := get_type(ty.fn.ret_ty)
-        if ret != nil && ret.kind != .Void {
-            strings.write_string(&sb, " -> ")
-            strings.write_string(&sb, tts(ty.fn.ret_ty))
-        }
-        return strings.to_string(sb)
-    }
-
-    return "<unknown>"
 }

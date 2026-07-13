@@ -32,7 +32,7 @@ main :: proc() {
     defer virtual.arena_destroy(&dyn_arena)
     // create dynamic allocator with dynamic arena and use that, not the
     // arenas allocator
-    context.temp_allocator = mem.panic_allocator()
+    // context.temp_allocator = mem.panic_allocator()
     get_ctx().allocator = virtual.arena_allocator(&dyn_arena)
 
     ctx.debug = true;

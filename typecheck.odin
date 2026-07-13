@@ -333,7 +333,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         }
         if !can_transmute_to(expr_ty(e.target), to) {
             highlight_lines(get_span(id).span);
-            debugln(get(expr_ty(e.target)).kind, get(to).kind);
+            debugln("target:", tts(expr_ty(e.target)), "to:", tts(to));
             gala_panic("can't transmute expression to desired type")
         }
         get_ctx().expr_types[id] = to

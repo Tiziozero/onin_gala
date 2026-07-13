@@ -5,12 +5,21 @@ struct v2 {
     x: flt, y: flt
 }
 fn main(): int {
-    i := 10.2;
+    i := 10;
     buf := [1024]byte{};
+    buf[2] = 3;
     b(&buf);
-    return transmute(int)i;
+    return cast(int)buf[2];
 }
 fn b(buf: ^[1024]byte) {
-    buf^[2]=67;
+    buf^[2] = 67;
+    return;
+}
+fn c(v: ^v2) {
+    v^.x = 1.0;
+    return;
+}
+fn d(v: ^int) {
+    v^ = cast(int)1.0;
     return;
 }

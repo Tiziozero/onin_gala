@@ -162,8 +162,8 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     // in cg_expr:
     switch e in get_expr(id) {
     case Deref: {
-        ptr_val, rets := reduce_expr_to_single_value(c, cg_expr(c, e.expr)) // rvalue: the pointer itself, already loaded
-        assert(rets);
+        // rvalue: the pointer itself, already loaded
+        ptr_val := cg_addr(c, e.expr);
         ptr_ty := get_type(expr_ty(e.expr))
 
         if ptr_ty.kind != .Pointer {
@@ -182,7 +182,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         }
     }
     case Reference: {
-        inner_ptr := cg_lvalue(c, e.expr)
+        inner_ptr := cg_addr(c, e.expr)
         e_ty := expr_ty(e.expr);
         return {kind=.Value, v = inner_ptr}
     }
@@ -744,7 +744,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     case Assignment: {
         value, returns := reduce_expr_to_single_value(c, cg_expr(c, s.value))
         assert(returns)
-        target_ptr := cg_lvalue(c, s.target)
+        target_ptr := cg_addr(c, s.target)
         cwritefln(c, "\tstore %s %s, ptr %s",
             ty_to_llvm_str(c, expr_ty(s.target)), value, target_ptr)
     }
@@ -766,7 +766,7 @@ cg_data_ptr :: proc(c: ^CGCtx, id: ExprId) -> (ptr: string, elem_ty_str: string)
     case .FixedSizeArray:
         // arrays are always addressable, never SSA values — get its address,
         // which (with opaque pointers) already IS "pointer to element 0"
-        return cg_lvalue(c, id), ty_to_llvm_str(c, ty.fixed_size_array.type)
+        return cg_addr(c, id), ty_to_llvm_str(c, ty.fixed_size_array.type)
 
     case .Slice: {
         // slices are a small by-value {ptr, i64} — get the value however it
@@ -790,7 +790,7 @@ cg_data_ptr :: proc(c: ^CGCtx, id: ExprId) -> (ptr: string, elem_ty_str: string)
 }
 
 // Address of target[index]. Used by both cg_expr's Index (which loads
-// afterward) and cg_lvalue's Index (which just returns this).
+// afterward) and cg_addr's Index (which just returns this).
 cg_elem_ptr :: proc(c: ^CGCtx, target: ExprId, index: ExprId) -> string {
     base_ptr, elem_ty := cg_data_ptr(c, target)
     idx_v, ok := reduce_expr_to_single_value(c, cg_expr(c, index)); assert(ok)
@@ -801,18 +801,19 @@ cg_elem_ptr :: proc(c: ^CGCtx, target: ExprId, index: ExprId) -> string {
         t, elem_ty, base_ptr, idx_ty, idx_v)
     return t
 }
-cg_lvalue :: proc(c: ^CGCtx, id: ExprId) -> string {
+cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
     #partial switch e in get_expr(id) {
     case Symbol: {
         v := cgscope_get(&c.scope, e.name)
         if v.kind == .Variable do return v.name
+        if v.kind == .Argument do return v.name
 
         panic("impl");
         // args aren't addressable — can't assign to a by-value param
         // can however if args is a ptr/array
     }
     case FieldAccess: {
-        base_ptr := cg_lvalue(c, e.target) // recurse — handles a.b.c chains
+        base_ptr := cg_addr(c, e.target)
         base_ty := expr_ty(e.target)
         ty := get_type(base_ty)
 
@@ -830,13 +831,19 @@ cg_lvalue :: proc(c: ^CGCtx, id: ExprId) -> string {
             t, ty_to_llvm_str(c, base_ty), base_ptr, idx)
         return t
     }
-    // cg_lvalue's Index — this is the one that's never actually been fixed yet:
     case Index: {
         return cg_elem_ptr(c, e.target, e.index)
     }
     case Deref: {
-        v, r := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(r)
-        return v;
+        // seems that for dereferencing, generating the target addr is enough
+        ptr_val := cg_addr(c, e.expr);
+        ptr_ty := get_type(expr_ty(e.expr))
+
+        if ptr_ty.kind != .Pointer {
+            panic("cannot dereference non-pointer type")
+        }
+
+        return ptr_val;
     }
     case: gala_panic("not an lvalue")
     }
