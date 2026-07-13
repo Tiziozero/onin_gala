@@ -159,6 +159,10 @@ ty_to_llvm_transmute_op :: proc(from_id, to_id: TypeId) -> (string, bool) {
     return "", false // signal "no fast path" — caller falls through to memory
 }
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
+    span := get_span(id).span
+    data := get_file_lines(get_ctx().current_file, span)
+    cwritefln(c, "\t; cg_expr \"%s\"",
+        string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
     // in cg_expr:
     switch e in get_expr(id) {
     case Deref: {
@@ -847,7 +851,8 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
         return cg_elem_ptr(c, e.target, e.index)
     }
     case Deref: {
-        // seems that for dereferencing, generating the target addr is enough
+        // generate expression, as that would already be a pointer, otherwise
+        // dereferencing wouldn't make sense
         ptr_val, returns := reduce_expr_to_single_value(c, cg_expr(c, e.expr));
         assert(returns);
         ptr_ty := get_type(expr_ty(e.expr))
@@ -857,10 +862,11 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
         }
         t := new_tmp(c);
 
-        cwritefln(c, "\t%s = load %s, ptr %s",
-            t, ty_to_llvm_str(c, expr_ty(e.expr)), ptr_val)
+        /* cwritefln(c, "\t%s = load %s, ptr %s",
+            t, ty_to_llvm_str(c, expr_ty(e.expr)), ptr_val)*/
 
-        return t;
+        // return t;
+        return ptr_val;
     }
     case: gala_panic("not an lvalue")
     }

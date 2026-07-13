@@ -522,6 +522,16 @@ parse_primary :: proc(p: ^Parser) -> ExprId {
             span=token.span
         }
         return id
+    } else if is_symbol(current_token(p), "(") {
+        token := consume_token(p); // "("
+        e := parse_expr(p);
+        end := expect_symbol(p, ")"); // ")";
+        id := e;
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span={token.span.start, end.span.end}
+        }
+        return id
     }
     // debugln(current_token(p));
     highlight_lines(current_token(p).span);

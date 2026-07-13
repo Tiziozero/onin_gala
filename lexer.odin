@@ -51,6 +51,25 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
         c := buf[i]
         if is_space(c) {
             i += 1
+            } else if c == '/' && i + 1 < len(buf) && buf[i+1] == '/' {
+            // line comment: skip to end of line
+            i += 2
+            for i < len(buf) && buf[i] != '\n' {
+                i += 1
+            }
+        } else if c == '/' && i + 1 < len(buf) && buf[i+1] == '*' {
+            // block comment: skip to closing */
+            start := i
+            i += 2
+            for i + 1 < len(buf) && !(buf[i] == '*' && buf[i+1] == '/') {
+                i += 1
+            }
+            if i + 1 < len(buf) {
+                i += 2 // consume the closing */
+            } else {
+                gala_panic("unterminated block comment")
+                // i = len(buf)
+            }
         } else if is_num(c) {
             start := i
             for (i < len(buf) && is_num(buf[i])) ||
