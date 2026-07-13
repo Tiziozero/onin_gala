@@ -200,8 +200,8 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     case Symbol: {
         obj, ok := scope_get_object(s, e.name);
         if !ok {
-            debugln("Couldn't find", e.name, "in scope.");
-            assert(ok)
+            highlight_lines(get_span(id).span);
+            gala_panic("Couldn't find", e.name, "in scope.");
         }
         get_ctx().expr_objects[id] = obj
     }

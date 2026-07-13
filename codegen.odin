@@ -579,6 +579,10 @@ stmt_ends_block :: proc(stmt: StmtId) -> bool {
     gala_panic("impl");
 }
 cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
+    span := get_span(id).span
+    data := get_file_lines(get_ctx().current_file, span)
+    cwritefln(c, "\t; cg_stmt \"%s\"",
+        string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
     switch s in get_stmt(id) {
     case ExprId:
         reduce_expr_to_single_value(c, cg_expr(c, s));
@@ -762,6 +766,7 @@ cg_can_assign_to :: proc(id: ExprId) -> bool {
 // off the result.
 cg_data_ptr :: proc(c: ^CGCtx, id: ExprId) -> (ptr: string, elem_ty_str: string) {
     ty := get_type(expr_ty(id))
+    cwritefln(c, "\t; cg_data_ptr expr tye: %s", tts(expr_ty(id)));
     #partial switch ty.kind {
     case .FixedSizeArray:
         // arrays are always addressable, never SSA values — get its address,
@@ -781,6 +786,7 @@ cg_data_ptr :: proc(c: ^CGCtx, id: ExprId) -> (ptr: string, elem_ty_str: string)
 
     case .Pointer: {
         // already IS a pointer to element 0
+        cwritefln(c, "\t; should load buf^");
         v, ok := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(ok)
         return v, ty_to_llvm_str(c, ty.ptr) // check your real field name
     }
@@ -792,6 +798,7 @@ cg_data_ptr :: proc(c: ^CGCtx, id: ExprId) -> (ptr: string, elem_ty_str: string)
 // Address of target[index]. Used by both cg_expr's Index (which loads
 // afterward) and cg_addr's Index (which just returns this).
 cg_elem_ptr :: proc(c: ^CGCtx, target: ExprId, index: ExprId) -> string {
+    cwritefln(c, "\t; get_elem_ptr gens:");
     base_ptr, elem_ty := cg_data_ptr(c, target)
     idx_v, ok := reduce_expr_to_single_value(c, cg_expr(c, index)); assert(ok)
     idx_ty := ty_to_llvm_str(c, expr_ty(index))
@@ -802,6 +809,10 @@ cg_elem_ptr :: proc(c: ^CGCtx, target: ExprId, index: ExprId) -> string {
     return t
 }
 cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
+    span := get_span(id).span
+    data := get_file_lines(get_ctx().current_file, span)
+    cwritefln(c, "\t; cg_addr \"%s\"",
+        string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
     #partial switch e in get_expr(id) {
     case Symbol: {
         v := cgscope_get(&c.scope, e.name)
@@ -832,18 +843,24 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
         return t
     }
     case Index: {
+        cwritefln(c, "\t; for index addr, cg_elem_ptr");
         return cg_elem_ptr(c, e.target, e.index)
     }
     case Deref: {
         // seems that for dereferencing, generating the target addr is enough
-        ptr_val := cg_addr(c, e.expr);
+        ptr_val, returns := reduce_expr_to_single_value(c, cg_expr(c, e.expr));
+        assert(returns);
         ptr_ty := get_type(expr_ty(e.expr))
 
         if ptr_ty.kind != .Pointer {
             panic("cannot dereference non-pointer type")
         }
+        t := new_tmp(c);
 
-        return ptr_val;
+        cwritefln(c, "\t%s = load %s, ptr %s",
+            t, ty_to_llvm_str(c, expr_ty(e.expr)), ptr_val)
+
+        return t;
     }
     case: gala_panic("not an lvalue")
     }
@@ -1069,7 +1086,8 @@ cg_module :: proc(ast: ^AST) {
         if werr != .NONE {
             gala_panic("Failed to wait program:", werr);
         }
-        debugln("program exit code:", p_state.exit_code);
+        debugln     ("program exit code:", p_state.exit_code);
+        gala_info   ("program exit code:", p_state.exit_code);
     }
 
 }

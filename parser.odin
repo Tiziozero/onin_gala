@@ -126,9 +126,12 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
                 consume_token(p); // ","
             } else do break
         }
-        expect_symbol(p, "}");
+        end := expect_symbol(p, "}");
         id := new_expr(StructLit{name.text, fields})
-        get_ctx().spans.exprs[id] = {file_name=get_ctx().current_file, span=name.span}
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span={name.span.start, end.span.end}
+        }
         return id;
     } else if is_symbol(current_token(p), "[") {
         // eg: "v := [1024]byte{}
@@ -145,14 +148,14 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
 
         // for now, only zero initialiser, so all 0s ("{}")
         expect_symbol(p, "{");
-        expect_symbol(p, "}");
+        end := expect_symbol(p, "}");
 
         id := new_expr(Expr(FixedSizeArray{size=size,ty=t,initialiser=nil}))
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
             span={
                 start=open_b.span.start,
-                end=close_b.span.end
+                end=end.span.end
             }
         }
         return id
@@ -180,11 +183,11 @@ parse_potential_cast :: proc(p: ^Parser) -> ExprId {
         expect_symbol(p, "(");
         ty := parse_type(p);
         expect_symbol(p, ")");
-        expr := parse_postfix(p);
+        expr := parse_potential_cast(p);
         id := new_expr(Expr(Cast{ty, expr}));
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
-            span=token.span,
+            span={token.span.start, get_span(expr).span.end},
         }
         return id
     } else if current_token(p).kind == .Transmute {
@@ -192,11 +195,11 @@ parse_potential_cast :: proc(p: ^Parser) -> ExprId {
         expect_symbol(p, "(");
         ty := parse_type(p);
         expect_symbol(p, ")");
-        expr := parse_postfix(p);
+        expr := parse_potential_cast(p);
         id := new_expr(Expr(Transmute{ty, expr}));
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
-            span=token.span,
+            span={token.span.start, get_span(expr).span.end},
         }
         return id
     }
@@ -205,11 +208,11 @@ parse_potential_cast :: proc(p: ^Parser) -> ExprId {
 parse_unary :: proc(p: ^Parser) -> ExprId {
     if is_symbol(current_token(p), "&") {
         token := consume_token(p); // "&"
-        expr := parse_expr(p);
+        expr := parse_unary(p);
         id := new_expr(Expr(Reference{expr}));
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
-            span=token.span,
+            span={token.span.start,get_span(expr).span.end}
         }
         return id
     }
@@ -239,8 +242,8 @@ parse_binop :: proc(p: ^Parser, min_prec: int) -> ExprId {
         get_ctx().spans.exprs[lhs] = {
             file_name=get_ctx().current_file,
             span={
-                start=get_ctx().spans.exprs[prev].span.start,
-                end=get_ctx().spans.exprs[rhs].span.end,
+                start=get_span(prev).span.start,
+                end=get_span(rhs).span.end,
             }
         }
     }
@@ -326,11 +329,11 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         name := consume_token(p)
         consume_token(p);
         expr := parse_expr(p);
-        expect_symbol(p, ";");
+        end := expect_symbol(p, ";");
         id := new_stmt(Stmt(VarDec{name=name.text, type=nil, value=expr}));
         get_ctx().spans.stmts[id] = {
             file_name=get_ctx().current_file,
-            span=name.span,
+            span={name.span.start, end.span.end},
         }
         return id
     } else if current_token(p).kind == .Ident &&
@@ -340,11 +343,11 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         ty := parse_type(p);
         expect_symbol(p, "=");
         expr := parse_expr(p);
-        expect_symbol(p, ";");
+        end := expect_symbol(p, ";");
         id := new_stmt(Stmt(VarDec{name=name.text, type=ty, value=expr}));
         get_ctx().spans.stmts[id] = {
             file_name=get_ctx().current_file,
-            span=name.span,
+            span={name.span.start, end.span.end},
         }
         return id
     } else if is_kw(current_token(p), .Return) {
@@ -404,13 +407,13 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         if is_symbol(current_token(p), "=") {
             token := consume_token(p); // "="
             v := parse_expr(p);
-            expect_symbol(p, ";");
+            end := expect_symbol(p, ";");
             id := new_stmt(Stmt(Assignment{target=expr, value=v}));
             get_ctx().spans.stmts[id] = {
                 file_name=get_ctx().current_file,
                 span={
                     start=get_ctx().spans.exprs[expr].span.start,
-                    end=token.span.end
+                    end=end.span.end
                 }
             }
 
@@ -453,7 +456,7 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
             id := new_expr(FnCall{target=t, args=args});
             get_ctx().spans.exprs[id] = {
                 file_name=get_ctx().current_file,
-                span={start=start.span.start,end=end.span.end}
+                span={start=get_span(t).span.start,end=end.span.end}
             }
             t = id
         } else if is_symbol(current_token(p), ".") {
@@ -462,7 +465,7 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
             id := new_expr(FieldAccess{target=t, field=ident.text});
             get_ctx().spans.exprs[id] = {
                 file_name=get_ctx().current_file,
-                span={start=token.span.start,end=ident.span.end}
+                span={start=get_span(t).span.start,end=ident.span.end}
             }
             t = id
         } else if is_symbol(current_token(p), "[") {
@@ -474,7 +477,7 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
                 id := new_expr(Index{target=t, index=index});
                 get_ctx().spans.exprs[id] = {
                     file_name=get_ctx().current_file,
-                    span={start=start.span.start,end=end.span.end}
+                    span={start=get_span(t).span.start,end=end.span.end}
                 }
                 t = id
             } else if is_symbol(current_token(p), ":") {
@@ -484,7 +487,7 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
                 id := new_expr(TakeSlice{target=t, start=index, end=end_index});
                 get_ctx().spans.exprs[id] = {
                     file_name=get_ctx().current_file,
-                    span={start=start.span.start,end=end.span.end}
+                    span={start=get_span(t).span.start,end=end.span.end}
                 }
                 t = id
             }
@@ -493,7 +496,7 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
             id := new_expr(Deref{t});
             get_ctx().spans.exprs[id] = {
                 file_name=get_ctx().current_file,
-                span=token.span
+                span={get_span(t).span.start, token.span.end}
             }
             t = id
 

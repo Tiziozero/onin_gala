@@ -9,6 +9,13 @@ gala_panicf :: proc(f: string, args: ..any) -> ! {
     os.exit(1);
 }
 
+gala_info :: proc(args: ..any) {
+    fmt.println(..args)
+}
+gala_infof :: proc(f: string, args: ..any) {
+    fmt.printfln(f, ..args)
+}
+
 import "core:mem/virtual"
 import "core:mem"
 import "core:fmt"
@@ -91,8 +98,9 @@ main :: proc() {
         fmt.eprintln("Failed to read file")
         os.exit(1)
     }
+    debugln("file size:", len(data));
     defer delete(data)
-    get_ctx().files[file_name] = cast(string)data
+    get_ctx().files[file_name] = string(data)
 
 
     ctx.current_file = file_name;
@@ -106,5 +114,5 @@ main :: proc() {
     cg_module(&ast)
     free_all(context.temp_allocator);
 
-    fmt.println("Finished parsing");
+    gala_info("Finished parsing");
 }

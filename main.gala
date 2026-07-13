@@ -1,25 +1,19 @@
 extern fn free(ptr: rawptr);
-extern fn calloc(n:int, size: int): rawptr;
+extern fn malloc(size: int): rawptr;
 extern fn memcpy(dst: rawptr, src:rawptr, size:int);
 struct v2 {
     x: flt, y: flt
 }
 fn main(): int {
     i := 10;
-    buf := [1024]byte{};
-    buf[2] = 3;
-    b(&buf);
-    return cast(int)buf[2];
+    bbuf := [1024]byte{};
+    buf : ^[1024]byte = cast(^[1024]byte)malloc(1024);
+    memcpy(cast(rawptr)buf, cast(rawptr)&bbuf[0], 1024);
+    buf^[2] = 3;
+    b(buf);
+    return cast(int)buf^[2];
 }
 fn b(buf: ^[1024]byte) {
     buf^[2] = 67;
-    return;
-}
-fn c(v: ^v2) {
-    v^.x = 1.0;
-    return;
-}
-fn d(v: ^int) {
-    v^ = cast(int)1.0;
     return;
 }

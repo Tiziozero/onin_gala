@@ -176,7 +176,7 @@ get_array_base_type :: proc(t: TypeId) -> (TypeId, bool) {
 }
 can_reference :: proc(id: ExprId) -> bool {
     #partial switch e in get_expr(id) {
-    case Symbol: {
+    case Symbol, Index, FieldAccess: {
         return true; // unless proven otherwise ig
     }
     }
@@ -211,7 +211,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         target_ty := expr_ty(e.target)
 
         if !is_array_type(target_ty) {
-            gala_panic("can't index type:", get_type(target_ty))
+            gala_panic("can't index type:", tts(target_ty))
         }
 
         tc_expr(tc, e.start)
@@ -258,7 +258,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         target_ty := expr_ty(e.target)
 
         if !is_array_type(target_ty) {
-            gala_panic("can't index type:", get_type(target_ty))
+            gala_panic("can't index type:", tts(target_ty))
         }
 
         tc_expr(tc, e.index)
@@ -404,8 +404,9 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         assert(ty.kind == .Function)
         fargs := ty.fn.args;
         if len(fargs) != len(e.args) {
-            debugln(len(fargs), len(e.args))
-            gala_panic("args count for function don't match");
+            highlight_lines(get_span(id).span);
+            gala_panicf("args count for function don't match (expected %d, got %d).",
+                len(fargs), len(e.args));
         }
         for i in 0..<len(fargs) {
             earg := e.args[i];
@@ -413,7 +414,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             tc_expr(tc, earg);
             r, ok, s := compare_and_reduce_types(farg.type, expr_ty(earg));
             if !ok {
-                highlight_lines(get_span(id).span);
+                highlight_lines(get_span(earg).span);
                 gala_panic(s);
             }
             assert(r == farg.type); // should always match
@@ -472,9 +473,11 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             get_obj(get_ctx().stmt_objects[s]).type = resolved_ty;
         } else { // otherwise if the vardec has a specified type compare
             expected_type := resolved_ty.(TypeId)
+            sid := s;
             if t, ok, s := compare_and_reduce_types(expected_type, expr_ty(stmt.value)); ok {
                 propagate_type(t, stmt.value)
             } else {
+                highlight_lines(get_span(sid).span)
                 gala_panic("types don't match");
             }
         }
