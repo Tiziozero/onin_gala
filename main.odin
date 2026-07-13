@@ -104,6 +104,7 @@ main :: proc() {
     resolve_module_ast(&ast)
     typecheck_module(&ast)
     cg_module(&ast)
+    free_all(context.temp_allocator);
 
     fmt.println("Finished parsing");
 }

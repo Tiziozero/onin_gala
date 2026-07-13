@@ -571,3 +571,71 @@ resolve_module_ast :: proc(ast: ^AST) {
     free_module_scope(&global_scope)
 }
 
+import "core:fmt"
+import "core:strings"
+
+tts :: proc(t: TypeId) -> string {
+    ty := get_type(t)
+    if ty == nil {
+        return "<invalid>"
+    }
+
+    switch ty.kind {
+    case .Invalid:
+        return "invalid"
+    case .UntypedInteger:
+        return "untyped int"
+    case .UntypedFloat:
+        return "untyped float"
+    case .ZeroInit:
+        return "zero-init"
+    case .Void:
+        return "void"
+    case .Bool, .Integer, .Float, .Rune, .Byte:
+        // builtins carry their printable name (e.g. "i32", "f64", "bool")
+        return ty.name
+
+    case .Pointer:
+        return fmt.tprintf("^%s", tts(ty.ptr), )
+
+    case .Slice:
+        return fmt.tprintf("[]%s", tts(ty.slice.type))
+
+    case .FixedSizeArray:
+        return fmt.tprintf("[%d]%s", ty.fixed_size_array.size, tts(ty.fixed_size_array.type))
+
+    case .Struct:
+        if ty.name != "" {
+            return ty.name
+        }
+        // anonymous struct: expand fields
+        sb := strings.builder_make(allocator=get_ctx().allocator)
+        strings.write_string(&sb, "struct { ")
+        for field, i in ty.structure.fields {
+            if i > 0 do strings.write_string(&sb, ", ")
+            strings.write_string(&sb, field.name)
+            strings.write_string(&sb, ": ")
+            strings.write_string(&sb, tts(field.type))
+        }
+        strings.write_string(&sb, " }")
+        return strings.to_string(sb)
+
+    case .Function:
+        sb := strings.builder_make()
+        strings.write_string(&sb, "proc(")
+        for arg, i in ty.fn.args {
+            if i > 0 do strings.write_string(&sb, ", ")
+            strings.write_string(&sb, tts(arg.type))
+        }
+        strings.write_string(&sb, ")")
+
+        ret := get_type(ty.fn.ret_ty)
+        if ret != nil && ret.kind != .Void {
+            strings.write_string(&sb, " -> ")
+            strings.write_string(&sb, tts(ty.fn.ret_ty))
+        }
+        return strings.to_string(sb)
+    }
+
+    return "<unknown>"
+}

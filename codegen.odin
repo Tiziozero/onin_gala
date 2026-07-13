@@ -5,9 +5,9 @@ import "core:io"
 import "core:fmt"
 import "core:strings"
 import "core:mem"
-expr_result :: struct {
+CGExprRes :: struct {
     id: ExprId,
-    kind: enum {Invalid, Value, Binop, Number, Struct, None},
+    kind: enum {Invalid, Address, Value, Binop, Number, Struct, None},
     v: string,
     struct_lit: struct {
         fields: []string, // string of results
@@ -126,7 +126,7 @@ cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
             return v.name;
         }
     }
-    gala_panic("no");
+    panic("no");
 }
 // Only decides on a single-instruction fast path. Returns ok=false when
 // the pair needs the memory round-trip instead (structs, arrays, or any
@@ -158,9 +158,34 @@ ty_to_llvm_transmute_op :: proc(from_id, to_id: TypeId) -> (string, bool) {
 
     return "", false // signal "no fast path" — caller falls through to memory
 }
-cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
+cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
+    // in cg_expr:
     switch e in get_expr(id) {
-            // in cg_expr:
+    case Deref: {
+        ptr_val, rets := reduce_expr_to_single_value(c, cg_expr(c, e.expr)) // rvalue: the pointer itself, already loaded
+        assert(rets);
+        ptr_ty := get_type(expr_ty(e.expr))
+
+        if ptr_ty.kind != .Pointer {
+            panic("cannot dereference non-pointer type")
+        }
+
+        pointee_ty := ptr_ty.ptr
+        pointee_llvm_ty := ty_to_llvm_str(c, pointee_ty)
+
+        loaded := new_tmp(c);
+        cwritefln(c, "\t%s = load %s, ptr %s", loaded, pointee_llvm_ty, ptr_val);
+
+        return {
+            kind = .Value,
+            v = loaded,
+        }
+    }
+    case Reference: {
+        inner_ptr := cg_lvalue(c, e.expr)
+        e_ty := expr_ty(e.expr);
+        return {kind=.Value, v = inner_ptr}
+    }
     case Transmute: {
         from_ty := expr_ty(e.target)
         to_ty := expr_ty(id)
@@ -274,7 +299,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> expr_result {
             assert(ok);
             fields[k] = r
         }
-        r: expr_result
+        r: CGExprRes
         r.struct_lit.fields=fields
         r.id=id
         r.kind = .Struct
@@ -491,8 +516,11 @@ ty_to_llvm_cast_op :: proc(target_id, to_id: TypeId) -> (string, bool) {
 }
 
 // some expressions (fn calls with void returns) don't return so are invalid
-reduce_expr_to_single_value :: proc(c: ^CGCtx, e: expr_result) -> (string, bool) {
+reduce_expr_to_single_value :: proc(c: ^CGCtx, e: CGExprRes) -> (string, bool) {
     switch e.kind {
+    case .Address: {
+        return e.v, true;
+    }
     case .Struct: {
         lit := get_expr(e.id).(StructLit)
         tid := expr_ty(e.id)
@@ -805,6 +833,10 @@ cg_lvalue :: proc(c: ^CGCtx, id: ExprId) -> string {
     // cg_lvalue's Index — this is the one that's never actually been fixed yet:
     case Index: {
         return cg_elem_ptr(c, e.target, e.index)
+    }
+    case Deref: {
+        v, r := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(r)
+        return v;
     }
     case: gala_panic("not an lvalue")
     }

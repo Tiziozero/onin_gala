@@ -10,6 +10,7 @@ fn main(): int {
     b(&buf);
     return transmute(int)i;
 }
-fn b(buf: *[1024]byte) {
-    return ;
+fn b(buf: ^[1024]byte) {
+    buf^[2]=67;
+    return;
 }

@@ -174,8 +174,38 @@ get_array_base_type :: proc(t: TypeId) -> (TypeId, bool) {
     }
     panic("can't index")
 }
+can_reference :: proc(id: ExprId) -> bool {
+    #partial switch e in get_expr(id) {
+    case Symbol: {
+        return true; // unless proven otherwise ig
+    }
+    }
+    return false;
+}
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     switch e in get_expr(id) {
+    case Deref: {
+        tc_expr(tc, e.expr);
+        t := expr_ty(e.expr);
+        if get(t).kind != .Pointer {
+            highlight_lines(get_span_expr(id).span);
+            gala_panic("Can't dereference expression if type %s.", tts(t));
+        }
+        if get_type(get_type(t).ptr).kind == .Void {
+            highlight_lines(get_span_expr(id).span);
+            gala_panic("Can't dereference expression if type %s.", tts(t));
+        }
+        get_ctx().expr_types[id] = get_type(t).ptr;
+    }
+    case Reference: {
+        tc_expr(tc, e.expr);
+        if !can_reference(e.expr) {
+            highlight_lines(get_span_expr(id).span);
+            gala_panic("Can't reference expression.");
+        }
+        t := Type{ kind=.Pointer, ptr=expr_ty(e.expr)}
+        get_ctx().expr_types[id] = intern_type(t);
+    }
     case TakeSlice: {
         tc_expr(tc, e.target)
         target_ty := expr_ty(e.target)
@@ -529,6 +559,12 @@ typecheck_module :: proc(ast: ^AST) {
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
     debugln("propagating:", get_type(ty), "to", get_expr(expr));
     switch e in get_expr(expr) {
+    case Reference: {
+        return; // should be typed, no?
+    }
+    case Deref: {
+        return; // should be typed, no?
+    }
     case TakeSlice: {
         return // already typed
     }

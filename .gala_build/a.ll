@@ -13,6 +13,8 @@ entry:
 	%buf = alloca [1024 x i8]
 	store [1024 x i8] zeroinitializer, ptr %buf
 
+	call void @b(ptr %buf)
+
 	%t1 = load double, ptr %i
 	%t2 = bitcast double %t1 to i64
 	ret i64 %t2
@@ -20,6 +22,10 @@ entry:
 }
 define void @b (ptr %buf) {
 entry:
+	%t3 = load [1024 x i8], ptr %buf
+	%t4 = getelementptr inbounds i8, ptr %t3, i64 2
+	store i8 67, ptr %t4
+
 	ret void
 
 }
