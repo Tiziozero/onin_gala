@@ -18,6 +18,8 @@ dump_types :: proc(ctx: ^Context) {
         fmt.printf("[%d] %s\n", i, t.name)
 
         switch t.kind {
+        case .String: 
+            fmt.println("    kind: String")
         case .Slice: {
             fmt.println("    kind: Slice")
         }
@@ -148,6 +150,7 @@ tts :: proc(t: TypeId) -> string {
     }
 
     switch ty.kind {
+    case .String: return "String"
     case .Invalid:
         return "invalid"
     case .UntypedInteger:

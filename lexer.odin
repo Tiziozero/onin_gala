@@ -1,5 +1,7 @@
 package main
 
+import "core:strings"
+
 Span :: struct {
     start, end: int,
 }
@@ -7,10 +9,11 @@ Span :: struct {
 TokenKind :: enum {
     Ident,
     Symbol,
+    Number,
+    String,
+    Transmute,
     Keyword,
     Cast,
-    Transmute,
-    Number,
     EOF,
 }
 Keyword :: enum {
@@ -26,6 +29,7 @@ Token :: struct {
     span: Span,
     kind: TokenKind,
     text: string,
+    sid: StringId,
     kw: Keyword,
 }
 
@@ -44,6 +48,14 @@ is_space :: proc(c: byte) -> bool {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
+hex_digit_val :: proc(c: byte) -> int {
+    switch {
+    case c >= '0' && c <= '9': return int(c - '0')
+    case c >= 'a' && c <= 'f': return int(c - 'a' + 10)
+    case c >= 'A' && c <= 'F': return int(c - 'A' + 10)
+    case: return -1
+    }
+}
 lex_file :: proc(buf: []byte) -> [dynamic]Token {
     tokens := make([dynamic]Token, get_ctx().allocator)
     i := 0
@@ -145,6 +157,77 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                     text = ident,
                 })
             }
+            } else if c == '"' {
+            start := i
+            i += 1 // consume opening quote
+
+            out := make([dynamic]byte, get_ctx().allocator)
+
+            for i < len(buf) && buf[i] != '"' {
+                ch := buf[i]
+
+                if ch == '\n' {
+                    gala_panic("unterminated string literal (hit newline)")
+                }
+
+                if ch == '\\' {
+                    if i + 1 >= len(buf) {
+                        gala_panic("unterminated escape sequence")
+                    }
+                    esc := buf[i+1]
+                    switch esc {
+                    case 'n':
+                        append(&out, byte('\n'))
+                        i += 2
+                    case 't':
+                        append(&out, byte('\t'))
+                        i += 2
+                    case 'r':
+                        append(&out, byte('\r'))
+                        i += 2
+                    case '\\':
+                        append(&out, byte('\\'))
+                        i += 2
+                    case '"':
+                        append(&out, byte('"'))
+                        i += 2
+                    case '0':
+                        append(&out, byte(0))
+                        i += 2
+                    case 'x':
+                        // \xNN — exactly two hex digits
+                        if i + 3 >= len(buf) {
+                            gala_panic("truncated \\x escape sequence")
+                        }
+                        hi := hex_digit_val(buf[i+2])
+                        lo := hex_digit_val(buf[i+3])
+                        if hi < 0 || lo < 0 {
+                            gala_panic("invalid hex digits in \\x escape")
+                        }
+                        append(&out, byte(hi * 16 + lo))
+                        i += 4
+                    case:
+                        gala_panic("unknown escape sequence")
+                    }
+                } else {
+                    append(&out, ch)
+                    i += 1
+                }
+            }
+
+            if i >= len(buf) {
+                gala_panic("unterminated string literal (hit EOF)")
+            } else {
+                i += 1 // consume closing quote
+            }
+
+            sid := intern_string(cast(string)out[:])
+            append(&tokens, Token{
+                span = Span{start, i},
+                kind = .String,
+                sid = sid,
+                text = get_ctx().data[sid], // or store the StringId itself on the token
+            })
         } else {
             if  buf[i] == ':' && buf[i+1] == '=' ||
                 buf[i] == '<' && buf[i+1] == '=' ||
@@ -172,3 +255,18 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
     return tokens
 }
 
+StringId :: distinct int
+
+
+intern_string :: proc(s: string) -> StringId {
+    if id, ok := get_ctx().table[s]; ok {
+        return id
+    }
+    id := StringId(len(get_ctx().data))
+    // NB: `s` must be a stable/owned copy, not a view into a
+    // temporary buffer that gets reused/freed later
+    owned := strings.clone(s, get_ctx().allocator)
+    append(&get_ctx().data, owned)
+    get_ctx().table[owned] = id
+    return id
+}

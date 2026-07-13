@@ -2,18 +2,23 @@ package main
 
 TypeKind :: enum {
     Invalid,
-    UntypedInteger,
-    UntypedFloat,
-    ZeroInit,
-    Function,
+    // basics
     Integer,
     Float,
     Rune,
     Byte,
     Bool,
-    Pointer,
+    // aggregate
     Struct,
+    // pointer stuff
     Slice,
+    Pointer,
+    Function,
+    // literals
+    UntypedInteger,
+    UntypedFloat,
+    String,
+    ZeroInit,
     FixedSizeArray,
     Void,
 }
@@ -124,6 +129,7 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
 }
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
+    case String: // ok
     case Deref: {
         resolve_expr(s, e.expr);
     }
@@ -218,6 +224,7 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
 type_cmp  :: proc(l, r: Type) -> bool {
     if l.kind != r.kind { return false }
     switch l.kind {
+    case .String: return true;
     case .Function:
         if l.fn.ret_ty != r.fn.ret_ty { return false }
         if len(l.fn.args) != len(r.fn.args) { return false }
@@ -250,7 +257,7 @@ intern_type :: proc(t: Type) -> TypeId {
     assert(t.kind == .Pointer || t.kind == .Function || 
             t.kind == .UntypedInteger || t.kind == .UntypedFloat || 
             t.kind == .FixedSizeArray || t.kind == .ZeroInit ||
-            t.kind == .Slice)
+            t.kind == .Slice || t.kind == .String)
     for ty, id in get_ctx().types {
         if type_cmp(ty, t) { return TypeId(id) }
     }
@@ -294,6 +301,10 @@ scope_get_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
 }
 resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
     switch k in t {
+    case SliceSpecifier: {
+        base := resolve_type_specifier(s, k.base^)
+        return intern_type({kind=.Slice, slice={type=base}})
+    }
     case BaseType: { // will get declared type id
         ty, ok := scope_get_type(s, string(k.ident));
         if !ok {
@@ -308,7 +319,7 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
         id := resolve_type_specifier(s, k.ptr^)
         return intern_type({kind=.Pointer, ptr=id})
     }
-    case FixedArray: { // creates a pointer and will ge that one
+    case FixedArreySpecifier: { // creates a pointer and will ge that one
         id := resolve_type_specifier(s, k.base^)
         return intern_type({kind=.FixedSizeArray,
             fixed_size_array={type=id, size=k.size}})
@@ -390,6 +401,17 @@ integer_type :: proc() -> TypeId {
     assert(ok);
     return v;
 }
+byte_type :: proc() -> TypeId {
+    v, ok := get_ctx().base_mod.types["byte"];
+    assert(ok);
+    return v;
+}
+ty_from_name :: proc(name:string) -> TypeId {
+    v, ok := get_ctx().base_mod.types[name];
+    assert(ok);
+    return v;
+}
+
 resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     sd, ok := get_item(id).(StructDec); assert(ok); // assert it's a fn dec
     tid, iok := s.ty_foreward[sd.name]; assert(iok); // make sure fd exists

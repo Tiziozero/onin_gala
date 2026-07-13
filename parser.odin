@@ -49,7 +49,11 @@ Expr :: union {
     Reference,
     Deref,
     FixedSizeArray,
+    String,
     ZeroInit,
+}
+String :: struct {
+    s: string
 }
 Deref :: struct {
     expr: ExprId,
@@ -173,6 +177,14 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
         panic("not implemented yet")
         // return id;
 
+    } else if current_token(p).kind == .String {
+        s := consume_token(p);
+        id := new_expr(String{s=s.text})
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span=s.span
+        }
+        return id;
     }
     return parse_binop(p, 0)
 }
@@ -250,14 +262,16 @@ parse_binop :: proc(p: ^Parser, min_prec: int) -> ExprId {
 
     return lhs
 }
-BaseType :: struct { ident: string, span: Span};
+BaseType :: struct { ident: string, span: Span };
 // can't have ptr to itself
-PointerType :: struct {ptr:^TypeSpecifier, span: Span};;
-FixedArray :: struct { size: int, base: ^TypeSpecifier, span: Span};
+PointerType :: struct {ptr:^TypeSpecifier, span: Span };
+FixedArreySpecifier :: struct { size: int, base: ^TypeSpecifier, span: Span };
+SliceSpecifier :: struct {base : ^TypeSpecifier, span: Span }
 TypeSpecifier :: union {
     BaseType,
     PointerType,
-    FixedArray,
+    FixedArreySpecifier,
+    SliceSpecifier,
 }
 VarDec :: struct {
     name: string,
@@ -573,6 +587,15 @@ Item :: union {
     ExternFnDec,
 }
 
+base_span :: proc(t: ^TypeSpecifier) -> Span {
+    switch t in t {
+    case BaseType: return t.span;
+    case PointerType: return t.span;
+    case SliceSpecifier: return t.span;
+    case FixedArreySpecifier: return t.span;
+    }
+    panic("impl")
+}
 parse_type :: proc(p: ^Parser) -> TypeSpecifier {
     if current_token(p).kind == .Ident {
         token := consume_token(p)
@@ -580,6 +603,19 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
     }
     if is_symbol(current_token(p), "[") {
         token := consume_token(p); // "["
+        if is_symbol(current_token(p), "]") { // slice
+            consume_token(p); // "]"
+            base_specifier := new(TypeSpecifier, allocator=get_ctx().allocator);
+            base_specifier^ = parse_type(p);
+
+            return TypeSpecifier(SliceSpecifier{
+                base=base_specifier,
+                span={
+                    start=token.span.start,
+                    end=base_span(base_specifier).end
+                }
+            })
+        }
         n := consume_token(p);
         assert(n.kind == .Number);
         size, ok := strconv.parse_int(n.text)
@@ -589,11 +625,11 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
         base_specifier := new(TypeSpecifier, allocator=get_ctx().allocator);
         base_specifier^ = parse_type(p);
 
-        return TypeSpecifier(FixedArray{
+        return TypeSpecifier(FixedArreySpecifier{
             size=size,base=base_specifier,
             span={
                 start=token.span.start,
-                end=end.span.end
+                end=base_span(base_specifier).end
             }
         })
     } else if is_symbol(current_token(p), "^") {

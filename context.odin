@@ -14,6 +14,9 @@ Context :: struct {
     items:              [dynamic]Item,
     types:              [dynamic]Type,
     objs :              [dynamic]Object,
+    // strings
+    table: map[string]StringId,   // decoded content -> id
+    data:  [dynamic]string,       // id -> decoded content
     // refs
     expr_types:         map[ExprId]TypeId,
     expr_objects:       map[ExprId]ObjId,

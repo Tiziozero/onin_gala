@@ -1,36 +1,9 @@
-extern fn free(ptr: rawptr);
-extern fn malloc(size: int): rawptr;
-extern fn memcpy(dst: rawptr, src:rawptr, size:int);
-struct v2 {
-    x: flt, y: flt
+fn main():int {
+    s := "Hello, World!";
+    stringer(s[0:13]);
+    return cast(int)s[0];
 }
-fn main(): int {
-    i := 10;
-    bbuf := [1024]byte{};
-    buf : ^[1024]byte = cast(^[1024]byte)malloc(1024);
-    memcpy(cast(rawptr)buf, cast(rawptr)&bbuf[0], 1024);
-    buf^[2] = 3;
-    b(buf);
-    v := v2{x=0.0, y=0.0};
-    c(&v);
-    return cast(int)(v.x*v.y);
-}
-fn b(buf: ^[1024]byte) {
-    buf^[2] = 67;
-    return;
-} 
-fn c(v: ^v2) {
-    v^.x = 1.2;
-    v^.y = 3.14159;
+
+fn stringer(s: []byte) {
     return;
 }
-/* fn main(): int {
-    x:= 0;
-    b(&x);
-    return x;
-}
-fn b(x: ^int) {
-    y := x;
-    y^ = 1;
-    return;
-}*/

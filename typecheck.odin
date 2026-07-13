@@ -152,7 +152,7 @@ can_cast_to :: proc(target_id, to_id: TypeId) -> bool {
 is_array_type :: proc(t: TypeId) -> bool {
     #partial switch get_type(t).kind {
     case .FixedSizeArray: return true
-    case .Slice: return true
+    case .Slice, .String: return true
     }
     return false
 }
@@ -171,6 +171,7 @@ get_array_base_type :: proc(t: TypeId) -> (TypeId, bool) {
     case .Slice: {
         return ty.slice.type, true
     }
+    case .String: return byte_type(), true
     }
     panic("can't index")
 }
@@ -184,6 +185,9 @@ can_reference :: proc(id: ExprId) -> bool {
 }
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     switch e in get_expr(id) {
+    case String: {
+        get_ctx().expr_types[id] = intern_type({kind=.String})
+    }
     case Deref: {
         tc_expr(tc, e.expr);
         t := expr_ty(e.expr);
@@ -415,7 +419,8 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             r, ok, s := compare_and_reduce_types(farg.type, expr_ty(earg));
             if !ok {
                 highlight_lines(get_span(earg).span);
-                gala_panic(s);
+                gala_panicf("Type Mismatch: %s (expected %s, got %s)",
+                    s, tts(farg.type), tts(expr_ty(earg)));
             }
             assert(r == farg.type); // should always match
             propagate_type(r, earg);
@@ -562,6 +567,9 @@ typecheck_module :: proc(ast: ^AST) {
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
     debugln("propagating:", get_type(ty), "to", get_expr(expr));
     switch e in get_expr(expr) {
+    case String:  {
+        return; // once a string, always a string (for now at least)
+    }
     case Reference: {
         return; // should be typed, no?
     }

@@ -49,6 +49,9 @@ main :: proc() {
     ctx.objs =          make([dynamic]Object, allocator=get_ctx().allocator)
     ctx.types =         make([dynamic]Type, allocator=get_ctx().allocator)
 
+    ctx.data =          make([dynamic]string, allocator=get_ctx().allocator)
+    ctx.table =         make(map[string]StringId, allocator=get_ctx().allocator)
+
 
     // refs
     // expr_types:         map[ExprId]TypeId,
@@ -89,6 +92,7 @@ main :: proc() {
     new_type(&ctx.base_mod, Type{name="bool", kind=.Bool});
     new_type(&ctx.base_mod, Type{name="byte", kind=.Byte});
     new_type(&ctx.base_mod, Type{name="rawptr", kind=.Pointer, ptr=void_type()});
+    new_type(&ctx.base_mod, Type{name="string", kind=.String});
 
 
     // parse main

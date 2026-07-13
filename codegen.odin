@@ -20,6 +20,7 @@ CGCtx :: struct {
     tmp_id: int,
     scope: CGScope,
     llvm_ty: map[TypeId]string,
+    strings: map[string]StringGlobalResult,
 }
 CGObjectKind :: enum {
     Invalid,
@@ -102,7 +103,7 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
             c.llvm_ty[id]=n;
             return c.llvm_ty[id]
     }
-    case .Slice: {
+    case .Slice, .String: {
         return "{ ptr, i64 }";
     }
     }
@@ -110,9 +111,12 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     panic("impl")
 }
 // eg "%t1"
-new_tmp::proc(c: ^CGCtx) -> string {
+new_tmp::proc(c: ^CGCtx, p:="",symbol:=false) -> string {
     c.tmp_id += 1;
-    return fmt.aprintf("%%t%d",c.tmp_id, allocator=c.arena.block_allocator);
+    if symbol {
+        return fmt.aprintf("@t%s%d", p, c.tmp_id, allocator=c.arena.block_allocator);
+    }
+    return fmt.aprintf("%%t%s%d", p, c.tmp_id, allocator=c.arena.block_allocator);
 }
 aprintf :: proc(c: ^CGCtx, format: string, data: ..any) -> string {
     res := fmt.aprintf(format, ..data, allocator=c.arena.block_allocator)
@@ -165,6 +169,32 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
     // in cg_expr:
     switch e in get_expr(id) {
+    case String: {
+        /*
+           ; 1. decay the global array into a plain ptr
+           %str.ptr = getelementptr inbounds [6 x i8], ptr @tstring1, i64 0, i64 0
+
+           ; 2. build the {ptr, i64} value piece by piece
+           %tmp0 = insertvalue { ptr, i64 } undef, ptr %str.ptr, 0
+           %tmp1 = insertvalue { ptr, i64 } %tmp0, i64 5, 1
+
+           ; 3. store the fully-built struct value into the alloca
+           store { ptr, i64 } %tmp1, ptr %s
+         */
+        r := c.strings[e.s] // global string thingy
+        t := new_tmp(c);
+        cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i64 0, i64 0",
+            t, r.array_type, r.s);
+
+        t1 := new_tmp(c);
+        t2 := new_tmp(c);
+        cwritefln(c, "\t%s = insertvalue {{ ptr, i64 }} undef, ptr %s, 0",
+            t1, t)                                     
+        cwritefln(c, "\t%s = insertvalue {{ ptr, i64 }} %s, i64 %d, 1       ",
+            t2, t1, r.len)
+        // returns t2 with the slice
+        return {kind=.Value, v=t2}
+    }
     case Deref: {
         // rvalue: the pointer itself, already loaded
         ptr_val := cg_addr(c, e.expr);
@@ -787,6 +817,13 @@ cg_data_ptr :: proc(c: ^CGCtx, id: ExprId) -> (ptr: string, elem_ty_str: string)
         cwritefln(c, "\t%s = extractvalue {{ ptr, i64 }} %s, 0", p, v)
         return p, ty_to_llvm_str(c, ty.slice.type) // check your real field name
     }
+    case .String: {
+        // same as slice but base is just "byte"
+        v, ok := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(ok)
+        p := new_tmp(c)
+        cwritefln(c, "\t%s = extractvalue {{ ptr, i64 }} %s, 0", p, v)
+        return p, ty_to_llvm_str(c, byte_type()) // check your real field name
+    }
 
     case .Pointer: {
         // already IS a pointer to element 0
@@ -967,6 +1004,7 @@ cg_ast :: proc(c: ^CGCtx, ast: ^AST) {
     }
 }
 check_rets :: proc(b: Block) -> bool {
+    if len(b.stmts) < 1 { return false }
     last := b.stmts[len(b.stmts)-1];
     return stmt_ends_block(last); // check if last statement ends block
 }
@@ -985,6 +1023,59 @@ cgscope_get :: proc(scope: ^CGScope, v: string) -> CGObj {
     }
     gala_panic("doesn't exist")
 }
+
+// Escapes a byte for LLVM's c"..." string-constant syntax.
+// LLVM requires every byte outside printable, non-special ASCII
+// to be hex-escaped as \XX (two uppercase hex digits, no 0x prefix).
+llvm_escape_byte :: proc(sb: ^strings.Builder, b: byte) {
+    switch b {
+    case '\\':
+        strings.write_string(sb, "\\5C")
+    case '"':
+        strings.write_string(sb, "\\22")
+    case:
+        if b >= 0x20 && b < 0x7f {
+            // printable ASCII, safe to emit directly
+            strings.write_byte(sb, b)
+        } else {
+            strings.write_string(sb, fmt.tprintf("\\%02X", b))
+        }
+    }
+}
+
+StringGlobalResult :: struct {
+    ir:         string, // the full .ll global definition text
+    array_type: string, // e.g. "[6 x i8]" -- the array type as declared (INCLUDES null term)
+    len:        int,    // logical length, EXCLUDING the null terminator
+    s:          string, // name
+}
+
+emit_string_global :: proc(name: string, content: string) -> StringGlobalResult {
+    sb: strings.Builder
+    strings.builder_init(&sb, get_ctx().allocator)
+
+    logical_len := len(content)       // length WITHOUT null term (this is what you store as `i64` len)
+    total_len   := logical_len + 1    // actual array size WITH null term
+
+    array_type := fmt.tprintf("[%d x i8]", total_len)
+
+    strings.write_string(&sb, fmt.tprintf(
+        "%s = private unnamed_addr constant %s c\"",
+        name, array_type,
+    ))
+    for i := 0; i < len(content); i += 1 {
+        llvm_escape_byte(&sb, content[i])
+    }
+    strings.write_string(&sb, "\\00\"") // trailing null terminator
+    strings.write_string(&sb, ", align 1\n")
+
+    return StringGlobalResult{
+        ir          = strings.to_string(sb),
+        array_type  = array_type,
+        len         = logical_len,
+        s           = name,
+    }
+}
 cg_module :: proc(ast: ^AST) {
     cgctx := CGCtx{}
     arena : mem.Dynamic_Arena;
@@ -996,6 +1087,7 @@ cg_module :: proc(ast: ^AST) {
     defer strings.builder_destroy(&sb)
     cgctx.b = &sb
     cgctx.llvm_ty = make(map[TypeId]string, allocator=get_ctx().allocator);
+    cgctx.strings = make(map[string]StringGlobalResult, allocator=get_ctx().allocator);
     cgctx.scope = new_gcscope(nil);
 
 
@@ -1017,6 +1109,12 @@ cg_module :: proc(ast: ^AST) {
             cgctx.scope.vars[s.name] = {.Symbol, aprintf(&cgctx, "@%s", s.name)};
         }
         }
+    }
+    for s in get_ctx().data {
+        t := new_tmp(&cgctx,p="string", symbol=true)
+        v := emit_string_global(t, s);
+        cwritefln(&cgctx, "%s", v.ir);
+        cgctx.strings[s] = v;
     }
     // gen
     cg_ast(&cgctx, ast)
