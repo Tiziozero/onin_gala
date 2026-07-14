@@ -1,9 +1,16 @@
-fn main():int {
-    s := "Hello, World!";
-    stringer(s[0:13]);
-    return cast(int)s[0];
-}
+extern fn abc();
+extern fn printf(fmt: ^byte, ..any);
 
-fn stringer(s: []byte) {
+fn print(fmt: string) {
+    printf(transmute(^byte)&fmt[0]);
     return;
+}
+extern fn malloc(size: int): rawptr;
+extern fn memcpy(dest: rawptr, src: rawptr, size: int);
+
+fn main(): int {
+    s := "Hello, World!\n";
+    buf := [1024]byte{};
+    print(s);
+    return 0;
 }

@@ -267,11 +267,13 @@ BaseType :: struct { ident: string, span: Span };
 PointerType :: struct {ptr:^TypeSpecifier, span: Span };
 FixedArreySpecifier :: struct { size: int, base: ^TypeSpecifier, span: Span };
 SliceSpecifier :: struct {base : ^TypeSpecifier, span: Span }
+AnySpecifier :: struct { span: Span }
 TypeSpecifier :: union {
     BaseType,
     PointerType,
     FixedArreySpecifier,
     SliceSpecifier,
+    AnySpecifier,
 }
 VarDec :: struct {
     name: string,
@@ -564,10 +566,16 @@ parse_block :: proc(p: ^Parser) -> Block{
 }
 
 FnDecArg :: struct{name: string, t: TypeSpecifier, span: Span}
-FnDec :: struct {
+FnDecSignature :: struct {
     name: string,
     args: []FnDecArg, 
     ret_ty: Maybe(TypeSpecifier),
+    is_variadic: bool,
+    variadic_ty: TypeSpecifier,
+}
+FnDec :: struct {
+    using signature: FnDecSignature,
+    span: Span,
     block: Block,
 }
 StructField :: struct{name: string, t: TypeSpecifier, span: Span}
@@ -576,9 +584,8 @@ StructDec :: struct {
     fields: []StructField,
 }
 ExternFnDec :: struct {
-    name: string,
-    args: [dynamic]FnDecArg, 
-    ret_ty: Maybe(TypeSpecifier),
+    using signature: FnDecSignature,
+    span: Span,
 }
 
 Item :: union {
@@ -593,6 +600,7 @@ base_span :: proc(t: ^TypeSpecifier) -> Span {
     case PointerType: return t.span;
     case SliceSpecifier: return t.span;
     case FixedArreySpecifier: return t.span;
+    case AnySpecifier: return t.span;
     }
     panic("impl")
 }
@@ -640,8 +648,53 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
             ptr=base_specifier,
             span=token.span,
         })
+    } else if current_token(p).kind == .Any {
+        t := consume_token(p); // "any"
+        return AnySpecifier{span=t.span};
     }
     panic("impl");
+}
+
+parse_fn_signature :: proc(p: ^Parser) -> FnDec {
+    kw := consume_token(p); // "fn"
+    assert(kw.kind == .Keyword && kw.kw == .Fn);
+    f := FnDec{};
+    name := expect_ident(p);
+    f.name = name.text;
+    // args
+    args := make([dynamic]FnDecArg)
+    expect_symbol(p, "(");
+    for !is_symbol(current_token(p), ")") {
+        if is_symbol(current_token(p), ".") &&
+            is_symbol(next_token(p), ".") {
+            token := consume_token(p); // "."
+            consume_token(p); // "."
+            t := parse_type(p);
+            f.is_variadic = true;
+            f.variadic_ty = t;
+            break;
+        }
+        name := expect_ident(p);
+        expect_symbol(p, ":")
+        ty := parse_type(p);
+        append(&args, FnDecArg{name=name.text, t=ty, span=name.span})
+        if is_symbol(current_token(p), ",") {
+            consume_token(p);
+        } else {
+            break;
+        }
+    }
+    end := expect_symbol(p, ")");
+    f.args = args[:]
+
+    if is_symbol(current_token(p), ":") {
+        consume_token(p); // ":"
+        f.ret_ty = parse_type(p);
+    }
+    f.span.start = kw.span.start
+    f.span.end = end.span.end
+    debugln(f)
+    return f;
 }
 parse_module_kw :: proc(p: ^Parser) -> ItemId {
     #partial switch current_token(p).kw {
@@ -673,76 +726,34 @@ parse_module_kw :: proc(p: ^Parser) -> ItemId {
         return id
     }
     case .Fn: {
-        f := FnDec{}
-        kw := consume_token(p);
-        name := expect_ident(p);
-        f.name = name.text;
-        // args
-        args := make([dynamic]FnDecArg)
-        expect_symbol(p, "(");
-        for !is_symbol(current_token(p), ")") {
-            name := expect_ident(p);
-            expect_symbol(p, ":")
-            ty := parse_type(p);
-            append(&args, FnDecArg{name=name.text, t=ty, span=name.span})
-            if is_symbol(current_token(p), ",") {
-                consume_token(p);
-            } else {
-                break;
-            }
-        }
-        expect_symbol(p, ")");
-        f.args = args[:]
-
-        if is_symbol(current_token(p), ":") {
-            consume_token(p); // ":"
-            f.ret_ty = parse_type(p);
-        }
+        f := parse_fn_signature(p);
         b := parse_block(p);
         f.block = b;
 
         id := new_item(Item(f))
         get_ctx().spans.items[id] = {
             file_name=get_ctx().current_file,
-            span=name.span
+            span=f.span
         }
 
         return id
     }
     case .Extern: {
         token := consume_token(p); // "extern"
-        kw := consume_token(p); // "extern"
-        assert(kw.kind == .Keyword && kw.kw == .Fn);
-        f := ExternFnDec{};
-        name := expect_ident(p);
-        f.name = name.text;
-        // args
-        args := make([dynamic]FnDecArg)
-        expect_symbol(p, "(");
-        for !is_symbol(current_token(p), ")") {
-            name := expect_ident(p);
-            expect_symbol(p, ":")
-            ty := parse_type(p);
-            append(&args, FnDecArg{name=name.text, t=ty, span=name.span})
-            if is_symbol(current_token(p), ",") {
-                consume_token(p);
-            } else {
-                break;
-            }
-        }
-        expect_symbol(p, ")");
-        f.args = args
-
-        if is_symbol(current_token(p), ":") {
-            consume_token(p); // ":"
-            f.ret_ty = parse_type(p);
-        }
+        f := parse_fn_signature(p);
+        ef := ExternFnDec{}
+        ef.name = f.name;
+        ef.args = f.args;
+        ef.ret_ty = f.ret_ty
+        ef.signature = f.signature
+        ef.span = f.span
+        
         expect_symbol(p, ";");
 
-        id := new_item(Item(f))
+        id := new_item(Item(ef))
         get_ctx().spans.items[id] = {
             file_name=get_ctx().current_file,
-            span=name.span
+            span=ef.span
         }
         return id;
     }

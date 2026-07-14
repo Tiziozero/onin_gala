@@ -20,13 +20,14 @@ TypeKind :: enum {
     String,
     ZeroInit,
     FixedSizeArray,
+    Any,
     Void,
 }
 Type :: struct {
     name: string,
     kind: TypeKind,
     ptr: TypeId,
-    fn: struct { args: []Arg, ret_ty: TypeId},
+    fn: struct { args: []Arg, ret_ty: TypeId, is_variadic: bool, variadic_ty: TypeId},
     structure: struct {fields: []Field},
     fixed_size_array: struct { type: TypeId, size: int },
     slice: struct{type: TypeId},
@@ -88,6 +89,7 @@ new_object :: proc(s: ^Scope, o: Object) -> ObjId {
     debugln("new object:", o.name, o.kind);
     return id
 }
+
 new_type :: proc(s: ^Scope, t: Type) -> TypeId {
     get_ctx := get_ctx();
     assert(t.kind != .Invalid);
@@ -204,12 +206,14 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     case Number: {
     } // nothing
     case Symbol: {
+        debugln("RESOLVING SYMBOL");
         obj, ok := scope_get_object(s, e.name);
         if !ok {
             highlight_lines(get_span(id).span);
             gala_panic("Couldn't find", e.name, "in scope.");
         }
         get_ctx().expr_objects[id] = obj
+        debugln("obj in symbol:", obj, get(obj));
     }
     case FnCall: {
         resolve_expr(s, e.target);
@@ -221,16 +225,26 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     case: gala_panic("impl");
     }
 }
-type_cmp  :: proc(l, r: Type) -> bool {
-    if l.kind != r.kind { return false }
+type_cmp  :: proc(l, r: Type, strict := false) -> bool {
+    if l.kind != r.kind {
+        if (l.kind == .Any || r.kind == .Any) && !strict {
+            return true // sure, that's the point
+        }
+        return false
+    }
+
     switch l.kind {
     case .String: return true;
     case .Function:
         if l.fn.ret_ty != r.fn.ret_ty { return false }
         if len(l.fn.args) != len(r.fn.args) { return false }
         for i in 0..<len(l.fn.args) {
-            if l.fn.args[i].type != r.fn.args[i].type { return false }
+            if l.fn.args[i].type != r.fn.args[i].type {
+                debugln("fucntions", l.fn, r.fn, "dont match");
+                return false
+            }
         }
+        debugln("fucntions", l.fn, r.fn, "match");
         return true
     case .Pointer: return type_cmp(get(l.ptr)^, get(r.ptr)^)
     case .Struct:
@@ -249,6 +263,7 @@ type_cmp  :: proc(l, r: Type) -> bool {
     case .Integer, .Float, .Rune, .Byte, .Bool, .Void,
          .UntypedInteger, .UntypedFloat, .ZeroInit: return true
     case .Invalid: return false
+    case .Any: return true
     }
     return false
 }
@@ -257,11 +272,12 @@ intern_type :: proc(t: Type) -> TypeId {
     assert(t.kind == .Pointer || t.kind == .Function || 
             t.kind == .UntypedInteger || t.kind == .UntypedFloat || 
             t.kind == .FixedSizeArray || t.kind == .ZeroInit ||
-            t.kind == .Slice || t.kind == .String)
+            t.kind == .Slice || t.kind == .String || t.kind == .Any)
     for ty, id in get_ctx().types {
-        if type_cmp(ty, t) { return TypeId(id) }
+        if type_cmp(ty, t, true) { return TypeId(id) }
     }
     append(&get_ctx().types, t);
+    debugln("NEW TYPE:", t);
     return TypeId(len(get_ctx().types)-1)
 }
 scope_get_object :: proc(s: ^Scope, n: string) -> (ObjId, bool) {
@@ -301,6 +317,9 @@ scope_get_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
 }
 resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
     switch k in t {
+    case AnySpecifier: {
+        return intern_type({kind=.Any})
+    }
     case SliceSpecifier: {
         base := resolve_type_specifier(s, k.base^)
         return intern_type({kind=.Slice, slice={type=base}})
@@ -439,11 +458,8 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     // link item to type
     get_ctx().item_types[id] = tid;
 }
-resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
-    fndec, ok := get(id).(ExternFnDec); assert(ok); // assert it's a fn dec
-    oid, ook := s.obj_foreward[fndec.name]; assert(ook); // make sure fd exists
-    obj := get(oid); // gets pointer, so modify that
 
+resolve_fn_dec_signature :: proc(s: ^ModuleScope, fndec: FnDecSignature) -> (Type, Scope) {
     // create fn type
     fnty := Type{}
     fnty.kind = .Function;
@@ -458,6 +474,8 @@ resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     new_scope := new_scope(s);
     args := make([]Arg, len(fndec.args), allocator=get_ctx().allocator)
     declared := make(map[string]Arg)
+    is_variadic := false;
+    variadic_ty: TypeId
     for a, i in fndec.args {
         t := resolve_type_specifier(&new_scope, a.t)
         if da, ok := declared[a.name]; ok {
@@ -470,18 +488,37 @@ resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
         declared[a.name] = Arg{a.name, t, a.span}
         new_object(&new_scope, Object{.Argument, a.name, t});
     }
+    if fndec.is_variadic {
+        debugln("is variadic");
+        t := resolve_type_specifier(s, fndec.variadic_ty);
+        variadic_ty = t
+        is_variadic = true
+    }
     fnty.fn.args = args
+    fnty.fn.is_variadic = is_variadic
+    fnty.fn.variadic_ty = variadic_ty
+    debugln("Function is variadic?", fnty.fn.is_variadic);
     // free args scope
-    free_scope(&new_scope);
+    return fnty, new_scope
+}
+resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
+    fndec, ok := get(id).(ExternFnDec); assert(ok); // assert it's a fn dec
+    oid, ook := s.obj_foreward[fndec.name]; assert(ook); // make sure fd exists
+    obj := get(oid); // gets pointer, so modify that
+
+     debugln("extern",fndec);
+    fnty, scope := resolve_fn_dec_signature(s, fndec);
+    free_scope(&scope);
 
     // intern type
     tyid := intern_type(fnty);
-    debugln("EXTERN FN RETURN TYPE:", fnty.fn.ret_ty, fndec.name, tyid);
+    debugln("EXTERN FN RETURN TYPE:", tyid, fnty.fn.ret_ty, fndec.name);
 
     obj.type = tyid
     obj.name = fndec.name;
     // update object
     get_ctx().objs[oid] = obj^
+    debugln("obj:", oid, obj^);
 
     delete_key(&s.obj_foreward, fndec.name); // delete fd and create object
     s.objects[fndec.name] = oid; // recreate link
@@ -492,46 +529,20 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     oid, ook := s.obj_foreward[fndec.name]; assert(ook); // make sure fd exists
     obj := get(oid); // gets pointer, so modify that
 
-    // create fn type
-    fnty := Type{}
-    fnty.kind = .Function;
-    // return type
-    if fndec.ret_ty != nil {
-        fnty.fn.ret_ty = resolve_type_specifier(s, fndec.ret_ty.(TypeSpecifier))
-    } else {
-        fnty.fn.ret_ty = void_type();
-    }
-    // new scope for args
-    // args
-    new_scope := new_scope(s);
-    args := make([]Arg, len(fndec.args), allocator=get_ctx().allocator)
-    declared := make(map[string]Arg)
-    for a, i in fndec.args {
-        t := resolve_type_specifier(&new_scope, a.t)
-        if da, ok := declared[a.name]; ok {
-            debugln(a, da);
-            // print declared arf
-            print_lines(get_file_lines(get_ctx().current_file, da.span), da.span)
-            gala_panic("Duplicate argument. Arg already declared here.")
-        }
-        args[i] = Arg{a.name, t, a.span}
-        declared[a.name] = Arg{a.name, t, a.span}
-        new_object(&new_scope, Object{.Argument, a.name, t});
-    }
-    fnty.fn.args = args
-    // impl
-    resolve_block(&new_scope, &fndec.block);
-    // free args scope
-    free_scope(&new_scope);
+    fnty, fnscope := resolve_fn_dec_signature(s, fndec);
 
+    resolve_block(&fnscope, &fndec.block);
+    free_scope(&fnscope);
 
     // intern type
     tyid := intern_type(fnty);
+    debugln("FN RETURN TYPE:", tyid, fnty.fn.ret_ty, fndec.name);
 
     obj.type = tyid
     obj.name = fndec.name;
     // update object
     get_ctx().objs[oid] = obj^
+    debugln("obj:", oid, obj^);
 
     delete_key(&s.obj_foreward, fndec.name); // delete fd and create object
     s.objects[fndec.name] = oid; // recreate link

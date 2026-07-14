@@ -407,6 +407,9 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         ty := get_type(expr_ty(e.target));
         assert(ty.kind == .Function)
         fargs := ty.fn.args;
+        debugln("fn ty:",expr_ty(e.target), ty, )
+        debugln("expr:", get(e.target));
+        debugln("expr sym:", get(get_ctx().expr_objects[e.target]));
         if len(fargs) != len(e.args) {
             highlight_lines(get_span(id).span);
             gala_panicf("args count for function don't match (expected %d, got %d).",
@@ -418,6 +421,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             tc_expr(tc, earg);
             r, ok, s := compare_and_reduce_types(farg.type, expr_ty(earg));
             if !ok {
+                debugln(ty.fn);
                 highlight_lines(get_span(earg).span);
                 gala_panicf("Type Mismatch: %s (expected %s, got %s)",
                     s, tts(farg.type), tts(expr_ty(earg)));
@@ -548,6 +552,7 @@ tc_item :: proc(tc: ^TcContext, id: ItemId) {
     case FnDec: {
         fn, ok := get_ctx().item_objects[id]; assert(ok);
         type := get_type(get_obj(fn).type.(TypeId));
+        debugln(type)
         assert(type.kind == .Function);
         new_tc := tc^;
         new_tc.in_function = true;

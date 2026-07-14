@@ -441,7 +441,19 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         }
 
         if get(fn_ty.fn.ret_ty).kind == .Void {
-            cwritef(c, "\tcall %s %s", ty_to_llvm_str(c, fn_ty.fn.ret_ty), t);
+            cwritef(c, "\tcall %s ", ty_to_llvm_str(c, fn_ty.fn.ret_ty))
+            if fn_ty.fn.is_variadic {
+                cwrite(c, "(");
+                for a, i in fn_ty.fn.args {
+                    cwritef(c, "%s", ty_to_llvm_str(c, a.type));
+                    if i < len(fn_ty.fn.args) - 1 {
+                        cwritef(c, ", ")
+                    }
+                }
+                cwritef(c, ", ..."); // write variadic thingy
+                cwrite(c, ")");
+            }
+            cwritef(c, "%s", t);
             cwrite(c, "(");
             for a, i in args {
                 cwritef(c, "%s", a);
@@ -454,7 +466,19 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             return {kind=.None, id=id}
         } else {
             new_t := new_tmp(c);
-            cwritef(c, "\t%s = call %s %s", new_t, ty_to_llvm_str(c, fn_ty.fn.ret_ty), t);
+            cwritef(c, "\t%s = call %s ", new_t, ty_to_llvm_str(c, fn_ty.fn.ret_ty))
+            if fn_ty.fn.is_variadic {
+                cwrite(c, "(");
+                for a, i in fn_ty.fn.args {
+                    cwritef(c, "%s", ty_to_llvm_str(c, a.type));
+                    if i < len(fn_ty.fn.args) - 1 {
+                        cwritef(c, ", ")
+                    }
+                }
+                cwritef(c, ", ..."); // write variadic thingy
+                cwrite(c, ")");
+            }
+            cwritef(c, "%s", t);
             cwrite(c, "(");
             for a, i in args {
                 cwritef(c, "%s", a);
@@ -908,7 +932,7 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
     case: gala_panic("not an lvalue")
     }
 }
-gen_item :: proc(c: ^CGCtx, id: ItemId) {
+cg_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
     case StructDec: {
         item := i;
@@ -948,6 +972,9 @@ gen_item :: proc(c: ^CGCtx, id: ItemId) {
                 debugln(i, len(fn_ty.fn.args))
                 cwritef(c, ", ")
             }
+        }
+        if fn_ty.fn.is_variadic {
+            cwritef(c, ", ..."); // write variadic thingy
         }
         cwriteln(c, ")");
     }
@@ -1000,7 +1027,7 @@ gen_item :: proc(c: ^CGCtx, id: ItemId) {
 }
 cg_ast :: proc(c: ^CGCtx, ast: ^AST) {
     for id in ast.items {
-        gen_item(c, id)
+        cg_item(c, id)
     }
 }
 check_rets :: proc(b: Block) -> bool {

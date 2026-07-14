@@ -14,6 +14,7 @@ TokenKind :: enum {
     Transmute,
     Keyword,
     Cast,
+    Any,
     EOF,
 }
 Keyword :: enum {
@@ -148,6 +149,12 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                 append(&tokens, Token{
                     span = Span{start, i},
                     kind = .Transmute,
+                    kw   = .Invalid,
+                })
+            }else if ident == "any" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .Any,
                     kw   = .Invalid,
                 })
             } else {
