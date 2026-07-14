@@ -14,6 +14,10 @@ TokenKind :: enum {
     Transmute,
     Keyword,
     Cast,
+    Len,
+    Sizeof,
+    True,
+    False,
     Any,
     EOF,
 }
@@ -22,6 +26,7 @@ Keyword :: enum {
     Fn,
     Return,
     If, Else,
+    While,
     Extern,
     Struct,
 }
@@ -133,6 +138,12 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                     kind = .Keyword,
                     kw   = .Else,
                 })
+            }else if ident == "while" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .Keyword,
+                    kw   = .While,
+                })
             }else if ident == "extern" {
                 append(&tokens, Token{
                     span = Span{start, i},
@@ -151,10 +162,34 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                     kind = .Transmute,
                     kw   = .Invalid,
                 })
+            }else if ident == "len" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .Len,
+                    kw   = .Invalid,
+                })
+            }else if ident == "sizeof" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .Sizeof,
+                    kw   = .Invalid,
+                })
             }else if ident == "any" {
                 append(&tokens, Token{
                     span = Span{start, i},
                     kind = .Any,
+                    kw   = .Invalid,
+                })
+            }else if ident == "true" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .True,
+                    kw   = .Invalid,
+                })
+            }else if ident == "false" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .False,
                     kw   = .Invalid,
                 })
             } else {

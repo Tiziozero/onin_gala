@@ -112,11 +112,10 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
 }
 // eg "%t1"
 new_tmp::proc(c: ^CGCtx, p:="",symbol:=false) -> string {
-    c.tmp_id += 1;
     if symbol {
-        return fmt.aprintf("@t%s%d", p, c.tmp_id, allocator=c.arena.block_allocator);
+        return fmt.aprintf("@t%s%d", p, next_tmp_index(c), allocator=c.arena.block_allocator);
     }
-    return fmt.aprintf("%%t%s%d", p, c.tmp_id, allocator=c.arena.block_allocator);
+    return fmt.aprintf("%%t%s%d", p, next_tmp_index(c), allocator=c.arena.block_allocator);
 }
 aprintf :: proc(c: ^CGCtx, format: string, data: ..any) -> string {
     res := fmt.aprintf(format, ..data, allocator=c.arena.block_allocator)
@@ -162,13 +161,118 @@ ty_to_llvm_transmute_op :: proc(from_id, to_id: TypeId) -> (string, bool) {
 
     return "", false // signal "no fast path" — caller falls through to memory
 }
+// C abi in the way
+CAbiInfo :: struct {
+    type: TypeId,
+    needs_conversion: bool,
+}
+lower_c_abi_type :: proc(type_id: TypeId) -> CAbiInfo {
+    ty := get_type(type_id);
+
+    #partial switch ty.kind {
+    case .Struct:
+        size := type_size(type_id);
+
+        // SysV x86-64: small structs are passed in registers,
+        // but LLVM wants them represented according to the ABI.
+        // Simplified rule for now.
+        if size <= 8 {
+            return {
+                type = integer_type(), // i32/i64 depending on size
+                needs_conversion = true,
+            };
+        }
+
+        return {
+            type = intern_type({kind=.Pointer, ptr=type_id}),
+            needs_conversion = true,
+        };
+
+    case .Integer, .Float, .Bool, .Byte, .Rune:
+        return {
+            type = type_id,
+            needs_conversion = false,
+        };
+
+    case .Pointer:
+        return {
+            type = type_id,
+            needs_conversion = false,
+        };
+
+    case:
+        // For now, don't allow weird things through externs
+        gala_panic("unsupported C ABI argument type");
+    }
+}
+cg_abi_convert :: proc(c: ^CGCtx, value: string, from: TypeId, to: TypeId) -> string {
+    from_ty := get_type(from);
+
+    #partial switch from_ty.kind {
+    case .Struct:
+        tmp := new_tmp(c);
+
+        cwritef(c, "\t%s = alloca %s\n",
+            tmp,
+            ty_to_llvm_str(c, from),
+        );
+
+        cwritef(c, "\tstore %s %s, ptr %s\n",
+            ty_to_llvm_str(c, from),
+            value,
+            tmp,
+        );
+
+        loaded := new_tmp(c);
+
+        cwritef(c, "\t%s = load %s, ptr %s\n",
+            loaded,
+            ty_to_llvm_str(c, to),
+            tmp,
+        );
+
+        return loaded;
+
+    case:
+        panic("missing abi conversion");
+    }
+}
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     span := get_span(id).span
     data := get_file_lines(get_ctx().current_file, span)
-    cwritefln(c, "\t; cg_expr \"%s\"",
-        string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
+    // cwritefln(c, "\t; cg_expr \"%s\"",
+        // string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
     // in cg_expr:
     switch e in get_expr(id) {
+    case BoolLitFalse: {
+        return {kind=.Value, v="0"}
+    }
+    case BoolLitTrue: {
+        return {kind=.Value, v="1"}
+    }
+    case Len: {
+        inner, returns := reduce_expr_to_single_value(c, cg_expr(c, e.target));
+        assert(returns);
+        ty := get_type(expr_ty(e.target))
+        #partial switch ty.kind {
+        case .String, .Struct: {
+            t := new_tmp(c);
+            cwritefln(c, "\t%s = extractvalue %s %s, 1",
+                t, ty_to_llvm_str(c, expr_ty(e.target)), inner);
+            return {kind=.Value, v=t};
+        }
+        case .FixedSizeArray: {
+            v := aprintf(c, "%d", ty.fixed_size_array.size);
+            return {kind=.Number, v=v}
+        }
+        }
+        panic("impl");
+    }
+    case Sizeof: {
+        s := type_size(get_ctx().expr_resolution_types[id]);
+        v := aprintf(c, "%d", s);
+        return {kind=.Number, v=v}
+    }
     case String: {
         /*
            ; 1. decay the global array into a plain ptr
@@ -396,6 +500,15 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .GreaterEqual: op = "fcmp oge"
             case: gala_panic("impl")
             }
+        } else if get_type(operand_ty).kind == .Bool {
+            #partial switch e.kind {
+            case .Equal:
+                op = "icmp eq"
+            case .NotEqual:
+                op = "icmp ne"
+            case:
+                gala_panic("can't order booleans")
+            }
         } else if get_type(operand_ty).kind == .Void {
             dump_context(get_ctx())
             gala_panic("can't binop voids")
@@ -433,12 +546,31 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         fn_ty := get_type(expr_ty(e.target));
         //gen args
         args:=make([dynamic]string, allocator=get_ctx().allocator)
-        for a, i in e.args {
+        /*for a, i in e.args {
             r, returns := reduce_expr_to_single_value(c, cg_expr(c, a));
             assert(returns);
             v := aprintf(c, "%s %s", ty_to_llvm_str(c, expr_ty(a)), r);
                append(&args, v);
-        }
+        }*/
+            for a, i in e.args {
+                r, returns := reduce_expr_to_single_value(c, cg_expr(c, a));
+                assert(returns);
+
+                arg_ty := expr_ty(a);
+
+                if fn_ty.fn.is_external {
+                    abi := lower_c_abi_type(arg_ty);
+
+                    if abi.needs_conversion {
+                        r = cg_abi_convert(c, r, arg_ty, abi.type);
+                    }
+
+                    arg_ty = abi.type;
+                }
+
+                v := aprintf(c, "%s %s", ty_to_llvm_str(c, arg_ty), r);
+                append(&args, v);
+            }
 
         if get(fn_ty.fn.ret_ty).kind == .Void {
             cwritef(c, "\tcall %s ", ty_to_llvm_str(c, fn_ty.fn.ret_ty))
@@ -480,6 +612,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             }
             cwritef(c, "%s", t);
             cwrite(c, "(");
+            // pre adding C ABI
             for a, i in args {
                 cwritef(c, "%s", a);
                 if i < len(args) - 1 {
@@ -617,6 +750,9 @@ reduce_expr_to_single_value :: proc(c: ^CGCtx, e: CGExprRes) -> (string, bool) {
 }
 stmt_ends_block :: proc(stmt: StmtId) -> bool {
     switch s in get(stmt) {
+    case WhileLoop: {
+        return check_rets(s.block);
+    }
     case IfElse: {
         has_all_returns := s.has_else_block
         if !check_rets(s.base_block) do has_all_returns = false;
@@ -636,17 +772,71 @@ stmt_ends_block :: proc(stmt: StmtId) -> bool {
     }
     gala_panic("impl");
 }
+next_tmp_index :: proc(c: ^CGCtx) -> int {
+    c.tmp_id += 1;
+    return c.tmp_id;
+}
 cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     span := get_span(id).span
     data := get_file_lines(get_ctx().current_file, span)
-    cwritefln(c, "\t; cg_stmt \"%s\"",
-        string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
+    // cwritefln(c, "\t; cg_stmt \"%s\"",
+        // string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
     switch s in get_stmt(id) {
+    case WhileLoop: {
+        
+        id_suffix := next_tmp_index(c)
+
+        cond_label := aprintf(c, "while_cond_label%d", id_suffix);
+        body_label := aprintf(c, "while_body_label%d", id_suffix);
+        end_label  := aprintf(c, "while_end_label%d", id_suffix);
+
+        // jump into condition check
+        cwritefln(c, "\tbr label %%%s", cond_label);
+
+        // condition block
+        cwritefln(c, "%s:", cond_label);
+
+        cond, returns := reduce_expr_to_single_value(c, cg_expr(c, s.cond));
+        assert(returns);
+
+        // type checker guarantees this, but keep this assertion in codegen
+        assert(get_type(expr_ty(s.cond)).kind == .Bool);
+
+        cwritefln(c, "\tbr i1 %s, label %%%s, label %%%s",
+            cond, body_label, end_label);
+
+
+        // body
+        cwritefln(c, "%s:", body_label);
+
+        old := c.scope;
+        c.scope = new_gcscope(&old);
+
+        for statement, i in s.block.stmts {
+            cg_stmt(c, statement);
+
+            if stmt_ends_block(statement) && i != len(s.block.stmts)-1 {
+                gala_panic("nothing past will be executed");
+            }
+        }
+
+        free_cgscope(&c.scope);
+        c.scope = old;
+
+
+        // only loop back if body doesn't terminate
+        if !check_rets(s.block) {
+            cwritefln(c, "\tbr label %%%s", cond_label);
+        }
+
+
+        // exit
+        cwritefln(c, "%s:", end_label);
+    }
     case ExprId:
         reduce_expr_to_single_value(c, cg_expr(c, s));
     case IfElse: {
-        c.tmp_id += 1;
-        id_suffix := c.tmp_id
+        id_suffix := next_tmp_index(c)
         end_label := aprintf(c, "end_label%d", id_suffix);
 
         // Precompute all labels we'll need up front so branch targets
@@ -824,7 +1014,7 @@ cg_can_assign_to :: proc(id: ExprId) -> bool {
 // off the result.
 cg_data_ptr :: proc(c: ^CGCtx, id: ExprId) -> (ptr: string, elem_ty_str: string) {
     ty := get_type(expr_ty(id))
-    cwritefln(c, "\t; cg_data_ptr expr tye: %s", tts(expr_ty(id)));
+    // cwritefln(c, "\t; cg_data_ptr expr tye: %s", tts(expr_ty(id)));
     #partial switch ty.kind {
     case .FixedSizeArray:
         // arrays are always addressable, never SSA values — get its address,
@@ -851,7 +1041,6 @@ cg_data_ptr :: proc(c: ^CGCtx, id: ExprId) -> (ptr: string, elem_ty_str: string)
 
     case .Pointer: {
         // already IS a pointer to element 0
-        cwritefln(c, "\t; should load buf^");
         v, ok := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(ok)
         return v, ty_to_llvm_str(c, ty.ptr) // check your real field name
     }
@@ -863,7 +1052,7 @@ cg_data_ptr :: proc(c: ^CGCtx, id: ExprId) -> (ptr: string, elem_ty_str: string)
 // Address of target[index]. Used by both cg_expr's Index (which loads
 // afterward) and cg_addr's Index (which just returns this).
 cg_elem_ptr :: proc(c: ^CGCtx, target: ExprId, index: ExprId) -> string {
-    cwritefln(c, "\t; get_elem_ptr gens:");
+    // cwritefln(c, "\t; get_elem_ptr gens:");
     base_ptr, elem_ty := cg_data_ptr(c, target)
     idx_v, ok := reduce_expr_to_single_value(c, cg_expr(c, index)); assert(ok)
     idx_ty := ty_to_llvm_str(c, expr_ty(index))
@@ -876,8 +1065,8 @@ cg_elem_ptr :: proc(c: ^CGCtx, target: ExprId, index: ExprId) -> string {
 cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
     span := get_span(id).span
     data := get_file_lines(get_ctx().current_file, span)
-    cwritefln(c, "\t; cg_addr \"%s\"",
-        string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
+    // cwritefln(c, "\t; cg_addr \"%s\"",
+        // string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
     #partial switch e in get_expr(id) {
     case Symbol: {
         v := cgscope_get(&c.scope, e.name)
@@ -908,7 +1097,7 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
         return t
     }
     case Index: {
-        cwritefln(c, "\t; for index addr, cg_elem_ptr");
+        // cwritefln(c, "\t; for index addr, cg_elem_ptr");
         return cg_elem_ptr(c, e.target, e.index)
     }
     case Deref: {
@@ -935,20 +1124,6 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
 cg_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
     case StructDec: {
-        item := i;
-        cwritef(c, "%%%s = ", i.name);
-        cwrite(c, "type {")
-        ty :=get_type(get_ctx().item_types[id])
-        for f, i in ty.structure.fields {
-            debugfln("for struct %s field %d (%s) type %s",
-                item.name, i, f.name,
-                ty_to_llvm_str(c,f.type));
-            cwritef(c, "%s", ty_to_llvm_str(c,f.type));
-            if i != len(get_type(get_ctx().item_types[id]).structure.fields) -1 {
-                cwrite(c, ",");
-            }
-        }
-        cwriteln(c, "}")
     }
     case ExternFnDec: {
         // get type
@@ -1048,7 +1223,7 @@ cgscope_get :: proc(scope: ^CGScope, v: string) -> CGObj {
         if ok do return n
         s = s.parent
     }
-    gala_panic("doesn't exist")
+    gala_panic(v, "doesn't exist")
 }
 
 // Escapes a byte for LLVM's c"..." string-constant syntax.
@@ -1122,18 +1297,37 @@ cg_module :: proc(ast: ^AST) {
     fmt.sbprintfln(cgctx.b, "; target info")
     fmt.sbprintfln(cgctx.b, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"");
     fmt.sbprintfln(cgctx.b, "target triple = \"x86_64-pc-linux-gnu\"")
-    for i in ast.items {
-        switch s in get_item(i) {
-        case StructDec: {}
+
+
+    // structs need to be declared first??
+    for id in ast.items {
+        switch i in get_item(id) {
+        case StructDec: {
+            item := i;
+            c := &cgctx;
+            cwritef(c, "%%%s = ", i.name);
+            cwrite(c, "type {")
+            ty :=get_type(get_ctx().item_types[id])
+            for f, i in ty.structure.fields {
+                debugfln("for struct %s field %d (%s) type %s",
+                    item.name, i, f.name,
+                    ty_to_llvm_str(c,f.type));
+                cwritef(c, "%s", ty_to_llvm_str(c,f.type));
+                if i != len(get_type(get_ctx().item_types[id]).structure.fields) -1 {
+                    cwrite(c, ",");
+                }
+            }
+            cwriteln(c, "}")
+        }
         case FnDec: { 
             // declare first;
             // it's a function , so use "@main" instead of "%main"
-            cgctx.scope.vars[s.name] = {.Symbol, aprintf(&cgctx, "@%s", s.name)};
+            cgctx.scope.vars[i.name] = {.Symbol, aprintf(&cgctx, "@%s", i.name)};
         }
         case ExternFnDec: { 
             // declare first;
             // it's a function , so use "@main" instead of "%main"
-            cgctx.scope.vars[s.name] = {.Symbol, aprintf(&cgctx, "@%s", s.name)};
+            cgctx.scope.vars[i.name] = {.Symbol, aprintf(&cgctx, "@%s", i.name)};
         }
         }
     }
@@ -1190,6 +1384,9 @@ cg_module :: proc(ast: ^AST) {
             "/usr/lib/crt1.o",
             "/usr/lib/crti.o",
             "-lc", 
+            "-lm", 
+            "-L./lib/",
+            "-lraylib", 
             ".gala_build/a.o",
             "/usr/lib/crtn.o",
             "-o", "a.out",

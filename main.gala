@@ -1,16 +1,52 @@
-extern fn abc();
 extern fn printf(fmt: ^byte, ..any);
-
-fn print(fmt: string) {
-    printf(transmute(^byte)&fmt[0]);
-    return;
-}
-extern fn malloc(size: int): rawptr;
+extern fn calloc(n: int, size: int): rawptr;
 extern fn memcpy(dest: rawptr, src: rawptr, size: int);
+extern fn free(ptr: rawptr);
 
+// RLAPI void InitWindow(int width, int height, const char *title);  // Initialize window and OpenGL context
+extern fn InitWindow(width: int, height: int, title: ^byte): void;
+// RLAPI void CloseWindow(void);                                     // Close window and unload OpenGL context
+extern fn CloseWindow(): void;
+// RLAPI bool WindowShouldClose(void);                               // Check if application should close (KEY_ESCAPE pressed or windows close icon clicked)
+extern fn WindowShouldClose(): bool;
+
+// RLAPI void BeginDrawing(void);                                    // Setup canvas (framebuffer) to start drawing
+extern fn BeginDrawing(): void;
+// RLAPI void EndDrawing(void);                                      // End canvas drawing and swap buffers (double buffering)
+extern fn EndDrawing(): void;
+// RLAPI void ClearBackground(Color color);                          // Set background color (framebuffer clear color)
+extern fn ClearBackground(color: Color): void;
+
+struct Color {
+    r: byte,        // Color red value
+    g: byte,        // Color green value
+    b: byte,        // Color blue value
+    a: byte        // Color alpha value
+}
+fn to_cstr(s: string): ^byte {
+    size := len(s)*sizeof(byte);
+    cstr := calloc(1, size + 1);
+    memcpy(cstr, transmute(rawptr)&s[0], size);
+    return cast(^byte)cstr;
+}
 fn main(): int {
-    s := "Hello, World!\n";
-    buf := [1024]byte{};
-    print(s);
-    return 0;
+    s := "Hello, World! %d\n";
+    data := to_cstr(s);
+    printf(data, 9);
+    printf(data, 8);
+    name := to_cstr("Hello, Raylib from Gala!!");
+    InitWindow(800, 600, name);
+
+    if true {
+        printf(data, 8);
+    }
+    while false == WindowShouldClose() {
+        BeginDrawing();
+        ClearBackground(Color{r=255,g=255,b=255,a=255});
+        EndDrawing();
+    }
+    CloseWindow();
+    free(cast(rawptr)data);
+    free(cast(rawptr)name);
+    return len(s);
 }

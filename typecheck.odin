@@ -183,8 +183,35 @@ can_reference :: proc(id: ExprId) -> bool {
     }
     return false;
 }
+can_compare :: proc(ty: Type) -> bool {
+    #partial switch ty.kind {
+    case .Integer:
+        return true;
+
+    case .Float:
+        return true;
+
+    case .Rune:
+        return true;
+
+    case .Byte:
+        return true;
+
+    case .Bool:
+        return true; // only for == and != ideally
+
+    case .Pointer:
+        return true; // only equality ideally
+
+    case:
+        return false;
+    }
+}
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     switch e in get_expr(id) {
+    case BoolLitFalse, BoolLitTrue: {
+        get_ctx().expr_types[id] = ty_from_name("bool")
+    }
     case String: {
         get_ctx().expr_types[id] = intern_type({kind=.String})
     }
@@ -372,35 +399,67 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         }
         get_ctx().expr_types[id] = intern_type(Type{kind=.UntypedInteger})
     }
-    case Binop:{
-        debugln("is a binop")
-
+    case Len: {
+        tc_expr(tc, e.target);
+        if get(expr_ty(e.target)).kind != .Slice &&
+                get(expr_ty(e.target)).kind != .String &&
+                get(expr_ty(e.target)).kind != .FixedSizeArray {
+            highlight_lines(get_span_expr(id).span);
+            gala_panicf("Can not take len of expression of type %s.",
+                tts(expr_ty(e.target)));
+        }
+        get_ctx().expr_types[id] = integer_type()
+    }
+    case Sizeof: {
+        get_ctx().expr_types[id] = intern_type({kind=.UntypedInteger})
+    }
+    case Binop: {
         tc_expr(tc, e.left);
         tc_expr(tc, e.right);
-        ty, ok, s := compare_and_reduce_types(expr_ty(e.left), expr_ty(e.right));
+
+        left_ty  := expr_ty(e.left);
+        right_ty := expr_ty(e.right);
+
+        ty, ok, s := compare_and_reduce_types(left_ty, right_ty);
         if !ok {
             highlight_lines(get_span(id).span)
             gala_panic(s)
         }
-
-        propagate_type(ty, e.left); // propagate, wtf?
+        if is_untyped(ty) {
+            ty = get_untyped_default(ty);
+        }
+        propagate_type(ty, e.left);
         propagate_type(ty, e.right);
 
-        #partial switch e.kind {
-        case .Addition:     fallthrough
-        case .Subtraction:  fallthrough
-        case .Multiply:     fallthrough
-        case .Divide: {
+        switch e.kind {
+        case .Addition, .Subtraction, .Multiply, .Divide: {
             if !can_binop(ty) {
                 highlight_lines(get_span(id).span);
                 gala_panic("can't perform a binop on these two expressions");
             }
+
+            propagate_type(ty, e.left);
+            propagate_type(ty, e.right);
+
+            get_ctx().expr_types[id] = ty;
         }
-        case:
-            bool_ty, ok := get_ctx().base_mod.types["bool"]; assert(ok);
-            ty = bool_ty;
+
+        case .Equal, .NotEqual, .LessEqual, .GreaterEqual: {
+            // force operands to resolve first
+            propagate_type(ty, e.left);
+            propagate_type(ty, e.right);
+
+            if !can_compare(get_type(ty)^) {
+                highlight_lines(get_span(id).span);
+                gala_panic("can't compare these two expressions");
+            }
+
+            
+            bool_ty := ty_from_name("bool");
+
+            get_ctx().expr_types[id] = bool_ty;
         }
-        get_ctx().expr_types[id] = ty
+        }
     }
     case FnCall: {
         tc_expr(tc, e.target);
@@ -410,15 +469,28 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         debugln("fn ty:",expr_ty(e.target), ty, )
         debugln("expr:", get(e.target));
         debugln("expr sym:", get(get_ctx().expr_objects[e.target]));
-        if len(fargs) != len(e.args) {
-            highlight_lines(get_span(id).span);
-            gala_panicf("args count for function don't match (expected %d, got %d).",
-                len(fargs), len(e.args));
+        if ty.fn.is_variadic {
+            if len(e.args) < len(fargs) {
+                highlight_lines(get_span(id).span);
+                gala_panicf("args count for function don't match (expected at least %d, got %d).",
+                    len(fargs), len(e.args));
+            }
+        } else {
+            if len(fargs) != len(e.args) {
+                highlight_lines(get_span(id).span);
+                gala_panicf("args count for function don't match (expected %d, got %d).",
+                    len(fargs), len(e.args));
+            }
+        }
+        for a in e.args {
+            tc_expr(tc, a);
+            if is_untyped(expr_ty(a)) {
+                get_ctx().expr_types[a] = get_untyped_default(expr_ty(a))
+            }
         }
         for i in 0..<len(fargs) {
             earg := e.args[i];
             farg := fargs[i];
-            tc_expr(tc, earg);
             r, ok, s := compare_and_reduce_types(farg.type, expr_ty(earg));
             if !ok {
                 debugln(ty.fn);
@@ -437,6 +509,18 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
 tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
     switch stmt in get_stmt(s) {
+    case WhileLoop: {
+        tc_expr(tc, stmt.cond);
+        if is_untyped(expr_ty(stmt.cond)) {
+            t := get_untyped_default(expr_ty(stmt.cond));
+            propagate_type(t, stmt.cond);
+        }
+        if get_type(expr_ty(stmt.cond)).kind != .Bool {
+            highlight_lines(get_span(stmt.cond).span);
+            gala_panic("Expression is not of type boolean.");
+        }
+        tc_block(tc, stmt.block);
+    }
     case ExprId: tc_expr(tc, stmt);
     case IfElse: {
         tc_expr(tc, stmt.base_con);
@@ -572,6 +656,13 @@ typecheck_module :: proc(ast: ^AST) {
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
     debugln("propagating:", get_type(ty), "to", get_expr(expr));
     switch e in get_expr(expr) {
+    case BoolLitFalse, BoolLitTrue: return // already typed
+    case Len: {
+        return // always an int
+    }
+    // just porpatae as they're untyped int by default
+    case Sizeof: {
+    }
     case String:  {
         return; // once a string, always a string (for now at least)
     }

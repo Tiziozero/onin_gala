@@ -42,7 +42,7 @@ main :: proc() {
     // context.temp_allocator = mem.panic_allocator()
     get_ctx().allocator = virtual.arena_allocator(&dyn_arena)
 
-    ctx.debug = false;
+    ctx.debug = true;
     ctx.items =         make([dynamic]Item, allocator=get_ctx().allocator)
     ctx.exprs =         make([dynamic]Expr, allocator=get_ctx().allocator)
     ctx.stmts =         make([dynamic]Stmt, allocator=get_ctx().allocator)

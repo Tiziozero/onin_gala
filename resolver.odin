@@ -27,7 +27,7 @@ Type :: struct {
     name: string,
     kind: TypeKind,
     ptr: TypeId,
-    fn: struct { args: []Arg, ret_ty: TypeId, is_variadic: bool, variadic_ty: TypeId},
+    fn: struct { args: []Arg, ret_ty: TypeId, is_variadic: bool, variadic_ty: TypeId, is_external: bool},
     structure: struct {fields: []Field},
     fixed_size_array: struct { type: TypeId, size: int },
     slice: struct{type: TypeId},
@@ -131,6 +131,17 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
 }
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
+    case BoolLitTrue: {
+    }
+    case BoolLitFalse: {
+    }
+    case Len: {
+        resolve_expr(s, e.target);
+    }
+    case Sizeof: {
+        t := resolve_type_specifier(s, e.t);
+        get_ctx().expr_resolution_types[id] = t
+    }
     case String: // ok
     case Deref: {
         resolve_expr(s, e.expr);
@@ -364,6 +375,11 @@ get_untyped_default :: proc(t: TypeId) -> TypeId {
 }
 resolve_stmt :: proc(s: ^Scope, id: StmtId) {
     #partial switch stmt in get(id) {
+    case WhileLoop: {
+        resolve_expr(s, stmt.cond);
+        b := stmt.block
+        resolve_block(s, &b);
+    }
     case VarDec: {
         resolve_expr(s, stmt.value);
         resolved_ty : Maybe(TypeId) = nil
@@ -508,6 +524,7 @@ resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 
      debugln("extern",fndec);
     fnty, scope := resolve_fn_dec_signature(s, fndec);
+    fnty.fn.is_external = true;
     free_scope(&scope);
 
     // intern type

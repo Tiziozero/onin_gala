@@ -35,6 +35,10 @@ StructLit :: struct {
     name: string,
     fields: map[string]struct{expr:ExprId,span:Span},
 }
+Len :: struct { target: ExprId };
+Sizeof :: struct { t: TypeSpecifier };
+BoolLitTrue :: distinct struct {}
+BoolLitFalse :: distinct struct {}
 Expr :: union {
     StructLit,
     Binop,
@@ -50,8 +54,13 @@ Expr :: union {
     Deref,
     FixedSizeArray,
     String,
+    Len,
+    Sizeof,
     ZeroInit,
+    BoolLitTrue,
+    BoolLitFalse,
 }
+BoolLit :: struct { text: string }
 String :: struct {
     s: string
 }
@@ -112,8 +121,15 @@ op_is_right_assoc :: proc(t: Token) -> bool {
     return false // extend for ** etc.
 }
 // Entry point
+parse_condition :: proc(p: ^Parser) -> ExprId {
+    prev_ignore_struct_lit := p.ignore_struct_lit
+    e := parse_expr(p)
+    p.ignore_struct_lit = prev_ignore_struct_lit
+    return e;
+}
 parse_expr :: proc(p: ^Parser) -> ExprId {
-    if current_token(p).kind ==.Ident && is_symbol(next_token(p), "{") {
+    if current_token(p).kind ==.Ident && is_symbol(next_token(p), "{") &&
+            !p.ignore_struct_lit { // flag to ignore struct lits
         name := expect_ident(p); // "name
         consume_token(p); // "{"
         fields := make(map[string]struct{expr: ExprId,span:Span}, allocator=get_ctx().allocator);
@@ -292,7 +308,9 @@ Stmt :: union {
     Return,
     ExprId,
     IfElse,
+    WhileLoop,
 }
+WhileLoop :: struct { cond: ExprId, block: Block }
 AltCon :: struct{cond:ExprId, block:Block}
 IfElse :: struct {
     base_con: ExprId,
@@ -305,6 +323,8 @@ Parser::struct{
     file: string,
     tokens: []Token,
     i: int,
+
+    ignore_struct_lit: bool,
 }
 consume_token :: proc(p: ^Parser) -> Token {
     if p.i < len(p.tokens) {
@@ -339,7 +359,6 @@ is_symbol :: proc(t: Token, s: string) -> bool {
     return false;
 }
 parse_stmt :: proc(p: ^Parser) -> StmtId {
-    a := 7;
     if current_token(p).kind == .Ident &&
         is_symbol(next_token(p), ":=") {
         name := consume_token(p)
@@ -413,6 +432,16 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
             s.has_else_block = true
         }
         id := new_stmt(s);
+        get_ctx().spans.stmts[id] = {
+            file_name=get_ctx().current_file,
+            span=token.span
+        }
+        return id;
+    } else if is_kw(current_token(p), .While) {
+        token := consume_token(p); // "while"
+        cond := parse_condition(p);
+        block := parse_block(p);
+        id := new_stmt(WhileLoop{cond, block});
         get_ctx().spans.stmts[id] = {
             file_name=get_ctx().current_file,
             span=token.span
@@ -546,6 +575,44 @@ parse_primary :: proc(p: ^Parser) -> ExprId {
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
             span={token.span.start, end.span.end}
+        }
+        return id
+    } else if current_token(p).kind == .Len {
+        token := consume_token(p);// "len"
+        open := expect_symbol(p, "("); // "("
+        e := parse_expr(p);
+        close := expect_symbol(p, ")"); // ")"
+        id := new_expr(Len{e});
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span={token.span.start, close.span.end}
+        }
+        return id
+    } else if current_token(p).kind == .Sizeof {
+        token := consume_token(p);// "sizeof"
+        open := expect_symbol(p, "("); // "("
+        t := parse_type(p);
+        close := expect_symbol(p, ")"); // ")"
+        id := new_expr(Sizeof{t});
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span={token.span.start, close.span.end}
+        }
+        return id
+    } else if current_token(p).kind == .True {
+        token := consume_token(p);
+        id := new_expr(BoolLitTrue{});
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span=token.span
+        }
+        return id
+    } else if current_token(p).kind == .False {
+        token := consume_token(p);
+        id := new_expr(BoolLitFalse{});
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span=token.span
         }
         return id
     }
@@ -763,12 +830,14 @@ parse_module_kw :: proc(p: ^Parser) -> ItemId {
 expect_symbol :: proc(p: ^Parser, str: string) -> Token {
     c := current_token(p);
     if c.kind != .Symbol {
+        highlight_lines(c.span);
         debugln("Expected symbol, got:", c);
-        gala_panic("");
+        gala_panic(c);
     }
     if c.text != str {
+        highlight_lines(c.span);
         debugln("Expected", str, "got:", c.text);
-        gala_panic("");
+        gala_panic(c);
     }
     return consume_token(p)
 }
@@ -784,7 +853,7 @@ AST :: struct {
     items: []ItemId,
 }
 parse_tokens :: proc(file_name: string, tokens: []Token) -> AST {
-    _p:= Parser{file_name, tokens, 0};
+    _p:= Parser{file_name, tokens, 0, false};
     p := &_p
     items := make([dynamic]ItemId, allocator=get_ctx().allocator)
     for current_token(p).kind != .EOF {
