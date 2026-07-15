@@ -69,51 +69,24 @@ entry:
 	%name = alloca ptr
 	store ptr %t26, ptr %name
 
-	%t27 = load ptr, ptr %name
-	call void @InitWindow(i64 800, i64 600, ptr %t27)
+	br i1 1, label %base_block_label27, label %end_label27
+base_block_label27:
+	%t28 = load ptr, ptr %data
+	call void (ptr, ...)@printf(ptr %t28, i64 7)
 
-	br i1 1, label %base_block_label28, label %end_label28
-base_block_label28:
+	br label %end_label27
+end_label27:
+
 	%t29 = load ptr, ptr %data
-	call void (ptr, ...)@printf(ptr %t29, i64 8)
+	%t30 = bitcast ptr %t29 to ptr
+	call void @free(ptr %t30)
 
-	br label %end_label28
-end_label28:
+	%t31 = load ptr, ptr %name
+	%t32 = bitcast ptr %t31 to ptr
+	call void @free(ptr %t32)
 
-	br label %while_cond_label30
-while_cond_label30:
-	%t31 = call i1 @WindowShouldClose()
-	%t32 = icmp eq i1 0, %t31
-	br i1 %t32, label %while_body_label30, label %while_end_label30
-while_body_label30:
-	call void @BeginDrawing()
-
-	%t33 = insertvalue %Color undef, i8 255, 0
-	%t34 = insertvalue %Color %t33, i8 255, 1
-	%t35 = insertvalue %Color %t34, i8 255, 2
-	%t36 = insertvalue %Color %t35, i8 255, 3
-	%t37 = alloca %Color
-	store %Color %t36, ptr %t37
-	%t38 = load i64, ptr %t37
-	call void @ClearBackground(i64 %t38)
-
-	call void @EndDrawing()
-
-	br label %while_cond_label30
-while_end_label30:
-
-	call void @CloseWindow()
-
-	%t39 = load ptr, ptr %data
-	%t40 = bitcast ptr %t39 to ptr
-	call void @free(ptr %t40)
-
-	%t41 = load ptr, ptr %name
-	%t42 = bitcast ptr %t41 to ptr
-	call void @free(ptr %t42)
-
-	%t43 = load { ptr, i64 }, ptr %s
-	%t44 = extractvalue { ptr, i64 } %t43, 1
-	ret i64 %t44
+	%t33 = load { ptr, i64 }, ptr %s
+	%t34 = extractvalue { ptr, i64 } %t33, 1
+	ret i64 %t34
 
 }

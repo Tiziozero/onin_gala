@@ -131,6 +131,9 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
 }
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
+    case UnNot: {
+        resolve_expr(s, e.expr);
+    }
     case BoolLitTrue: {
     }
     case BoolLitFalse: {
@@ -585,20 +588,22 @@ resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
     case:               gala_panic("impl")
     }
 }
-new_scope :: proc(parent:^Scope=nil) -> Scope {
+// get_ctx().allocator may not be available on context init, so this helps
+new_scope :: proc(parent:^Scope=nil, allocator:=get_ctx().allocator) -> Scope {
     s := Scope{}
-    s.objects       = make(map[string]ObjId,  allocator=get_ctx().allocator);
-    s.types         = make(map[string]TypeId, allocator=get_ctx().allocator);
-    s.items         = make(map[string]ItemId, allocator=get_ctx().allocator);
+    s.objects       = make(map[string]ObjId,  allocator=allocator);
+    s.types         = make(map[string]TypeId, allocator=allocator);
+    s.items         = make(map[string]ItemId, allocator=allocator);
     s.parent = parent;
     return s;
 }
-new_module_scope :: proc(parent:^Scope=nil) -> ModuleScope {
+// get_ctx().allocator may not be available on context init, so this helps
+new_module_scope :: proc(parent:^Scope=nil, allocator:=get_ctx().allocator) -> ModuleScope {
     s := ModuleScope{}
-    s.scope = new_scope()
+    s.scope = new_scope(parent, allocator)
     s.parent = parent
-    s.obj_foreward  = make(map[string]ObjId,  allocator=get_ctx().allocator);
-    s.ty_foreward   = make(map[string]TypeId, allocator=get_ctx().allocator);
+    s.obj_foreward  = make(map[string]ObjId,  allocator=allocator);
+    s.ty_foreward   = make(map[string]TypeId, allocator=allocator);
     return s
 }
 free_scope :: proc(s: ^Scope) {

@@ -244,6 +244,14 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         // string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
     // in cg_expr:
     switch e in get_expr(id) {
+    case UnNot: {
+        v, returns := reduce_expr_to_single_value(c, cg_expr(c, e.expr))
+        assert(returns)
+
+        t := new_tmp(c)
+        cwritefln(c, "\t%s = xor i1 %s, true", t, v)
+        return {kind=.Value, v=t}
+    }
     case BoolLitFalse: {
         return {kind=.Value, v="0"}
     }
@@ -1389,7 +1397,7 @@ cg_module :: proc(ast: ^AST) {
             "-lraylib", 
             ".gala_build/a.o",
             "/usr/lib/crtn.o",
-            "-o", "a.out",
+            "-o", get_ctx().program_name,
         }});
         if err != .NONE {
             gala_panic("Failed to start link (ld) process:", err);
@@ -1404,7 +1412,7 @@ cg_module :: proc(ast: ^AST) {
         debugln("clang exit code:", p_state.exit_code);
     }
     
-    {
+    /* {
         // run
         p, err := os.process_start({command={"./a.out"}});
         if err != .NONE {
@@ -1416,6 +1424,5 @@ cg_module :: proc(ast: ^AST) {
         }
         debugln     ("program exit code:", p_state.exit_code);
         gala_info   ("program exit code:", p_state.exit_code);
-    }
-
+    } */
 }

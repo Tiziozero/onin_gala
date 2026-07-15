@@ -52,6 +52,7 @@ Expr :: union {
     Transmute,
     Reference,
     Deref,
+    UnNot,
     FixedSizeArray,
     String,
     Len,
@@ -68,6 +69,9 @@ Deref :: struct {
     expr: ExprId,
 }
 Reference :: struct {
+    expr: ExprId,
+}
+UnNot :: struct {
     expr: ExprId,
 }
 Index :: struct {
@@ -238,6 +242,15 @@ parse_unary :: proc(p: ^Parser) -> ExprId {
         token := consume_token(p); // "&"
         expr := parse_unary(p);
         id := new_expr(Expr(Reference{expr}));
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span={token.span.start,get_span(expr).span.end}
+        }
+        return id
+    } else if is_symbol(current_token(p), "!") {
+        token := consume_token(p); // "!"
+        expr := parse_unary(p);
+        id := new_expr(Expr(UnNot{expr}));
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
             span={token.span.start,get_span(expr).span.end}

@@ -35,17 +35,11 @@ fn main(): int {
     printf(data, 9);
     printf(data, 8);
     name := to_cstr("Hello, Raylib from Gala!!");
-    InitWindow(800, 600, name);
+    // InitWindow(800, 600, name);
 
     if true {
-        printf(data, 8);
+        printf(data, 7);
     }
-    while false == WindowShouldClose() {
-        BeginDrawing();
-        ClearBackground(Color{r=255,g=255,b=255,a=255});
-        EndDrawing();
-    }
-    CloseWindow();
     free(cast(rawptr)data);
     free(cast(rawptr)name);
     return len(s);

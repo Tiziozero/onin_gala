@@ -209,6 +209,14 @@ can_compare :: proc(ty: Type) -> bool {
 }
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     switch e in get_expr(id) {
+    case UnNot: {
+        tc_expr(tc, e.expr);
+        if get(expr_ty(e.expr)).kind != .Bool {
+            highlight_lines(get_span_expr(id).span);
+            gala_panic("Expr type must be bools.");
+        }
+        get_ctx().expr_types[id] = ty_from_name("bool")
+    }
     case BoolLitFalse, BoolLitTrue: {
         get_ctx().expr_types[id] = ty_from_name("bool")
     }
@@ -656,6 +664,9 @@ typecheck_module :: proc(ast: ^AST) {
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
     debugln("propagating:", get_type(ty), "to", get_expr(expr));
     switch e in get_expr(expr) {
+    case UnNot: {
+        return // bool
+    }
     case BoolLitFalse, BoolLitTrue: return // already typed
     case Len: {
         return // always an int

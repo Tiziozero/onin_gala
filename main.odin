@@ -1,110 +1,58 @@
 package main
 
-gala_panic :: proc(args: ..any) -> ! {
-    fmt.println(..args)
-    os.exit(1);
-}
-gala_panicf :: proc(f: string, args: ..any) -> ! {
-    fmt.printfln(f, ..args)
-    os.exit(1);
-}
-
-gala_info :: proc(args: ..any) {
-    fmt.println(..args)
-}
-gala_infof :: proc(f: string, args: ..any) {
-    fmt.printfln(f, ..args)
-}
-
+import "core:path/filepath"
+import "core:strings"
 import "core:mem/virtual"
 import "core:mem"
-import "core:fmt"
 import "core:os"
 import "core:io"
-ExprId :: distinct u32
-StmtId :: distinct u32
-ItemId :: distinct u32
-TypeId :: distinct u32
-ObjId  :: distinct u32
 
+init_context :: proc() -> ^Context {
+    ctx := new(Context)
+    ctx.program_name = "main"; // overwrite eventually
+    // NOTE: no context.user_ptr assignment here — it wouldn't survive return
 
-main :: proc() {
-    ctx := Context{}
-    context.user_ptr = &ctx
-    // init ctx
-    // arena
-    dyn_arena: virtual.Arena
-    aerr := virtual.arena_init_growing(&dyn_arena)
-    assert(aerr == virtual.Allocator_Error.None);
-    defer virtual.arena_destroy(&dyn_arena)
-    // create dynamic allocator with dynamic arena and use that, not the
-    // arenas allocator
-    // context.temp_allocator = mem.panic_allocator()
-    get_ctx().allocator = virtual.arena_allocator(&dyn_arena)
+    aerr := virtual.arena_init_growing(&ctx.arena)
+    assert(aerr == virtual.Allocator_Error.None)
+    ctx.allocator = virtual.arena_allocator(&ctx.arena)
 
-    ctx.debug = true;
-    ctx.items =         make([dynamic]Item, allocator=get_ctx().allocator)
-    ctx.exprs =         make([dynamic]Expr, allocator=get_ctx().allocator)
-    ctx.stmts =         make([dynamic]Stmt, allocator=get_ctx().allocator)
-    ctx.objs =          make([dynamic]Object, allocator=get_ctx().allocator)
-    ctx.types =         make([dynamic]Type, allocator=get_ctx().allocator)
+    al := ctx.allocator
+    ctx.debug = true
+    ctx.items = make([dynamic]Item, allocator = al)
+    ctx.exprs = make([dynamic]Expr, allocator = al)
+    ctx.stmts = make([dynamic]Stmt, allocator = al)
+    ctx.objs  = make([dynamic]Object, allocator = al)
+    ctx.types = make([dynamic]Type, allocator = al)
 
-    ctx.data =          make([dynamic]string, allocator=get_ctx().allocator)
-    ctx.table =         make(map[string]StringId, allocator=get_ctx().allocator)
+    ctx.data  = make([dynamic]string, allocator = al)
+    ctx.table = make(map[string]StringId, allocator = al)
 
+    ctx.expr_types   = make(map[ExprId]TypeId, allocator = al)
+    ctx.expr_objects = make(map[ExprId]ObjId, allocator = al)
+    ctx.item_types   = make(map[ItemId]TypeId, allocator = al)
+    ctx.item_objects = make(map[ItemId]ObjId, allocator = al)
+    ctx.stmt_objects = make(map[StmtId]ObjId, allocator = al)
+    ctx.stmt_types   = make(map[StmtId]TypeId, allocator = al)
+    ctx.expr_resolution_types = make(map[ExprId]TypeId, allocator = al)
 
-    // refs
-    // expr_types:         map[ExprId]TypeId,
-    // expr_objects:       map[ExprId]ObjId,
+    ctx.spans.exprs = make(map[ExprId]struct{file_name: string, span: Span}, allocator = al)
+    ctx.spans.items = make(map[ItemId]struct{file_name: string, span: Span}, allocator = al)
+    ctx.spans.stmts = make(map[StmtId]struct{file_name: string, span: Span}, allocator = al)
+    ctx.spans.objs_decs = make(map[ObjId]struct{file_name: string, span: Span}, allocator = al)
 
-    // item_types:         map[ItemId]TypeId,
-    // item_objects:       map[ItemId]ObjId,
+    ctx.files = make(map[string]string, allocator = al)
 
-    // stmt_objects:       map[StmtId]ObjId,
-    // stmt_types:         map[StmtId]TypeId,
+    ctx.base_mod = new_module_scope(allocator=ctx.allocator)
+    return ctx
+}
 
-    ctx.expr_types =                make(map[ExprId]TypeId, allocator=get_ctx().allocator)
-    ctx.expr_objects =              make(map[ExprId]ObjId, allocator=get_ctx().allocator)
-
-    ctx.item_types =                make(map[ItemId]TypeId, allocator=get_ctx().allocator)
-    ctx.item_objects =              make(map[ItemId]ObjId, allocator=get_ctx().allocator)
-
-    ctx.stmt_objects =              make(map[StmtId]ObjId, allocator=get_ctx().allocator)
-    ctx.stmt_types =                make(map[StmtId]TypeId, allocator=get_ctx().allocator)
-    ctx.expr_resolution_types =     make(map[ExprId]TypeId, allocator=get_ctx().allocator)
-
-
-    ctx.spans.exprs =       make(map[ExprId]struct{file_name: string, span: Span},
-                                            allocator=get_ctx().allocator)
-    ctx.spans.items =       make(map[ItemId]struct{file_name: string, span: Span},
-                                            allocator=get_ctx().allocator)
-    ctx.spans.stmts =       make(map[StmtId]struct{file_name: string, span: Span},
-                                            allocator=get_ctx().allocator)
-    ctx.spans.objs_decs =   make(map[ObjId]struct{file_name: string, span: Span},
-                                            allocator=get_ctx().allocator)
-    get_ctx().files = make(map[string]string, allocator=get_ctx().allocator);
-
-    // create base type first
-    ctx.base_mod = new_module_scope();
-    new_type(&ctx.base_mod, Type{name="int", kind=.Integer});
-    new_type(&ctx.base_mod, Type{name="flt", kind=.Float});
-    new_type(&ctx.base_mod, Type{name="void", kind=.Void});
-    new_type(&ctx.base_mod, Type{name="any", kind=.Any});
-    new_type(&ctx.base_mod, Type{name="bool", kind=.Bool});
-    new_type(&ctx.base_mod, Type{name="byte", kind=.Byte});
-    new_type(&ctx.base_mod, Type{name="rawptr", kind=.Pointer, ptr=void_type()});
-    new_type(&ctx.base_mod, Type{name="string", kind=.String});
-
-
-    // parse main
-    file_name := "main.gala"
-    data, err := os.read_entire_file(file_name, context.allocator)
+handle_file :: proc(ctx: ^Context, file_name: string) {
+    data, err := os.read_entire_file(file_name, ctx.allocator)
     if err != io.Error.None {
-        fmt.eprintln("Failed to read file")
-        os.exit(1)
+        gala_panic("Failed to read file")
     }
+
     debugln("file size:", len(data));
-    defer delete(data)
     get_ctx().files[file_name] = string(data)
 
 
@@ -117,6 +65,81 @@ main :: proc() {
     resolve_module_ast(&ast)
     typecheck_module(&ast)
     cg_module(&ast)
+}
+destroy_context :: proc(ctx: ^Context) {
+    virtual.arena_destroy(&ctx.arena)
+    free(ctx)
+}
+main :: proc() { // odins context is passed down, not up, or some shi
+    ctx := init_context()
+    context.user_ptr = ctx   // <-- set it here, so it's live for the rest of main's scope
+
+    new_type(&ctx.base_mod, Type{name="int", kind=.Integer});
+    new_type(&ctx.base_mod, Type{name="flt", kind=.Float});
+    new_type(&ctx.base_mod, Type{name="void", kind=.Void});
+    new_type(&ctx.base_mod, Type{name="any", kind=.Any});
+    new_type(&ctx.base_mod, Type{name="bool", kind=.Bool});
+    new_type(&ctx.base_mod, Type{name="byte", kind=.Byte});
+    new_type(&ctx.base_mod, Type{name="rawptr", kind=.Pointer, ptr=void_type()});
+    new_type(&ctx.base_mod, Type{name="string", kind=.String});
+
+    is_legal_program_name :: proc(n: string) -> bool {
+        if len(n) == 0 {
+            return false
+        }
+        for c, i in n {
+            switch {
+            case c >= 'a' && c <= 'z':
+            case c >= 'A' && c <= 'Z':
+            case c == '_':
+            case c == '-' && i > 0: // allow dash, but not as first char
+            case c >= '0' && c <= '9' && i > 0: // digits ok, just not first char
+            case:
+                return false
+            }
+        }
+        return true
+    }
+
+    next_arg :: proc(args: []string) -> ([]string, string, bool) {
+        if len(args) > 0 {
+            t := args[0]
+            return args[1:], t, true
+        }
+        return args, "", false
+    }
+
+    files := make([dynamic]string, ctx.allocator)
+    args := os.args[1:] // skip program name itself
+    for {
+        arg: string
+        ok: bool
+        args, arg, ok = next_arg(args) // note: `=`, reassigns outer args
+        if !ok {
+            break
+        }
+        if arg == "-o" {
+            name: string
+            name_ok: bool
+            args, name, name_ok = next_arg(args)
+            if !name_ok {
+                gala_panic("expected name after \"-o\".")
+            }
+            if !is_legal_program_name(name) {
+                gala_panic("illegal program name:", name)
+            }
+            ctx.program_name = name
+        } else if strings.has_suffix(arg, ".gala") && len(arg) > 5 { // "not ".gala"
+            append(&files, arg)
+        }
+    }
+    if len(files) < 1 {
+        gala_panic("Must specify at leas one \".gala\" file.");
+    }
+    for f in files {
+        handle_file(ctx, f);
+    }
+    destroy_context(ctx);
     free_all(context.temp_allocator);
 
     gala_info("Finished parsing");

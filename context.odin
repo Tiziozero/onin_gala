@@ -1,11 +1,20 @@
 package main
 
 import "core:mem"
+import "core:mem/virtual"
 import "core:fmt"
+import "core:os"
 import "core:strings"
 
+
+ExprId :: distinct u32
+StmtId :: distinct u32
+ItemId :: distinct u32
+TypeId :: distinct u32
+ObjId  :: distinct u32
 Context :: struct {
-    arena:              mem.Dynamic_Arena,
+    program_name:       string,
+    arena:              virtual.Arena,
     allocator:          mem.Allocator,
     debug:              bool,
     current_file:       string,
@@ -240,4 +249,19 @@ get_span_obj :: proc(id: ObjId) -> struct{file_name: string, span: Span} {
         panic(fmt.tprintf("get_span_obj: no span recorded for %v", id))
     }
     return s
+}
+gala_panic :: proc(args: ..any) -> ! {
+    fmt.println(..args)
+    os.exit(1);
+}
+gala_panicf :: proc(f: string, args: ..any) -> ! {
+    fmt.printfln(f, ..args)
+    os.exit(1);
+}
+
+gala_info :: proc(args: ..any) {
+    fmt.println(..args)
+}
+gala_infof :: proc(f: string, args: ..any) {
+    fmt.printfln(f, ..args)
 }
