@@ -24,6 +24,8 @@ target triple = "x86_64-pc-linux-gnu"
 
 @tstring11 = private unnamed_addr constant [8 x i8] c"\09a: %d\0A\00", align 1
 
+@tstring12 = private unnamed_addr constant [10 x i8] c"smth: %f\0A\00", align 1
+
 declare void @printf (ptr %fmt, ...)
 declare ptr @calloc (i64 %n, i64 %size)
 declare void @memcpy (ptr %dest, ptr %src, i64 %size)
@@ -37,175 +39,196 @@ declare void @ClearBackground (i64 %color)
 declare i64 @GetColor (i32 %v)
 define ptr @to_cstr ({ ptr, i64 } %s) {
 entry:
-	%t12 = extractvalue { ptr, i64 } %s, 1
-	%t13 = mul i64 %t12, 1
+	%t13 = extractvalue { ptr, i64 } %s, 1
+	%t14 = mul i64 %t13, 1
 	%size = alloca i64
-	store i64 %t13, ptr %size
+	store i64 %t14, ptr %size
 
-	%t14 = load i64, ptr %size
-	%t15 = add i64 %t14, 1
-	%t16 = call ptr @calloc(i64 1, i64 %t15)
+	%t15 = load i64, ptr %size
+	%t16 = add i64 %t15, 1
+	%t17 = call ptr @calloc(i64 1, i64 %t16)
 	%cstr = alloca ptr
-	store ptr %t16, ptr %cstr
+	store ptr %t17, ptr %cstr
 
-	%t17 = load ptr, ptr %cstr
-	%t18 = extractvalue { ptr, i64 } %s, 0
-	%t19 = getelementptr inbounds i8, ptr %t18, i64 0
-	%t20 = alloca ptr
-	store ptr %t19, ptr %t20
-	%t21 = load ptr, ptr %t20
-	%t22 = load i64, ptr %size
-	call void @memcpy(ptr %t17, ptr %t21, i64 %t22)
+	%t18 = load ptr, ptr %cstr
+	%t19 = extractvalue { ptr, i64 } %s, 0
+	%t20 = getelementptr inbounds i8, ptr %t19, i64 0
+	%t21 = alloca ptr
+	store ptr %t20, ptr %t21
+	%t22 = load ptr, ptr %t21
+	%t23 = load i64, ptr %size
+	call void @memcpy(ptr %t18, ptr %t22, i64 %t23)
 
-	%t23 = load ptr, ptr %cstr
-	%t24 = bitcast ptr %t23 to ptr
-	ret ptr %t24
+	%t24 = load ptr, ptr %cstr
+	%t25 = bitcast ptr %t24 to ptr
+	ret ptr %t25
 
 }
-define void @printf_slice ({ ptr, i64 } %s, i64 %n) {
+define void @print_int ({ ptr, i64 } %s, i64 %n) {
 entry:
-	%t25 = call ptr @to_cstr({ ptr, i64 } %s)
+	%t26 = call ptr @to_cstr({ ptr, i64 } %s)
 	%data = alloca ptr
-	store ptr %t25, ptr %data
-
-	%t26 = load ptr, ptr %data
-	call void (ptr, ...)@printf(ptr %t26, i64 %n)
+	store ptr %t26, ptr %data
 
 	%t27 = load ptr, ptr %data
-	%t28 = bitcast ptr %t27 to ptr
-	call void @free(ptr %t28)
+	call void (ptr, ...)@printf(ptr %t27, i64 %n)
+
+	%t28 = load ptr, ptr %data
+	%t29 = bitcast ptr %t28 to ptr
+	call void @free(ptr %t29)
+
+	ret void
+
+}
+define void @print_flt ({ ptr, i64 } %s, double %n) {
+entry:
+	%t30 = call ptr @to_cstr({ ptr, i64 } %s)
+	%data = alloca ptr
+	store ptr %t30, ptr %data
+
+	%t31 = load ptr, ptr %data
+	call void (ptr, ...)@printf(ptr %t31, double %n)
+
+	%t32 = load ptr, ptr %data
+	%t33 = bitcast ptr %t32 to ptr
+	call void @free(ptr %t33)
 
 	ret void
 
 }
 define i64 @main () {
 entry:
-	%t29 = getelementptr inbounds [18 x i8], ptr @tstring1, i64 0, i64 0
-	%t30 = insertvalue { ptr, i64 } undef, ptr %t29, 0
-	%t31 = insertvalue { ptr, i64 } %t30, i64 17, 1       
+	%t34 = getelementptr inbounds [18 x i8], ptr @tstring1, i64 0, i64 0
+	%t35 = insertvalue { ptr, i64 } undef, ptr %t34, 0
+	%t36 = insertvalue { ptr, i64 } %t35, i64 17, 1       
 	%s = alloca { ptr, i64 }
-	store { ptr, i64 } %t31, ptr %s
+	store { ptr, i64 } %t36, ptr %s
 
-	%t32 = load { ptr, i64 }, ptr %s
-	%t33 = call ptr @to_cstr({ ptr, i64 } %t32)
+	%t37 = load { ptr, i64 }, ptr %s
+	%t38 = call ptr @to_cstr({ ptr, i64 } %t37)
 	%data = alloca ptr
-	store ptr %t33, ptr %data
+	store ptr %t38, ptr %data
 
-	%t34 = load ptr, ptr %data
-	call void (ptr, ...)@printf(ptr %t34, i64 9)
+	%t39 = load ptr, ptr %data
+	call void (ptr, ...)@printf(ptr %t39, i64 9)
 
-	%t35 = load ptr, ptr %data
-	call void (ptr, ...)@printf(ptr %t35, i64 8)
+	%t40 = load ptr, ptr %data
+	call void (ptr, ...)@printf(ptr %t40, i64 8)
 
-	%t36 = getelementptr inbounds [26 x i8], ptr @tstring2, i64 0, i64 0
-	%t37 = insertvalue { ptr, i64 } undef, ptr %t36, 0
-	%t38 = insertvalue { ptr, i64 } %t37, i64 25, 1       
-	%t39 = call ptr @to_cstr({ ptr, i64 } %t38)
+	%t41 = getelementptr inbounds [26 x i8], ptr @tstring2, i64 0, i64 0
+	%t42 = insertvalue { ptr, i64 } undef, ptr %t41, 0
+	%t43 = insertvalue { ptr, i64 } %t42, i64 25, 1       
+	%t44 = call ptr @to_cstr({ ptr, i64 } %t43)
 	%name = alloca ptr
-	store ptr %t39, ptr %name
+	store ptr %t44, ptr %name
 
-	%t40 = insertvalue %Color undef, i8 123, 0
-	%t41 = insertvalue %Color %t40, i8 222, 1
-	%t42 = insertvalue %Color %t41, i8 255, 2
-	%t43 = insertvalue %Color %t42, i8 255, 3
+	%t45 = insertvalue %Color undef, i8 123, 0
+	%t46 = insertvalue %Color %t45, i8 222, 1
+	%t47 = insertvalue %Color %t46, i8 255, 2
+	%t48 = insertvalue %Color %t47, i8 255, 3
 	%c = alloca %Color
-	store %Color %t43, ptr %c
+	store %Color %t48, ptr %c
 
-	%t45 = xor i1 1, true
-	br i1 %t45, label %base_block_label44, label %end_label44
-base_block_label44:
-	%t46 = load ptr, ptr %data
-	call void (ptr, ...)@printf(ptr %t46, i64 7)
+	%t50 = xor i1 1, true
+	br i1 %t50, label %base_block_label49, label %end_label49
+base_block_label49:
+	%t51 = load ptr, ptr %data
+	call void (ptr, ...)@printf(ptr %t51, i64 7)
 
-	br label %end_label44
-end_label44:
+	br label %end_label49
+end_label49:
 
-	%t47 = getelementptr inbounds [7 x i8], ptr @tstring3, i64 0, i64 0
-	%t48 = insertvalue { ptr, i64 } undef, ptr %t47, 0
-	%t49 = insertvalue { ptr, i64 } %t48, i64 6, 1       
-	%t50 = load %Color, ptr %c
-	%t51 = extractvalue %Color %t50, 0
-	%t52 = zext i8 %t51 to i64
-	call void @printf_slice({ ptr, i64 } %t49, i64 %t52)
+	%t52 = getelementptr inbounds [7 x i8], ptr @tstring3, i64 0, i64 0
+	%t53 = insertvalue { ptr, i64 } undef, ptr %t52, 0
+	%t54 = insertvalue { ptr, i64 } %t53, i64 6, 1       
+	%t55 = load %Color, ptr %c
+	%t56 = extractvalue %Color %t55, 0
+	%t57 = zext i8 %t56 to i64
+	call void @print_int({ ptr, i64 } %t54, i64 %t57)
 
-	%t53 = getelementptr inbounds [7 x i8], ptr @tstring4, i64 0, i64 0
-	%t54 = insertvalue { ptr, i64 } undef, ptr %t53, 0
-	%t55 = insertvalue { ptr, i64 } %t54, i64 6, 1       
-	%t56 = load %Color, ptr %c
-	%t57 = extractvalue %Color %t56, 1
-	%t58 = zext i8 %t57 to i64
-	call void @printf_slice({ ptr, i64 } %t55, i64 %t58)
+	%t58 = getelementptr inbounds [7 x i8], ptr @tstring4, i64 0, i64 0
+	%t59 = insertvalue { ptr, i64 } undef, ptr %t58, 0
+	%t60 = insertvalue { ptr, i64 } %t59, i64 6, 1       
+	%t61 = load %Color, ptr %c
+	%t62 = extractvalue %Color %t61, 1
+	%t63 = zext i8 %t62 to i64
+	call void @print_int({ ptr, i64 } %t60, i64 %t63)
 
-	%t59 = getelementptr inbounds [7 x i8], ptr @tstring5, i64 0, i64 0
-	%t60 = insertvalue { ptr, i64 } undef, ptr %t59, 0
-	%t61 = insertvalue { ptr, i64 } %t60, i64 6, 1       
-	%t62 = load %Color, ptr %c
-	%t63 = extractvalue %Color %t62, 2
-	%t64 = zext i8 %t63 to i64
-	call void @printf_slice({ ptr, i64 } %t61, i64 %t64)
+	%t64 = getelementptr inbounds [7 x i8], ptr @tstring5, i64 0, i64 0
+	%t65 = insertvalue { ptr, i64 } undef, ptr %t64, 0
+	%t66 = insertvalue { ptr, i64 } %t65, i64 6, 1       
+	%t67 = load %Color, ptr %c
+	%t68 = extractvalue %Color %t67, 2
+	%t69 = zext i8 %t68 to i64
+	call void @print_int({ ptr, i64 } %t66, i64 %t69)
 
-	%t65 = getelementptr inbounds [7 x i8], ptr @tstring6, i64 0, i64 0
-	%t66 = insertvalue { ptr, i64 } undef, ptr %t65, 0
-	%t67 = insertvalue { ptr, i64 } %t66, i64 6, 1       
-	%t68 = load %Color, ptr %c
-	%t69 = extractvalue %Color %t68, 3
-	%t70 = zext i8 %t69 to i64
-	call void @printf_slice({ ptr, i64 } %t67, i64 %t70)
+	%t70 = getelementptr inbounds [7 x i8], ptr @tstring6, i64 0, i64 0
+	%t71 = insertvalue { ptr, i64 } undef, ptr %t70, 0
+	%t72 = insertvalue { ptr, i64 } %t71, i64 6, 1       
+	%t73 = load %Color, ptr %c
+	%t74 = extractvalue %Color %t73, 3
+	%t75 = zext i8 %t74 to i64
+	call void @print_int({ ptr, i64 } %t72, i64 %t75)
 
-	%t71 = call i64 @GetColor(i32 4278190335)
-	%t72 = alloca i64
-	store i64 %t71, ptr %t72
-	%t73 = load %Color, ptr %t72
+	%t76 = call i64 @GetColor(i32 4278190335)
+	%t77 = alloca i64
+	store i64 %t76, ptr %t77
+	%t78 = load %Color, ptr %t77
 	%from_int = alloca %Color
-	store %Color %t73, ptr %from_int
+	store %Color %t78, ptr %from_int
 
-	%t74 = getelementptr inbounds [11 x i8], ptr @tstring7, i64 0, i64 0
-	%t75 = insertvalue { ptr, i64 } undef, ptr %t74, 0
-	%t76 = insertvalue { ptr, i64 } %t75, i64 10, 1       
-	call void @printf_slice({ ptr, i64 } %t76, i64 0)
+	%t79 = getelementptr inbounds [11 x i8], ptr @tstring7, i64 0, i64 0
+	%t80 = insertvalue { ptr, i64 } undef, ptr %t79, 0
+	%t81 = insertvalue { ptr, i64 } %t80, i64 10, 1       
+	call void @print_int({ ptr, i64 } %t81, i64 0)
 
-	%t77 = getelementptr inbounds [8 x i8], ptr @tstring8, i64 0, i64 0
-	%t78 = insertvalue { ptr, i64 } undef, ptr %t77, 0
-	%t79 = insertvalue { ptr, i64 } %t78, i64 7, 1       
-	%t80 = load %Color, ptr %from_int
-	%t81 = extractvalue %Color %t80, 0
-	%t82 = zext i8 %t81 to i64
-	call void @printf_slice({ ptr, i64 } %t79, i64 %t82)
+	%t82 = getelementptr inbounds [8 x i8], ptr @tstring8, i64 0, i64 0
+	%t83 = insertvalue { ptr, i64 } undef, ptr %t82, 0
+	%t84 = insertvalue { ptr, i64 } %t83, i64 7, 1       
+	%t85 = load %Color, ptr %from_int
+	%t86 = extractvalue %Color %t85, 0
+	%t87 = zext i8 %t86 to i64
+	call void @print_int({ ptr, i64 } %t84, i64 %t87)
 
-	%t83 = getelementptr inbounds [8 x i8], ptr @tstring9, i64 0, i64 0
-	%t84 = insertvalue { ptr, i64 } undef, ptr %t83, 0
-	%t85 = insertvalue { ptr, i64 } %t84, i64 7, 1       
-	%t86 = load %Color, ptr %from_int
-	%t87 = extractvalue %Color %t86, 1
-	%t88 = zext i8 %t87 to i64
-	call void @printf_slice({ ptr, i64 } %t85, i64 %t88)
+	%t88 = getelementptr inbounds [8 x i8], ptr @tstring9, i64 0, i64 0
+	%t89 = insertvalue { ptr, i64 } undef, ptr %t88, 0
+	%t90 = insertvalue { ptr, i64 } %t89, i64 7, 1       
+	%t91 = load %Color, ptr %from_int
+	%t92 = extractvalue %Color %t91, 1
+	%t93 = zext i8 %t92 to i64
+	call void @print_int({ ptr, i64 } %t90, i64 %t93)
 
-	%t89 = getelementptr inbounds [8 x i8], ptr @tstring10, i64 0, i64 0
-	%t90 = insertvalue { ptr, i64 } undef, ptr %t89, 0
-	%t91 = insertvalue { ptr, i64 } %t90, i64 7, 1       
-	%t92 = load %Color, ptr %from_int
-	%t93 = extractvalue %Color %t92, 2
-	%t94 = zext i8 %t93 to i64
-	call void @printf_slice({ ptr, i64 } %t91, i64 %t94)
+	%t94 = getelementptr inbounds [8 x i8], ptr @tstring10, i64 0, i64 0
+	%t95 = insertvalue { ptr, i64 } undef, ptr %t94, 0
+	%t96 = insertvalue { ptr, i64 } %t95, i64 7, 1       
+	%t97 = load %Color, ptr %from_int
+	%t98 = extractvalue %Color %t97, 2
+	%t99 = zext i8 %t98 to i64
+	call void @print_int({ ptr, i64 } %t96, i64 %t99)
 
-	%t95 = getelementptr inbounds [8 x i8], ptr @tstring11, i64 0, i64 0
-	%t96 = insertvalue { ptr, i64 } undef, ptr %t95, 0
-	%t97 = insertvalue { ptr, i64 } %t96, i64 7, 1       
-	%t98 = load %Color, ptr %from_int
-	%t99 = extractvalue %Color %t98, 3
-	%t100 = zext i8 %t99 to i64
-	call void @printf_slice({ ptr, i64 } %t97, i64 %t100)
+	%t100 = getelementptr inbounds [8 x i8], ptr @tstring11, i64 0, i64 0
+	%t101 = insertvalue { ptr, i64 } undef, ptr %t100, 0
+	%t102 = insertvalue { ptr, i64 } %t101, i64 7, 1       
+	%t103 = load %Color, ptr %from_int
+	%t104 = extractvalue %Color %t103, 3
+	%t105 = zext i8 %t104 to i64
+	call void @print_int({ ptr, i64 } %t102, i64 %t105)
 
-	%t101 = load ptr, ptr %data
-	%t102 = bitcast ptr %t101 to ptr
-	call void @free(ptr %t102)
+	%t106 = getelementptr inbounds [10 x i8], ptr @tstring12, i64 0, i64 0
+	%t107 = insertvalue { ptr, i64 } undef, ptr %t106, 0
+	%t108 = insertvalue { ptr, i64 } %t107, i64 9, 1       
+	call void @print_flt({ ptr, i64 } %t108, double 3.1416)
 
-	%t103 = load ptr, ptr %name
-	%t104 = bitcast ptr %t103 to ptr
-	call void @free(ptr %t104)
+	%t109 = load ptr, ptr %data
+	%t110 = bitcast ptr %t109 to ptr
+	call void @free(ptr %t110)
 
-	%t105 = load { ptr, i64 }, ptr %s
-	%t106 = extractvalue { ptr, i64 } %t105, 1
-	ret i64 %t106
+	%t111 = load ptr, ptr %name
+	%t112 = bitcast ptr %t111 to ptr
+	call void @free(ptr %t112)
+
+	%t113 = load { ptr, i64 }, ptr %s
+	%t114 = extractvalue { ptr, i64 } %t113, 1
+	ret i64 %t114
 
 }

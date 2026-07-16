@@ -1403,9 +1403,13 @@ cg_module :: proc(ast: ^AST) {
 
     // boilerplate + garbage
     fmt.sbprintfln(cgctx.b, "; target info")
-    fmt.sbprintfln(cgctx.b, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"");
-    fmt.sbprintfln(cgctx.b, "target triple = \"x86_64-pc-linux-gnu\"")
+    // fmt.sbprintfln(cgctx.b, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"");
+    // fmt.sbprintfln(cgctx.b, "target triple = \"x86_64-pc-linux-gnu\"")
 
+    //target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+    //target triple = "x86_64-pc-linux-gnu"
+    fmt.sbprintfln(cgctx.b, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"");
+    fmt.sbprintfln(cgctx.b, "target triple = \"x86_64-pc-linux-gnu\" ");
 
     // structs need to be declared first??
     for id in ast.items {
@@ -1468,7 +1472,7 @@ cg_module :: proc(ast: ^AST) {
     {
         o_name := aprintf(c,".gala_build/%s.o", get_ctx().current_file)
         // compile llvm "llc -filetype=obj a.ll -o a.o"
-        p, err := os.process_start({command={"llc", "-filetype=obj",
+        p, err := os.process_start({command={"llc", "-filetype=obj", "-O2", 
             ll_name, "-o", o_name}});
         if err != .NONE {
             gala_panic("Failed to start clang process:", err);
@@ -1483,19 +1487,4 @@ cg_module :: proc(ast: ^AST) {
         debugln("clang exit code:", p_state.exit_code);
         append(&get_ctx().o_files, o_name)
     }
-
-    
-    /* {
-        // run
-        p, err := os.process_start({command={"./a.out"}});
-        if err != .NONE {
-            gala_panic("Failed to run compiled program:", err);
-        }
-        p_state, werr := os.process_wait(p)
-        if werr != .NONE {
-            gala_panic("Failed to wait program:", werr);
-        }
-        debugln     ("program exit code:", p_state.exit_code);
-        gala_info   ("program exit code:", p_state.exit_code);
-    } */
 }

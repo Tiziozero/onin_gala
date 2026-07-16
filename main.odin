@@ -157,6 +157,9 @@ main :: proc() { // odins context is passed down, not up, or some shi
         append(&command, "/usr/lib/crt1.o")
         append(&command, "/usr/lib/crti.o")
         append(&command, "-lc")
+        append(&command, "-lm")
+        append(&command, "-L./lib")
+        append(&command, "-lraylib")
         for f in get_ctx().o_files {
             append(&command, f)
         }

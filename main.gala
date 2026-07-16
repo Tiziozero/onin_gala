@@ -33,7 +33,13 @@ fn to_cstr(s: string): ^byte {
     memcpy(cstr, transmute(rawptr)&s[0], size);
     return cast(^byte)cstr;
 }
-fn printf_slice(s: string, n: int) {
+fn print_int(s: string, n: int) {
+    data := to_cstr(s);
+    printf(data, n);
+    free(cast(rawptr)data);
+    return;
+}
+fn print_flt(s: string, n: flt) {
     data := to_cstr(s);
     printf(data, n);
     free(cast(rawptr)data);
@@ -51,16 +57,17 @@ fn main(): int {
     if !true {
         printf(data, 7);
     }
-    printf_slice("r: %d\n", cast(int)c.r);
-    printf_slice("g: %d\n", cast(int)c.g);
-    printf_slice("b: %d\n", cast(int)c.b);
-    printf_slice("a: %d\n", cast(int)c.a);
+    print_int("r: %d\n", cast(int)c.r);
+    print_int("g: %d\n", cast(int)c.g);
+    print_int("b: %d\n", cast(int)c.b);
+    print_int("a: %d\n", cast(int)c.a);
     from_int := GetColor(4278190335);
-    printf_slice("GetColor:\n", 0);
-    printf_slice("\tr: %d\n", cast(int)from_int.r);
-    printf_slice("\tg: %d\n", cast(int)from_int.g);
-    printf_slice("\tb: %d\n", cast(int)from_int.b);
-    printf_slice("\ta: %d\n", cast(int)from_int.a);
+    print_int("GetColor:\n", 0);
+    print_int("\tr: %d\n", cast(int)from_int.r);
+    print_int("\tg: %d\n", cast(int)from_int.g);
+    print_int("\tb: %d\n", cast(int)from_int.b);
+    print_int("\ta: %d\n", cast(int)from_int.a);
+    print_flt("smth: %f\n", 3.1416);
 
     
     free(cast(rawptr)data);
