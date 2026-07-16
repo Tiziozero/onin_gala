@@ -1,6 +1,5 @@
 package main
 
-import "core:path/filepath"
 import "core:strings"
 import "core:mem/virtual"
 import "core:mem"
@@ -41,6 +40,7 @@ init_context :: proc() -> ^Context {
     ctx.spans.objs_decs = make(map[ObjId]struct{file_name: string, span: Span}, allocator = al)
 
     ctx.files = make(map[string]string, allocator = al)
+    ctx.o_files = make([dynamic]string, allocator = al)
 
     ctx.base_mod = new_module_scope(allocator=ctx.allocator)
     return ctx
@@ -75,6 +75,7 @@ main :: proc() { // odins context is passed down, not up, or some shi
     context.user_ptr = ctx   // <-- set it here, so it's live for the rest of main's scope
 
     new_type(&ctx.base_mod, Type{name="int", kind=.Integer});
+    new_type(&ctx.base_mod, Type{name="c_int", kind=.C_Integer});
     new_type(&ctx.base_mod, Type{name="flt", kind=.Float});
     new_type(&ctx.base_mod, Type{name="void", kind=.Void});
     new_type(&ctx.base_mod, Type{name="any", kind=.Any});
@@ -138,6 +139,49 @@ main :: proc() { // odins context is passed down, not up, or some shi
     }
     for f in files {
         handle_file(ctx, f);
+    }
+
+    {
+        // link ld a.o -o a.out
+        /* ld \
+        /usr/lib/crt1.o \
+        /usr/lib/crti.o \
+        -lc \
+        a.o \
+        /usr/lib/crtn.o
+        -o name*/
+        command := make([dynamic]string, allocator=get_ctx().allocator);
+        append(&command, "ld");
+        append(&command, "-dynamic-linker");
+        append(&command, "/lib64/ld-linux-x86-64.so.2");
+        append(&command, "/usr/lib/crt1.o")
+        append(&command, "/usr/lib/crti.o")
+        append(&command, "-lc")
+        for f in get_ctx().o_files {
+            append(&command, f)
+        }
+        append(&command, "/usr/lib/crtn.o")
+        append(&command, "-o")
+        append(&command, get_ctx().program_name)
+
+        debug("Link command: ");
+        for a in command {
+            debugf("%s ", a);
+        }
+        debugfln("")
+
+        p, err := os.process_start({command=command[:]});
+        if err != .NONE {
+            gala_panic("Failed to start link (ld) process:", err);
+        }
+        p_state, werr := os.process_wait(p)
+        if werr != .NONE {
+            gala_panic("Failed to wait for link (ld) process:", werr);
+        }
+        if p_state.exit_code != 0 {
+            gala_panic("Failed to link machine code. exit code:", p_state.exit_code);
+        }
+        debugln("clang exit code:", p_state.exit_code);
     }
     destroy_context(ctx);
     free_all(context.temp_allocator);

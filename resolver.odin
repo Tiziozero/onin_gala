@@ -4,6 +4,7 @@ TypeKind :: enum {
     Invalid,
     // basics
     Integer,
+    C_Integer,
     Float,
     Rune,
     Byte,
@@ -236,7 +237,7 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         }
     }
 
-    case: gala_panic("impl");
+    case: panic("impl");
     }
 }
 type_cmp  :: proc(l, r: Type, strict := false) -> bool {
@@ -274,6 +275,7 @@ type_cmp  :: proc(l, r: Type, strict := false) -> bool {
     case .FixedSizeArray:
         return l.fixed_size_array.size == r.fixed_size_array.size &&
         l.fixed_size_array.type == r.fixed_size_array.type
+    case .C_Integer: return true;
     case .Integer, .Float, .Rune, .Byte, .Bool, .Void,
          .UntypedInteger, .UntypedFloat, .ZeroInit: return true
     case .Invalid: return false
@@ -357,7 +359,7 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
         return intern_type({kind=.FixedSizeArray,
             fixed_size_array={type=id, size=k.size}})
     }
-    case: gala_panic("impl");
+    case: panic("impl");
     }
 }
 get_untyped_default :: proc(t: TypeId) -> TypeId {
@@ -373,7 +375,7 @@ get_untyped_default :: proc(t: TypeId) -> TypeId {
         return v
     }
 
-    case: gala_panic("impl");
+    case: panic("impl");
     }
 }
 resolve_stmt :: proc(s: ^Scope, id: StmtId) {
@@ -525,7 +527,7 @@ resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     oid, ook := s.obj_foreward[fndec.name]; assert(ook); // make sure fd exists
     obj := get(oid); // gets pointer, so modify that
 
-     debugln("extern",fndec);
+    debugln("extern",fndec);
     fnty, scope := resolve_fn_dec_signature(s, fndec);
     fnty.fn.is_external = true;
     free_scope(&scope);
@@ -575,7 +577,7 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     case StructDec:     new_type_fd(s, Type{kind=.Struct, name=i.name})
     case FnDec:         new_object_fd(s, Object{kind=.Variable, name=i.name});
     case ExternFnDec:   new_object_fd(s, Object{kind=.Variable, name=i.name});
-    case:               gala_panic("impl")
+    case:               panic("impl")
     }
 }
 resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
@@ -585,7 +587,7 @@ resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
     case StructDec:     resolve_struct_dec_item(s, id);
     case FnDec:         resolve_fn_dec_item(s, id);
     case ExternFnDec:   resolve_extern_fn_dec_item(s, id);
-    case:               gala_panic("impl")
+    case:               panic("impl")
     }
 }
 // get_ctx().allocator may not be available on context init, so this helps

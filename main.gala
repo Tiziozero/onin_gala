@@ -17,6 +17,10 @@ extern fn EndDrawing(): void;
 // RLAPI void ClearBackground(Color color);                          // Set background color (framebuffer clear color)
 extern fn ClearBackground(color: Color): void;
 
+// RLAPI Color GetColor(unsigned int hexValue);                                // Get Color structure from hexadecimal value
+extern fn GetColor(v: c_int): Color;
+
+
 struct Color {
     r: byte,        // Color red value
     g: byte,        // Color green value
@@ -29,6 +33,12 @@ fn to_cstr(s: string): ^byte {
     memcpy(cstr, transmute(rawptr)&s[0], size);
     return cast(^byte)cstr;
 }
+fn printf_slice(s: string, n: int) {
+    data := to_cstr(s);
+    printf(data, n);
+    free(cast(rawptr)data);
+    return;
+}
 fn main(): int {
     s := "Hello, World! %d\n";
     data := to_cstr(s);
@@ -37,9 +47,22 @@ fn main(): int {
     name := to_cstr("Hello, Raylib from Gala!!");
     // InitWindow(800, 600, name);
 
-    if true {
+    c := Color{r=123, g=222, b=255, a= 255};
+    if !true {
         printf(data, 7);
     }
+    printf_slice("r: %d\n", cast(int)c.r);
+    printf_slice("g: %d\n", cast(int)c.g);
+    printf_slice("b: %d\n", cast(int)c.b);
+    printf_slice("a: %d\n", cast(int)c.a);
+    from_int := GetColor(4278190335);
+    printf_slice("GetColor:\n", 0);
+    printf_slice("\tr: %d\n", cast(int)from_int.r);
+    printf_slice("\tg: %d\n", cast(int)from_int.g);
+    printf_slice("\tb: %d\n", cast(int)from_int.b);
+    printf_slice("\ta: %d\n", cast(int)from_int.a);
+
+    
     free(cast(rawptr)data);
     free(cast(rawptr)name);
     return len(s);

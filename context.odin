@@ -52,7 +52,8 @@ Context :: struct {
         // includes item decs + regular vardecs since both use ObjId
         objs_decs: map[ObjId]struct{file_name: string, span: Span},
     },
-    files: map[string]string,
+    files:      map[string]string,
+    o_files:    [dynamic]string,
 }
 
 FileLine :: struct {

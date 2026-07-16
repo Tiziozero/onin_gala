@@ -1,3 +1,4 @@
+// ask claude to fix file.
 package main
 
 import "core:os"
@@ -78,6 +79,10 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     }
     case .Integer: {
         c.llvm_ty[id]="i64";
+        return c.llvm_ty[id]
+    }
+    case .C_Integer: {
+        c.llvm_ty[id]="i32";
         return c.llvm_ty[id]
     }
     case .Void: {
@@ -188,7 +193,7 @@ lower_c_abi_type :: proc(type_id: TypeId) -> CAbiInfo {
             needs_conversion = true,
         };
 
-    case .Integer, .Float, .Bool, .Byte, .Rune:
+    case .C_Integer, .Integer, .Float, .Bool, .Byte, .Rune:
         return {
             type = type_id,
             needs_conversion = false,
@@ -204,6 +209,34 @@ lower_c_abi_type :: proc(type_id: TypeId) -> CAbiInfo {
         // For now, don't allow weird things through externs
         gala_panic("unsupported C ABI argument type");
     }
+}
+// Reverse of cg_abi_convert: given a raw ABI-typed value (e.g. the i64/ptr
+// an extern call actually returns), unpack it into the real type (e.g. a
+// struct) via the same alloca/store/load memory round-trip. The round-trip
+// doesn't care which direction it's used in — bytes are bytes either way.
+cg_abi_unconvert :: proc(c: ^CGCtx, value: string, from: TypeId, to: TypeId) -> string {
+    tmp := new_tmp(c);
+
+    cwritef(c, "\t%s = alloca %s\n",
+        tmp,
+        ty_to_llvm_str(c, from),
+    );
+
+    cwritef(c, "\tstore %s %s, ptr %s\n",
+        ty_to_llvm_str(c, from),
+        value,
+        tmp,
+    );
+
+    loaded := new_tmp(c);
+
+    cwritef(c, "\t%s = load %s, ptr %s\n",
+        loaded,
+        ty_to_llvm_str(c, to),
+        tmp,
+    );
+
+    return loaded;
 }
 cg_abi_convert :: proc(c: ^CGCtx, value: string, from: TypeId, to: TypeId) -> string {
     from_ty := get_type(from);
@@ -452,7 +485,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         return r;
     }
     case ZeroInit: {
-        gala_panic("impl");
+        panic("impl");
     }
     case Cast: {
         target := cg_expr(c, e.target)
@@ -484,7 +517,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         operand_ty := expr_ty(e.left)
 
         op := ""
-        if get_type(operand_ty).kind == .Integer {
+        if is_int_kind(get_type(operand_ty).kind) {
             switch e.kind {
             case .Addition:     op = "add"
             case .Subtraction:  op = "sub"
@@ -494,7 +527,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .NotEqual:     op = "icmp ne"
             case .LessEqual:    op = "icmp sle"
             case .GreaterEqual: op = "icmp sge"
-            case: gala_panic("impl")
+            case: panic("impl")
             }
         } else if get_type(operand_ty).kind == .Float {
             switch e.kind {
@@ -506,7 +539,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .NotEqual:     op = "fcmp one"
             case .LessEqual:    op = "fcmp ole"
             case .GreaterEqual: op = "fcmp oge"
-            case: gala_panic("impl")
+            case: panic("impl")
             }
         } else if get_type(operand_ty).kind == .Bool {
             #partial switch e.kind {
@@ -547,38 +580,37 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             gala_panic("invalid object");
         }
         }
-        gala_panic("impl");
+        panic("impl");
     }
     case FnCall: {
         t := cg_fn_call_target(c, e.target);
         fn_ty := get_type(expr_ty(e.target));
         //gen args
         args:=make([dynamic]string, allocator=get_ctx().allocator)
-        /*for a, i in e.args {
-            r, returns := reduce_expr_to_single_value(c, cg_expr(c, a));
-            assert(returns);
-            v := aprintf(c, "%s %s", ty_to_llvm_str(c, expr_ty(a)), r);
-               append(&args, v);
-        }*/
+        // if it's not external function just do the normal thing
+        if !fn_ty.fn.is_external {
             for a, i in e.args {
                 r, returns := reduce_expr_to_single_value(c, cg_expr(c, a));
                 assert(returns);
-
+                v := aprintf(c, "%s %s", ty_to_llvm_str(c, expr_ty(a)), r);
+                   append(&args, v);
+            }
+        } else {
+            for a, i in e.args {
+                r, returns := reduce_expr_to_single_value(c, cg_expr(c, a));
+                assert(returns);
                 arg_ty := expr_ty(a);
-
                 if fn_ty.fn.is_external {
                     abi := lower_c_abi_type(arg_ty);
-
                     if abi.needs_conversion {
                         r = cg_abi_convert(c, r, arg_ty, abi.type);
                     }
-
                     arg_ty = abi.type;
                 }
-
                 v := aprintf(c, "%s %s", ty_to_llvm_str(c, arg_ty), r);
                 append(&args, v);
             }
+        }
 
         if get(fn_ty.fn.ret_ty).kind == .Void {
             cwritef(c, "\tcall %s ", ty_to_llvm_str(c, fn_ty.fn.ret_ty))
@@ -605,6 +637,44 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             cwriteln(c, ")");
             return {kind=.None, id=id}
         } else {
+            ret_ty := fn_ty.fn.ret_ty
+            call_ret_ty := ret_ty
+            abi_info: CAbiInfo
+            if fn_ty.fn.is_external {
+                abi_info = lower_c_abi_type(ret_ty)
+                call_ret_ty = abi_info.type
+            }
+
+            new_t := new_tmp(c);
+            cwritef(c, "\t%s = call %s ", new_t, ty_to_llvm_str(c, call_ret_ty))
+            if fn_ty.fn.is_variadic {
+                cwrite(c, "(");
+                for a, i in fn_ty.fn.args {
+                    cwritef(c, "%s", ty_to_llvm_str(c, a.type));
+                    if i < len(fn_ty.fn.args) - 1 {
+                        cwritef(c, ", ")
+                    }
+                }
+                cwritef(c, ", ...");
+                cwrite(c, ")");
+            }
+            cwritef(c, "%s", t);
+            cwrite(c, "(");
+            for a, i in args {
+                cwritef(c, "%s", a);
+                if i < len(args) - 1 {
+                    cwritef(c, ", ")
+                }
+            }
+            cwriteln(c, ")");
+
+            if fn_ty.fn.is_external && abi_info.needs_conversion {
+                unpacked := cg_abi_unconvert(c, new_t, call_ret_ty, ret_ty)
+                return {kind=.Value, v=unpacked, id=id};
+            }
+            return {kind=.Value, v=new_t, id=id};
+        }
+        /* } else {
             new_t := new_tmp(c);
             cwritef(c, "\t%s = call %s ", new_t, ty_to_llvm_str(c, fn_ty.fn.ret_ty))
             if fn_ty.fn.is_variadic {
@@ -630,9 +700,9 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             }
             cwriteln(c, ")");
             return {kind=.Value, v=new_t, id=id};
-        }
+        } */
     }
-    case: gala_panic("impl");
+    case: panic("impl");
     }
 }
 bit_width_of :: proc(k: TypeKind) -> int {
@@ -655,7 +725,7 @@ is_signed :: proc(k: TypeKind) -> bool {
 }
 
 is_int_kind :: proc(k: TypeKind) -> bool {
-    return k == .Integer || k == .Byte || k == .Rune || k == .Bool
+    return k == .Integer || k == .Byte || k == .Rune || k == .Bool || k == .C_Integer
 }
 
 // Returns the LLVM instruction mnemonic needed to convert `target` -> `to`.
@@ -754,7 +824,7 @@ reduce_expr_to_single_value :: proc(c: ^CGCtx, e: CGExprRes) -> (string, bool) {
         return t, true
     }
     }
-    gala_panic("impl");
+    panic("impl");
 }
 stmt_ends_block :: proc(stmt: StmtId) -> bool {
     switch s in get(stmt) {
@@ -776,9 +846,9 @@ stmt_ends_block :: proc(stmt: StmtId) -> bool {
     case VarDec: return false
     case Assignment: return false
     case ExprId: return false;
-    case: gala_panic("impl");
+    case: panic("impl");
     }
-    gala_panic("impl");
+    panic("impl");
 }
 next_tmp_index :: proc(c: ^CGCtx) -> int {
     c.tmp_id += 1;
@@ -1133,7 +1203,37 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
     case StructDec: {
     }
+    // updated caude version that follows C abi
     case ExternFnDec: {
+        objid := get_ctx().item_objects[id]
+        obj := get_ctx().objs[objid]
+        fn_ty := get_type(obj.type.(TypeId))
+
+        cwrite(c, "declare ");
+
+        // return type — lower_c_abi_type gala_panics on Void, so guard it
+        ret_ty := fn_ty.fn.ret_ty
+        if get_type(ret_ty).kind != .Void {
+            ret_ty = lower_c_abi_type(ret_ty).type
+        }
+        cwritef(c, "%s ", ty_to_llvm_str(c, ret_ty));
+
+        cwritef(c, "@%s ", obj.name);
+        cwrite(c, "(");
+        for a, i in fn_ty.fn.args {
+            c.scope.vars[a.name] = {.Argument, aprintf(c, "%%%s", a.name)};
+            abi := lower_c_abi_type(a.type)
+            cwritef(c, "%s %s", ty_to_llvm_str(c, abi.type), c.scope.vars[a.name].name);
+            if i < len(fn_ty.fn.args) - 1 {
+                cwritef(c, ", ")
+            }
+        }
+        if fn_ty.fn.is_variadic {
+            cwritef(c, ", ...");
+        }
+        cwriteln(c, ")");
+    }
+    /*case ExternFnDec: {
         // get type
         objid :=get_ctx().item_objects[id]
         obj := get_ctx().objs[objid]
@@ -1160,7 +1260,7 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
             cwritef(c, ", ..."); // write variadic thingy
         }
         cwriteln(c, ")");
-    }
+    }*/
     case FnDec: {
         // double check type is a function
         assert(check_fn(i));
@@ -1358,15 +1458,18 @@ cg_module :: proc(ast: ^AST) {
             gala_panic("Failed make .gala_build directory:", dir_err);
         }
     }
-    e := os.write_entire_file_from_string(".gala_build/a.ll", strings.to_string(sb))
+    c := &cgctx;
+    ll_name := aprintf(c,".gala_build/%s.ll", get_ctx().current_file)
+    e := os.write_entire_file_from_string(ll_name, strings.to_string(sb))
     if e != io.Error.None {
         gala_panic("Failed to write to file:", e);
     }
     
     {
+        o_name := aprintf(c,".gala_build/%s.o", get_ctx().current_file)
         // compile llvm "llc -filetype=obj a.ll -o a.o"
         p, err := os.process_start({command={"llc", "-filetype=obj",
-            ".gala_build/a.ll", "-o", ".gala_build/a.o"}});
+            ll_name, "-o", o_name}});
         if err != .NONE {
             gala_panic("Failed to start clang process:", err);
         }
@@ -1378,39 +1481,9 @@ cg_module :: proc(ast: ^AST) {
             gala_panic("Failed to compile llvm ir. exit code:", p_state.exit_code);
         }
         debugln("clang exit code:", p_state.exit_code);
+        append(&get_ctx().o_files, o_name)
     }
-    {
-        // link ld a.o -o a.out
-        /* ld \
-        /usr/lib/crt1.o \
-        /usr/lib/crti.o \
-        a.o \
-        -lc \
-        /usr/lib/crtn.o */
-        p, err := os.process_start({command={"ld",
-            "-dynamic-linker", "/lib64/ld-linux-x86-64.so.2",
-            "/usr/lib/crt1.o",
-            "/usr/lib/crti.o",
-            "-lc", 
-            "-lm", 
-            "-L./lib/",
-            "-lraylib", 
-            ".gala_build/a.o",
-            "/usr/lib/crtn.o",
-            "-o", get_ctx().program_name,
-        }});
-        if err != .NONE {
-            gala_panic("Failed to start link (ld) process:", err);
-        }
-        p_state, werr := os.process_wait(p)
-        if werr != .NONE {
-            gala_panic("Failed to wait for link (ld) process:", werr);
-        }
-        if p_state.exit_code != 0 {
-            gala_panic("Failed to link machine code. exit code:", p_state.exit_code);
-        }
-        debugln("clang exit code:", p_state.exit_code);
-    }
+
     
     /* {
         // run

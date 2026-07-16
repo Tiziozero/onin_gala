@@ -19,6 +19,7 @@ is_numeric :: proc(t: TypeId) -> bool {
     case .UntypedInteger: return true
     case .Float: return true
     case .Integer: return true
+    case .C_Integer: return true
     case .Byte: return true
     case: return false
     }
@@ -57,6 +58,9 @@ compare_and_reduce_numerics :: proc(l, r: TypeId) -> (TypeId, bool, string) {
         if lk == .UntypedFloat && rk == .Integer {
             return TypeId(0), false, "type mismatch: float into integer"
         }
+        if lk == .UntypedFloat && rk == .C_Integer {
+            return TypeId(0), false, "type mismatch: float into integer"
+        }
         if lk == .UntypedInteger && rk == .Float {
             return TypeId(0), false, "type mismatch: integer into float" // or allow? up to you
         }
@@ -66,6 +70,9 @@ compare_and_reduce_numerics :: proc(l, r: TypeId) -> (TypeId, bool, string) {
         if rk == .UntypedFloat && lk == .Integer {
             return TypeId(0), false, "type mismatch: float into integer"
         }
+        if rk == .UntypedFloat && lk == .C_Integer {
+            return TypeId(0), false, "type mismatch: float into integer"
+        }
         if rk == .UntypedInteger && lk == .Float {
             return TypeId(0), false, "type mismatch: integer into float"
         }
@@ -73,7 +80,7 @@ compare_and_reduce_numerics :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     }
 
     // Both typed, different IDs — mismatch
-    return TypeId(0), false, "type mismatch"
+    return TypeId(0), false, "type mismatch (different types)"
 }
 compare_and_reduce_types :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     if l == r do return l, true, ""
@@ -93,7 +100,7 @@ can_binop :: proc(ty: TypeId) -> bool {
 type_size :: proc(t: TypeId) -> int {
     ty := get_type(t)
     #partial switch ty.kind {
-    case .Integer, .Float, .Pointer: return 8
+    case .C_Integer, .Integer, .Float, .Pointer: return 8
     case .Rune: return 4
     case .Byte, .Bool: return 1
     case .FixedSizeArray:
@@ -122,7 +129,7 @@ can_cast_to :: proc(target_id, to_id: TypeId) -> bool {
 
     if is_int_kind(target.kind) {
         #partial switch to.kind {
-        case .Integer, .Float, .Byte, .Bool, .Rune, .Pointer: return true
+        case .C_Integer, .Integer, .Float, .Byte, .Bool, .Rune, .Pointer: return true
         }
         return false
     }
@@ -130,13 +137,13 @@ can_cast_to :: proc(target_id, to_id: TypeId) -> bool {
     #partial switch target.kind {
     case .Float: {
         #partial switch to.kind {
-        case .Integer, .Float, .Byte, .Rune: return true;
+        case .C_Integer, .Integer, .Float, .Byte, .Rune: return true;
         }
         return false
     }
     case .Pointer: {
         #partial switch to.kind {
-        case .Pointer, .Integer: return true
+        case .Pointer, .C_Integer, .Integer: return true
         }
         return false
     }
@@ -158,7 +165,7 @@ is_array_type :: proc(t: TypeId) -> bool {
 }
 can_index :: proc(t: TypeId) -> bool {
     #partial switch get_type(t).kind {
-    case .Integer: return true
+    case .C_Integer, .Integer: return true
     }
     return false
 }
@@ -185,7 +192,7 @@ can_reference :: proc(id: ExprId) -> bool {
 }
 can_compare :: proc(ty: Type) -> bool {
     #partial switch ty.kind {
-    case .Integer:
+    case .C_Integer, .Integer:
         return true;
 
     case .Float:
@@ -492,9 +499,9 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         }
         for a in e.args {
             tc_expr(tc, a);
-            if is_untyped(expr_ty(a)) {
+            /* if is_untyped(expr_ty(a)) {
                 get_ctx().expr_types[a] = get_untyped_default(expr_ty(a))
-            }
+            } */
         }
         for i in 0..<len(fargs) {
             earg := e.args[i];
@@ -508,6 +515,13 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             }
             assert(r == farg.type); // should always match
             propagate_type(r, earg);
+        }
+        // default for rest
+        for i in len(fargs)..<len(e.args) {
+            a := e.args[i]
+            if is_untyped(expr_ty(a)) {
+                get_ctx().expr_types[a] = get_untyped_default(expr_ty(a))
+            }
         }
         get_ctx().expr_types[id] = ty.fn.ret_ty
     }

@@ -837,7 +837,7 @@ parse_module_kw :: proc(p: ^Parser) -> ItemId {
         }
         return id;
     }
-    case: gala_panic("impl");
+    case: panic("impl");
     }
 }
 expect_symbol :: proc(p: ^Parser, str: string) -> Token {
@@ -874,7 +874,7 @@ parse_tokens :: proc(file_name: string, tokens: []Token) -> AST {
         case .Keyword: {
             append(&items,parse_module_kw(p));
         }
-        case: gala_panic("impl");
+        case: panic("impl");
         }
     }
     return AST{items=items[:]}
