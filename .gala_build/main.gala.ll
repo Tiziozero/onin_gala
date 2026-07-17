@@ -1,7 +1,8 @@
 ; target info
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
-target triple = "x86_64-pc-linux-gnu"
+target triple = "x86_64-pc-linux-gnu" 
 %Color = type {i8,i8,i8,i8}
+%v2 = type {float,float}
 @tstring1 = private unnamed_addr constant [18 x i8] c"Hello, World! %d\0A\00", align 1
 
 @tstring2 = private unnamed_addr constant [26 x i8] c"Hello, Raylib from Gala!!\00", align 1
@@ -26,6 +27,10 @@ target triple = "x86_64-pc-linux-gnu"
 
 @tstring12 = private unnamed_addr constant [10 x i8] c"smth: %f\0A\00", align 1
 
+@tstring13 = private unnamed_addr constant [8 x i8] c"\09x: %f\0A\00", align 1
+
+@tstring14 = private unnamed_addr constant [8 x i8] c"\09y: %f\0A\00", align 1
+
 declare void @printf (ptr %fmt, ...)
 declare ptr @calloc (i64 %n, i64 %size)
 declare void @memcpy (ptr %dest, ptr %src, i64 %size)
@@ -35,29 +40,26 @@ declare void @CloseWindow ()
 declare i1 @WindowShouldClose ()
 declare void @BeginDrawing ()
 declare void @EndDrawing ()
-declare void @ClearBackground (i64 %color)
-declare i64 @GetColor (i32 %v)
+declare void @ClearBackground (i32 %color)
+declare i32 @GetColor (i32 %v)
 define ptr @to_cstr ({ ptr, i64 } %s) {
 entry:
-	%t13 = extractvalue { ptr, i64 } %s, 1
-	%t14 = mul i64 %t13, 1
+	%t15 = extractvalue { ptr, i64 } %s, 1
+	%t16 = mul i64 %t15, 1
 	%size = alloca i64
-	store i64 %t14, ptr %size
+	store i64 %t16, ptr %size
 
-	%t15 = load i64, ptr %size
-	%t16 = add i64 %t15, 1
-	%t17 = call ptr @calloc(i64 1, i64 %t16)
+	%t17 = load i64, ptr %size
+	%t18 = add i64 %t17, 1
+	%t19 = call ptr @calloc(i64 1, i64 %t18)
 	%cstr = alloca ptr
-	store ptr %t17, ptr %cstr
+	store ptr %t19, ptr %cstr
 
-	%t18 = load ptr, ptr %cstr
-	%t19 = extractvalue { ptr, i64 } %s, 0
-	%t20 = getelementptr inbounds i8, ptr %t19, i64 0
-	%t21 = alloca ptr
-	store ptr %t20, ptr %t21
-	%t22 = load ptr, ptr %t21
+	%t20 = load ptr, ptr %cstr
+	%t21 = extractvalue { ptr, i64 } %s, 0
+	%t22 = getelementptr inbounds i8, ptr %t21, i64 0
 	%t23 = load i64, ptr %size
-	call void @memcpy(ptr %t18, ptr %t22, i64 %t23)
+	call void @memcpy(ptr %t20, ptr %t22, i64 %t23)
 
 	%t24 = load ptr, ptr %cstr
 	%t25 = bitcast ptr %t24 to ptr
@@ -80,14 +82,14 @@ entry:
 	ret void
 
 }
-define void @print_flt ({ ptr, i64 } %s, double %n) {
+define void @print_flt ({ ptr, i64 } %s, float %n) {
 entry:
 	%t30 = call ptr @to_cstr({ ptr, i64 } %s)
 	%data = alloca ptr
 	store ptr %t30, ptr %data
 
 	%t31 = load ptr, ptr %data
-	call void (ptr, ...)@printf(ptr %t31, double %n)
+	call void (ptr, ...)@printf(ptr %t31, float %n)
 
 	%t32 = load ptr, ptr %data
 	%t33 = bitcast ptr %t32 to ptr
@@ -96,6 +98,7 @@ entry:
 	ret void
 
 }
+declare i64 @Vector2Add (i64 %a, i64 %b)
 define i64 @main () {
 entry:
 	%t34 = getelementptr inbounds [18 x i8], ptr @tstring1, i64 0, i64 0
@@ -170,9 +173,9 @@ end_label49:
 	%t75 = zext i8 %t74 to i64
 	call void @print_int({ ptr, i64 } %t72, i64 %t75)
 
-	%t76 = call i64 @GetColor(i32 4278190335)
-	%t77 = alloca i64
-	store i64 %t76, ptr %t77
+	%t76 = call i32 @GetColor(i32 4278190335)
+	%t77 = alloca [4 x i8]
+	store i32 %t76, ptr %t77
 	%t78 = load %Color, ptr %t77
 	%from_int = alloca %Color
 	store %Color %t78, ptr %from_int
@@ -217,18 +220,57 @@ end_label49:
 	%t106 = getelementptr inbounds [10 x i8], ptr @tstring12, i64 0, i64 0
 	%t107 = insertvalue { ptr, i64 } undef, ptr %t106, 0
 	%t108 = insertvalue { ptr, i64 } %t107, i64 9, 1       
-	call void @print_flt({ ptr, i64 } %t108, double 3.1416)
+	call void @print_flt({ ptr, i64 } %t108, float 0x400921FF20000000)
 
-	%t109 = load ptr, ptr %data
-	%t110 = bitcast ptr %t109 to ptr
-	call void @free(ptr %t110)
+	%t109 = insertvalue %v2 undef, float 0x3FF3333340000000, 0
+	%t110 = insertvalue %v2 %t109, float 0x40019999A0000000, 1
+	%a = alloca %v2
+	store %v2 %t110, ptr %a
 
-	%t111 = load ptr, ptr %name
-	%t112 = bitcast ptr %t111 to ptr
-	call void @free(ptr %t112)
+	%t111 = insertvalue %v2 undef, float 0x3FF0000000000000, 0
+	%t112 = insertvalue %v2 %t111, float 0x4000000000000000, 1
+	%b = alloca %v2
+	store %v2 %t112, ptr %b
 
-	%t113 = load { ptr, i64 }, ptr %s
-	%t114 = extractvalue { ptr, i64 } %t113, 1
-	ret i64 %t114
+	%t113 = load %v2, ptr %a
+	%t114 = alloca [8 x i8]
+	store %v2 %t113, ptr %t114
+	%t115 = load i64, ptr %t114
+	%t116 = load %v2, ptr %b
+	%t117 = alloca [8 x i8]
+	store %v2 %t116, ptr %t117
+	%t118 = load i64, ptr %t117
+	%t119 = call i64 @Vector2Add(i64 %t115, i64 %t118)
+	%t120 = alloca [8 x i8]
+	store i64 %t119, ptr %t120
+	%t121 = load %v2, ptr %t120
+	%x = alloca %v2
+	store %v2 %t121, ptr %x
+
+	%t122 = getelementptr inbounds [8 x i8], ptr @tstring13, i64 0, i64 0
+	%t123 = insertvalue { ptr, i64 } undef, ptr %t122, 0
+	%t124 = insertvalue { ptr, i64 } %t123, i64 7, 1       
+	%t125 = load %v2, ptr %x
+	%t126 = extractvalue %v2 %t125, 0
+	call void @print_flt({ ptr, i64 } %t124, float %t126)
+
+	%t127 = getelementptr inbounds [8 x i8], ptr @tstring14, i64 0, i64 0
+	%t128 = insertvalue { ptr, i64 } undef, ptr %t127, 0
+	%t129 = insertvalue { ptr, i64 } %t128, i64 7, 1       
+	%t130 = load %v2, ptr %x
+	%t131 = extractvalue %v2 %t130, 1
+	call void @print_flt({ ptr, i64 } %t129, float %t131)
+
+	%t132 = load ptr, ptr %data
+	%t133 = bitcast ptr %t132 to ptr
+	call void @free(ptr %t133)
+
+	%t134 = load ptr, ptr %name
+	%t135 = bitcast ptr %t134 to ptr
+	call void @free(ptr %t135)
+
+	%t136 = load { ptr, i64 }, ptr %s
+	%t137 = extractvalue { ptr, i64 } %t136, 1
+	ret i64 %t137
 
 }

@@ -1,10 +1,10 @@
 extern fn printf(fmt: ^byte, ..any);
-extern fn calloc(n: int, size: int): rawptr;
-extern fn memcpy(dest: rawptr, src: rawptr, size: int);
+extern fn calloc(n: i64, size: i64): rawptr;
+extern fn memcpy(dest: rawptr, src: rawptr, size: i64);
 extern fn free(ptr: rawptr);
 
-// RLAPI void InitWindow(int width, int height, const char *title);  // Initialize window and OpenGL context
-extern fn InitWindow(width: int, height: int, title: ^byte): void;
+// RLAPI void InitWindow(i64 width, i64 height, const char *title);  // Initialize window and OpenGL context
+extern fn InitWindow(width: i64, height: i64, title: ^byte): void;
 // RLAPI void CloseWindow(void);                                     // Close window and unload OpenGL context
 extern fn CloseWindow(): void;
 // RLAPI bool WindowShouldClose(void);                               // Check if application should close (KEY_ESCAPE pressed or windows close icon clicked)
@@ -17,8 +17,8 @@ extern fn EndDrawing(): void;
 // RLAPI void ClearBackground(Color color);                          // Set background color (framebuffer clear color)
 extern fn ClearBackground(color: Color): void;
 
-// RLAPI Color GetColor(unsigned int hexValue);                                // Get Color structure from hexadecimal value
-extern fn GetColor(v: c_int): Color;
+// RLAPI Color GetColor(unsigned i64 hexValue);                                // Get Color structure from hexadecimal value
+extern fn GetColor(v: i32): Color;
 
 
 struct Color {
@@ -33,19 +33,23 @@ fn to_cstr(s: string): ^byte {
     memcpy(cstr, transmute(rawptr)&s[0], size);
     return cast(^byte)cstr;
 }
-fn print_int(s: string, n: int) {
+fn print_int(s: string, n: i64) {
     data := to_cstr(s);
     printf(data, n);
     free(cast(rawptr)data);
     return;
 }
-fn print_flt(s: string, n: flt) {
+fn print_flt(s: string, n: f32) {
     data := to_cstr(s);
     printf(data, n);
     free(cast(rawptr)data);
     return;
 }
-fn main(): int {
+struct v2 {
+    x: f32, y: f32
+}
+extern fn Vector2Add(a: v2, b: v2): v2;
+fn main(): i64 {
     s := "Hello, World! %d\n";
     data := to_cstr(s);
     printf(data, 9);
@@ -57,18 +61,24 @@ fn main(): int {
     if !true {
         printf(data, 7);
     }
-    print_int("r: %d\n", cast(int)c.r);
-    print_int("g: %d\n", cast(int)c.g);
-    print_int("b: %d\n", cast(int)c.b);
-    print_int("a: %d\n", cast(int)c.a);
+    print_int("r: %d\n", cast(i64)c.r);
+    print_int("g: %d\n", cast(i64)c.g);
+    print_int("b: %d\n", cast(i64)c.b);
+    print_int("a: %d\n", cast(i64)c.a);
     from_int := GetColor(4278190335);
     print_int("GetColor:\n", 0);
-    print_int("\tr: %d\n", cast(int)from_int.r);
-    print_int("\tg: %d\n", cast(int)from_int.g);
-    print_int("\tb: %d\n", cast(int)from_int.b);
-    print_int("\ta: %d\n", cast(int)from_int.a);
+    print_int("\tr: %d\n", cast(i64)from_int.r);
+    print_int("\tg: %d\n", cast(i64)from_int.g);
+    print_int("\tb: %d\n", cast(i64)from_int.b);
+    print_int("\ta: %d\n", cast(i64)from_int.a);
     print_flt("smth: %f\n", 3.1416);
 
+
+    a := v2{x=1.2, y=2.2};
+    b := v2{x=1.0, y=2.0};
+    x := Vector2Add(a, b);
+    print_flt("\tx: %f\n",  x.x);
+    print_flt("\ty: %f\n",  x.y);
     
     free(cast(rawptr)data);
     free(cast(rawptr)name);

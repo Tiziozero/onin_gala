@@ -58,130 +58,6 @@ cwriteln :: proc(c: ^CGCtx, format: string) {
 cwritefln :: proc(c: ^CGCtx, format: string, data: ..any) {
     fmt.sbprintfln(c.b, format, ..data);
 }
-// ---- TypeKind-level helpers (is_integer/is_float take TypeId and exclude
-// Byte/Rune/Bool — these work on raw TypeKind and include them, since all
-// three are LLVM integer types) ----
-
-is_int_kind :: proc(k: TypeKind) -> bool {
-    #partial switch k {
-    case .UInt64, .UInt32, .UInt16, .UInt_8,
-         .Int64, .Int32, .Int16, .Int_8,
-         .Byte, .Rune, .Bool:
-        return true
-    }
-    return false
-}
-
-is_float_kind :: proc(k: TypeKind) -> bool {
-    #partial switch k {
-    case .Flt64, .Flt32, .Flt16, .Flt_8:
-        return true
-    }
-    return false
-}
-
-bit_width_of :: proc(k: TypeKind) -> int {
-    #partial switch k {
-    case .UInt64, .Int64, .Flt64:               return 64
-    case .UInt32, .Int32, .Flt32:               return 32
-    case .UInt16, .Int16, .Flt16:               return 16
-    case .UInt_8, .Int_8, .Flt_8, .Byte, .Rune: return 8
-    case .Bool:                                  return 1 // LLVM i1, not i8
-    case: gala_panic("bit_width_of: not a scalar numeric kind")
-    }
-}
-
-is_signed :: proc(k: TypeKind) -> bool {
-    #partial switch k {
-    case .Int64, .Int32, .Int16, .Int_8:
-        return true
-    case .UInt64, .UInt32, .UInt16, .UInt_8, .Byte, .Rune, .Bool:
-        return false
-    case:
-        gala_panic("is_signed: not an integer-ish kind")
-    }
-}
-
-ty_to_llvm_cast_op :: proc(target_id, to_id: TypeId) -> (string, bool) {
-    target := get_type(target_id)
-    to := get_type(to_id)
-
-    if target.kind == to.kind {
-        #partial switch target.kind {
-        case .Pointer: return "bitcast", true // safe even if often a no-op with opaque ptrs
-        case:          return "", false        // identity — caller should skip emitting anything
-        }
-    }
-
-    tk, ok := target.kind, to.kind
-
-    // int-family -> int-family (Int/UInt/Byte/Rune/Bool, any combo)
-    if is_int_kind(tk) && is_int_kind(ok) {
-        from_w := bit_width_of(tk)
-        to_w   := bit_width_of(ok)
-        if from_w < to_w {
-            return is_signed(tk) ? "sext" : "zext", true
-        } else if from_w > to_w {
-            return "trunc", true
-        }
-        return "", false // same width, different label (Int32<->UInt32, Int_8<->Byte...) — no-op
-    }
-    // int-family -> float
-    if is_int_kind(tk) && is_float_kind(ok) {
-        return is_signed(tk) ? "sitofp" : "uitofp", true
-    }
-    // float -> int-family
-    if is_float_kind(tk) && is_int_kind(ok) {
-        return is_signed(ok) ? "fptosi" : "fptoui", true
-    }
-    // float -> float, different width (Flt64/32/16/8 now distinct — no longer a no-op)
-    if is_float_kind(tk) && is_float_kind(ok) {
-        return bit_width_of(tk) < bit_width_of(ok) ? "fpext" : "fptrunc", true
-    }
-    // pointer <-> integer
-    if tk == .Pointer && is_int_kind(ok) {
-        return "ptrtoint", true
-    }
-    if is_int_kind(tk) && ok == .Pointer {
-        return "inttoptr", true
-    }
-
-    gala_panic("ty_to_llvm_cast_op: no cast op for this pair — check can_cast_to table")
-}
-
-// NoOp / Instr / Memory instead of (string, bool): the old signature couldn't
-// distinguish "identical repr, reuse the value" (NoOp) from "no direct op,
-// roundtrip through memory" (Memory) — both returned ("", false).
-TransmuteResult :: enum { NoOp, Instr, Memory }
-
-ty_to_llvm_transmute_op :: proc(from_id, to_id: TypeId) -> (op: string, result: TransmuteResult) {
-    from := get_type(from_id)
-    to := get_type(to_id)
-
-    if from.kind == to.kind do return "", .NoOp
-
-    // int-family <-> int-family, same width, different label: pure relabel
-    if is_int_kind(from.kind) && is_int_kind(to.kind) && bit_width_of(from.kind) == bit_width_of(to.kind) {
-        return "", .NoOp
-    }
-    // int-family <-> float, same width: true bit reinterpretation
-    if is_int_kind(from.kind) && is_float_kind(to.kind) && bit_width_of(from.kind) == bit_width_of(to.kind) {
-        return "bitcast", .Instr
-    }
-    if is_float_kind(from.kind) && is_int_kind(to.kind) && bit_width_of(from.kind) == bit_width_of(to.kind) {
-        return "bitcast", .Instr
-    }
-    // Pointer <-> Integer: NOT bitcast-legal in LLVM; ptrtoint/inttoptr
-    // are already the bit-preserving ops for equal widths.
-    if from.kind == .Pointer && is_int_kind(to.kind) {
-        return "ptrtoint", .Instr
-    }
-    if is_int_kind(from.kind) && to.kind == .Pointer {
-        return "inttoptr", .Instr
-    }
-
-    return "", .Memory // no single-instruction path — roundtrip through memory
-}
 
 ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     t, ok := c.llvm_ty[id];
@@ -190,25 +66,22 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     #partial switch ty.kind {
     case .UntypedInteger: fallthrough
     case .UntypedFloat: 
+        dump_context(get_ctx())
         gala_panic("bug")
     case .Pointer: {
         s := fmt.aprintf("ptr", allocator=c.arena.block_allocator )
         c.llvm_ty[id]=s
         return s
     }
-    case .Flt64: {
+    case .Float: {
         c.llvm_ty[id]="double";
         return c.llvm_ty[id]
     }
-    case .Flt32: {
-        c.llvm_ty[id]="float";
-        return c.llvm_ty[id]
-    }
-    case .Int64: {
+    case .Integer: {
         c.llvm_ty[id]="i64";
         return c.llvm_ty[id]
     }
-    case .Int32: {
+    case .C_Integer: {
         c.llvm_ty[id]="i32";
         return c.llvm_ty[id]
     }
@@ -263,24 +136,139 @@ cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
     }
     panic("no");
 }
-import "core:strconv"
+// Only decides on a single-instruction fast path. Returns ok=false when
+// the pair needs the memory round-trip instead (structs, arrays, or any
+// combo bitcast doesn't support).
+ty_to_llvm_transmute_op :: proc(from_id, to_id: TypeId) -> (string, bool) {
+    from := get_type(from_id)
+    to := get_type(to_id)
 
-// LLVM textual IR: a `float`-typed constant that doesn't round-trip exactly
-// through decimal must be printed as hex bits of the *double* representation
-// of the value (not the float's raw bits) — this is LLVM's own quirk, not
-// a bug in our lowering.
-llvm_float_const :: proc(v: f32) -> string {
-    as_f64 := f64(v)
-    bits := transmute(u64)as_f64
-    return fmt.tprintf("0x%016X", bits)
+    if from.kind == to.kind do return "", false // identical layout, no-op
+
+    // int-family <-> Float, same width: true bit reinterpretation
+    if is_int_kind(from.kind) && to.kind == .Float && bit_width_of(from.kind) == bit_width_of(to.kind) {
+        return "bitcast", true
+    }
+    if from.kind == .Float && is_int_kind(to.kind) && bit_width_of(from.kind) == bit_width_of(to.kind) {
+        return "bitcast", true
+    }
+
+    // Pointer <-> Integer: NOT bitcast-legal in LLVM. ptrtoint/inttoptr
+    // are already the bit-preserving ops for equal widths.
+    if from.kind == .Pointer && is_int_kind(to.kind) do return "ptrtoint", true
+    if is_int_kind(from.kind) && to.kind == .Pointer do return "inttoptr", true
+
+    // int-family <-> int-family, same width, different label (e.g. Integer <-> Byte
+    // if you ever add a 64-bit byte-like kind): pure relabel, no instruction
+    if is_int_kind(from.kind) && is_int_kind(to.kind) && bit_width_of(from.kind) == bit_width_of(to.kind) {
+        return "", false
+    }
+
+    return "", false // signal "no fast path" — caller falls through to memory
 }
+// C abi in the way
+CAbiInfo :: struct {
+    type: TypeId,
+    needs_conversion: bool,
+}
+lower_c_abi_type :: proc(type_id: TypeId) -> CAbiInfo {
+    ty := get_type(type_id);
 
-llvm_double_const :: proc(v: f64) -> string {
-    // f64 constants print fine in decimal as long as they round-trip;
-    // easiest to just always go through the same hex path to avoid the
-    // same class of bug for doubles with more precision than %f gives you.
-    bits := transmute(u64)v
-    return fmt.tprintf("0x%016X", bits)
+    #partial switch ty.kind {
+    case .Struct:
+        size := type_size(type_id);
+
+        // SysV x86-64: small structs are passed in registers,
+        // but LLVM wants them represented according to the ABI.
+        // Simplified rule for now.
+        if size <= 8 {
+            return {
+                type = integer_type(), // i32/i64 depending on size
+                needs_conversion = true,
+            };
+        }
+
+        return {
+            type = intern_type({kind=.Pointer, ptr=type_id}),
+            needs_conversion = true,
+        };
+
+    case .C_Integer, .Integer, .Float, .Bool, .Byte, .Rune:
+        return {
+            type = type_id,
+            needs_conversion = false,
+        };
+
+    case .Pointer:
+        return {
+            type = type_id,
+            needs_conversion = false,
+        };
+
+    case:
+        // For now, don't allow weird things through externs
+        gala_panic("unsupported C ABI argument type");
+    }
+}
+// Reverse of cg_abi_convert: given a raw ABI-typed value (e.g. the i64/ptr
+// an extern call actually returns), unpack it into the real type (e.g. a
+// struct) via the same alloca/store/load memory round-trip. The round-trip
+// doesn't care which direction it's used in — bytes are bytes either way.
+cg_abi_unconvert :: proc(c: ^CGCtx, value: string, from: TypeId, to: TypeId) -> string {
+    tmp := new_tmp(c);
+
+    cwritef(c, "\t%s = alloca %s\n",
+        tmp,
+        ty_to_llvm_str(c, from),
+    );
+
+    cwritef(c, "\tstore %s %s, ptr %s\n",
+        ty_to_llvm_str(c, from),
+        value,
+        tmp,
+    );
+
+    loaded := new_tmp(c);
+
+    cwritef(c, "\t%s = load %s, ptr %s\n",
+        loaded,
+        ty_to_llvm_str(c, to),
+        tmp,
+    );
+
+    return loaded;
+}
+cg_abi_convert :: proc(c: ^CGCtx, value: string, from: TypeId, to: TypeId) -> string {
+    from_ty := get_type(from);
+
+    #partial switch from_ty.kind {
+    case .Struct:
+        tmp := new_tmp(c);
+
+        cwritef(c, "\t%s = alloca %s\n",
+            tmp,
+            ty_to_llvm_str(c, from),
+        );
+
+        cwritef(c, "\tstore %s %s, ptr %s\n",
+            ty_to_llvm_str(c, from),
+            value,
+            tmp,
+        );
+
+        loaded := new_tmp(c);
+
+        cwritef(c, "\t%s = load %s, ptr %s\n",
+            loaded,
+            ty_to_llvm_str(c, to),
+            tmp,
+        );
+
+        return loaded;
+
+    case:
+        panic("missing abi conversion");
+    }
 }
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     span := get_span(id).span
@@ -380,33 +368,26 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     case Transmute: {
         from_ty := expr_ty(e.target)
         to_ty := expr_ty(id)
+
         reduced, returns := reduce_expr_to_single_value(c, cg_expr(c, e.target))
         assert(returns)
 
-        op, result := ty_to_llvm_transmute_op(from_ty, to_ty)
-        switch result {
-        case .NoOp:
-            // identical bit layout, different label — no instruction, reuse the value
-            return {kind=.Value, v=reduced}
-
-        case .Instr:
+        if op, ok := ty_to_llvm_transmute_op(from_ty, to_ty); ok {
             t := new_tmp(c)
             cwritefln(c, "\t%s = %s %s %s to %s", t, op,
                 ty_to_llvm_str(c, from_ty), reduced, ty_to_llvm_str(c, to_ty))
             return {kind=.Value, v=t}
-
-        case .Memory:
-            // General fallback: reinterpret through memory. Correct for ANY pair —
-            // struct<->struct, struct<->array, scalar<->aggregate, whatever —
-            // because store/load don't care about type, only bytes.
-            slot := new_tmp(c)
-            cwritefln(c, "\t%s = alloca %s", slot, ty_to_llvm_str(c, from_ty))
-            cwritefln(c, "\tstore %s %s, ptr %s", ty_to_llvm_str(c, from_ty), reduced, slot)
-            t := new_tmp(c)
-            cwritefln(c, "\t%s = load %s, ptr %s", t, ty_to_llvm_str(c, to_ty), slot)
-            return {kind=.Value, v=t}
         }
-        panic("impl");
+
+        // General fallback: reinterpret through memory. Correct for ANY pair —
+        // struct<->struct, struct<->array, scalar<->aggregate, whatever —
+        // because store/load don't care about type, only bytes.
+        slot := new_tmp(c)
+        cwritefln(c, "\t%s = alloca %s", slot, ty_to_llvm_str(c, from_ty))
+        cwritefln(c, "\tstore %s %s, ptr %s", ty_to_llvm_str(c, from_ty), reduced, slot)
+        t := new_tmp(c)
+        cwritefln(c, "\t%s = load %s, ptr %s", t, ty_to_llvm_str(c, to_ty), slot)
+        return {kind=.Value, v=t}
     }
     case TakeSlice: {
         // compute length
@@ -417,7 +398,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         assert(eret);
 
         // reduce both to int
-        if get(expr_ty(e.start)).kind != .UInt64 {
+        if get(expr_ty(e.start)).kind != .Integer {
             op, ok := ty_to_llvm_cast_op(expr_ty(e.start), integer_type());
             if !ok {
                 // nothing?
@@ -427,7 +408,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
                 ty_to_llvm_str(c, expr_ty(e.start)), start, ty_to_llvm_str(c, integer_type()));
             start = t
         }
-        if get(expr_ty(e.end)).kind != .UInt64 {
+        if get(expr_ty(e.end)).kind != .Integer {
             op, ok := ty_to_llvm_cast_op(expr_ty(e.end), integer_type());
             if !ok {
                 // nothing?
@@ -523,19 +504,6 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     }
 
     case Number: {
-        if is_float(expr_ty(id)) {
-            #partial switch get_type(expr_ty(id)).kind {
-            case .Flt64: {
-                f, ok := strconv.parse_f64(e.text); assert(ok);
-                return {kind=.Number, v=llvm_double_const(f)};
-            }
-            case .Flt32: {
-                f, ok := strconv.parse_f32(e.text); assert(ok);
-                return {kind=.Number, v=llvm_float_const(f)};
-            }
-        case: panic("impl")
-            }
-        }
         return {kind=.Number, v=e.text};
     }
     case Binop: {
@@ -549,7 +517,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         operand_ty := expr_ty(e.left)
 
         op := ""
-        if is_integer_signed(operand_ty) {
+        if is_int_kind(get_type(operand_ty).kind) {
             switch e.kind {
             case .Addition:     op = "add"
             case .Subtraction:  op = "sub"
@@ -561,19 +529,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .GreaterEqual: op = "icmp sge"
             case: panic("impl")
             }
-        } else if is_integer_unsigned(operand_ty) {
-            switch e.kind {
-            case .Addition:     op = "add"
-            case .Subtraction:  op = "sub"
-            case .Multiply:     op = "mul"
-            case .Divide:       op = "udiv" // signed div; use udiv if you track unsigned types
-            case .Equal:        op = "icmp ueq"
-            case .NotEqual:     op = "icmp une"
-            case .LessEqual:    op = "icmp usle"
-            case .GreaterEqual: op = "icmp usge"
-            case: panic("impl")
-            }
-        } else if is_float(operand_ty) {
+        } else if get_type(operand_ty).kind == .Float {
             switch e.kind {
             case .Addition:     op = "fadd"
             case .Subtraction:  op = "fsub"
@@ -595,6 +551,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
                 gala_panic("can't order booleans")
             }
         } else if get_type(operand_ty).kind == .Void {
+            dump_context(get_ctx())
             gala_panic("can't binop voids")
         } else {
             debugln(get_type(operand_ty).kind)
@@ -717,10 +674,116 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             }
             return {kind=.Value, v=new_t, id=id};
         }
+        /* } else {
+            new_t := new_tmp(c);
+            cwritef(c, "\t%s = call %s ", new_t, ty_to_llvm_str(c, fn_ty.fn.ret_ty))
+            if fn_ty.fn.is_variadic {
+                cwrite(c, "(");
+                for a, i in fn_ty.fn.args {
+                    cwritef(c, "%s", ty_to_llvm_str(c, a.type));
+                    if i < len(fn_ty.fn.args) - 1 {
+                        cwritef(c, ", ")
+                    }
+                }
+                cwritef(c, ", ..."); // write variadic thingy
+                cwrite(c, ")");
+            }
+            cwritef(c, "%s", t);
+            cwrite(c, "(");
+            // pre adding C ABI
+            for a, i in args {
+                cwritef(c, "%s", a);
+                if i < len(args) - 1 {
+                    debugln(i, len(fn_ty.fn.args))
+                    cwritef(c, ", ")
+                }
+            }
+            cwriteln(c, ")");
+            return {kind=.Value, v=new_t, id=id};
+        } */
     }
     case: panic("impl");
     }
 }
+bit_width_of :: proc(k: TypeKind) -> int {
+    #partial switch k {
+    case .Bool:   return 1
+    case .Byte:   return 8
+    case .Rune:   return 32
+    case .Integer: return 64
+    case .Float:  return 64 // double
+    case: gala_panic("bit_width_of: not a scalar numeric kind")
+    }
+}
+
+is_signed :: proc(k: TypeKind) -> bool {
+    #partial switch k {
+    case .Integer: return true
+    case .Byte, .Rune, .Bool: return false
+    case: gala_panic("is_signed: not an integer-ish kind")
+    }
+}
+
+is_int_kind :: proc(k: TypeKind) -> bool {
+    return k == .Integer || k == .Byte || k == .Rune || k == .Bool || k == .C_Integer
+}
+
+// Returns the LLVM instruction mnemonic needed to convert `target` -> `to`.
+// Assumes can_cast_to(target_id, to_id) has already been checked and is true;
+// gala_panics on invalid pairs so a mismatch between the two tables is caught loudly.
+ty_to_llvm_cast_op :: proc(target_id, to_id: TypeId) -> (string, bool) {
+    target := get_type(target_id)
+    to := get_type(to_id)
+
+    if target.kind == to.kind {
+        // same kind: Pointer->Pointer (bitcast, or no-op with opaque ptrs),
+        // otherwise truly identical, no instruction needed
+        #partial switch target.kind {
+        case .Pointer: return "bitcast", true // safe even if often a no-op with opaque ptrs
+        case: return "", false // identity — caller should skip emitting anything
+        }
+    }
+
+    tk, ok := target.kind, to.kind
+
+    // --- int-family -> int-family (includes Bool/Byte/Rune/Integer combos) ---
+    if is_int_kind(tk) && is_int_kind(ok) {
+        from_w := bit_width_of(tk)
+        to_w   := bit_width_of(ok)
+        if from_w < to_w {
+            return is_signed(tk) ? "sext" : "zext", true
+        } else if from_w > to_w {
+            return "trunc", true
+        }
+        return "", false // same width, different kind label (e.g. Byte <-> Bool at same width) — bitcast-free no-op
+    }
+
+    // --- int-family -> Float ---
+    if is_int_kind(tk) && ok == .Float {
+        return is_signed(tk) ? "sitofp" : "uitofp", true
+    }
+
+    // --- Float -> int-family ---
+    if tk == .Float && is_int_kind(ok) {
+        return is_signed(ok) ? "fptosi" : "fptoui", true
+    }
+
+    // --- Float -> Float (different width, if you ever add f32) ---
+    if tk == .Float && ok == .Float {
+        return "", false // no change
+    }
+
+    // --- Pointer <-> Integer ---
+    if tk == .Pointer && is_int_kind(ok) {
+        return "ptrtoint", true
+    }
+    if is_int_kind(tk) && ok == .Pointer {
+        return "inttoptr", true
+    }
+
+    gala_panic("ty_to_llvm_cast_op: no cast op for this pair — check can_cast_to table")
+}
+
 // some expressions (fn calls with void returns) don't return so are invalid
 reduce_expr_to_single_value :: proc(c: ^CGCtx, e: CGExprRes) -> (string, bool) {
     switch e.kind {
@@ -1425,30 +1488,3 @@ cg_module :: proc(ast: ^AST) {
         append(&get_ctx().o_files, o_name)
     }
 }
-// eg src/some/folder_file -> src_some_folder_file
-files_prefixes: map[string]string
-path_to_file_prefix :: proc(c: ^CGCtx, path: string) -> string {
-    if v, ok := files_prefixes[path]; ok {
-        return v
-    }
-
-    assert(strings.has_suffix(path, ".gala"))
-
-    base := path[:len(path)-len(".gala")]
-
-    buf := make([]byte, len(base), allocator=c.arena.block_allocator)
-
-    for ch, i in base {
-        if ch == '/' {
-            buf[i] = '_'
-        } else {
-            buf[i] = byte(ch)
-        }
-    }
-
-    out := string(buf)
-    files_prefixes[path] = out
-    return out
-}
-
-

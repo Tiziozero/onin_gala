@@ -1,38 +1,5 @@
 package main
 
-TypeKind :: enum {
-    Invalid,
-    // basics
-    Integer,
-    C_Integer,
-    Float,
-    Rune,
-    Byte,
-    Bool,
-    // aggregate
-    Struct,
-    // pointer stuff
-    Slice,
-    Pointer,
-    Function,
-    // literals
-    UntypedInteger,
-    UntypedFloat,
-    String,
-    ZeroInit,
-    FixedSizeArray,
-    Any,
-    Void,
-}
-Type :: struct {
-    name: string,
-    kind: TypeKind,
-    ptr: TypeId,
-    fn: struct { args: []Arg, ret_ty: TypeId, is_variadic: bool, variadic_ty: TypeId, is_external: bool},
-    structure: struct {fields: []Field},
-    fixed_size_array: struct { type: TypeId, size: int },
-    slice: struct{type: TypeId},
-}
 Field :: struct {
     name: string,
     type: TypeId,
@@ -97,7 +64,9 @@ new_type :: proc(s: ^Scope, t: Type) -> TypeId {
     assert(len(t.name) > 0);
 
     // make sure it doesn't exist
-    assert(!name_exists(s, t.name));
+    if name_exists(s, t.name) {
+        gala_panicf("Name \"%s\" already declared.", t.name);
+    }
 
     append(&get_ctx.types, t);
     id := TypeId(len(get_ctx.types)-1);  // allocate type
@@ -240,51 +209,9 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     case: panic("impl");
     }
 }
-type_cmp  :: proc(l, r: Type, strict := false) -> bool {
-    if l.kind != r.kind {
-        if (l.kind == .Any || r.kind == .Any) && !strict {
-            return true // sure, that's the point
-        }
-        return false
-    }
-
-    switch l.kind {
-    case .String: return true;
-    case .Function:
-        if l.fn.ret_ty != r.fn.ret_ty { return false }
-        if len(l.fn.args) != len(r.fn.args) { return false }
-        for i in 0..<len(l.fn.args) {
-            if l.fn.args[i].type != r.fn.args[i].type {
-                debugln("fucntions", l.fn, r.fn, "dont match");
-                return false
-            }
-        }
-        debugln("fucntions", l.fn, r.fn, "match");
-        return true
-    case .Pointer: return type_cmp(get(l.ptr)^, get(r.ptr)^)
-    case .Struct:
-        if len(l.structure.fields) != len(r.structure.fields) { return false }
-        for i in 0..<len(l.structure.fields) {
-            lf := l.structure.fields[i]
-            rf := r.structure.fields[i]
-            if lf.name != rf.name { return false }
-            if lf.type != rf.type { return false }
-        }
-        return true
-    case .Slice: return l.slice.type == r.slice.type
-    case .FixedSizeArray:
-        return l.fixed_size_array.size == r.fixed_size_array.size &&
-        l.fixed_size_array.type == r.fixed_size_array.type
-    case .C_Integer: return true;
-    case .Integer, .Float, .Rune, .Byte, .Bool, .Void,
-         .UntypedInteger, .UntypedFloat, .ZeroInit: return true
-    case .Invalid: return false
-    case .Any: return true
-    }
-    return false
-}
 // only intern function and pointers
 intern_type :: proc(t: Type) -> TypeId {
+    debugln(t.kind);
     assert(t.kind == .Pointer || t.kind == .Function || 
             t.kind == .UntypedInteger || t.kind == .UntypedFloat || 
             t.kind == .FixedSizeArray || t.kind == .ZeroInit ||
@@ -366,12 +293,12 @@ get_untyped_default :: proc(t: TypeId) -> TypeId {
     #partial switch get_type(t).kind {
     case .UntypedInteger: {
         debugln("returning int for untyped int");
-        v, ok := get_ctx().base_mod.types["int"]; assert(ok);
+        v, ok := get_ctx().base_mod.types["i64"]; assert(ok);
         return v
     }
     case .UntypedFloat: {
         debugln("returning float for untyped float");
-        v, ok := get_ctx().base_mod.types["flt"]; assert(ok);
+        v, ok := get_ctx().base_mod.types["f64"]; assert(ok);
         return v
     }
 
@@ -437,7 +364,7 @@ void_type :: proc() -> TypeId {
     return v;
 }
 integer_type :: proc() -> TypeId {
-    v, ok := get_ctx().base_mod.types["int"];
+    v, ok := get_ctx().base_mod.types["i64"];
     assert(ok);
     return v;
 }
@@ -628,7 +555,7 @@ free_module_scope :: proc(s: ^ModuleScope) {
 
     s^ = {};
 }
-resolve_module_ast :: proc(ast: ^AST) {
+resolve_module_ast :: proc(ast: ^AST) -> ModuleScope {
     global_scope := new_module_scope(&get_ctx().base_mod)
 
     for id in ast.items {
@@ -638,5 +565,7 @@ resolve_module_ast :: proc(ast: ^AST) {
     for id in ast.items {
         resolve_item(&global_scope, id)
     }
-    free_module_scope(&global_scope)
+    return global_scope;
+    // no need to  free, allocated via ctx allocator
+    // free_module_scope(&global_scope)
 }

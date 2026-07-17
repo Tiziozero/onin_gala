@@ -54,6 +54,7 @@ Context :: struct {
     },
     files:      map[string]string,
     o_files:    [dynamic]string,
+    modules:    map[string]struct{declarations: ModuleScope, ast: AST},
 }
 
 FileLine :: struct {

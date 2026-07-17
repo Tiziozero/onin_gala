@@ -13,73 +13,45 @@ expr_ty :: proc(id: ExprId) -> TypeId {
     assert(ok);
     return t
 }
-is_numeric :: proc(t: TypeId) -> bool {
-    #partial switch get_type(t).kind {
-    case .UntypedFloat: return true
-    case .UntypedInteger: return true
-    case .Float: return true
-    case .Integer: return true
-    case .C_Integer: return true
-    case .Byte: return true
-    case: return false
-    }
-}
-is_numeric_untyped :: proc(t: TypeId) -> bool {
-    #partial switch get_type(t).kind {
-    case .UntypedFloat: return true
-    case .UntypedInteger: return true
-    case: return false
-    }
-}
-is_untyped :: proc(t: TypeId) -> bool {
-    #partial switch get_type(t).kind {
-    case .UntypedFloat: return true
-    case .UntypedInteger: return true
-    case: return false
-    }
-}
 compare_and_reduce_numerics :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     if l == r do return l, true, ""
+
     lk := get_type(l).kind
     rk := get_type(r).kind
-    l_untyped := lk == .UntypedInteger || lk == .UntypedFloat
-    r_untyped := rk == .UntypedInteger || rk == .UntypedFloat
+
+    l_untyped := is_numeric_untyped(l)
+    r_untyped := is_numeric_untyped(r)
 
     // Both untyped — UntypedFloat dominates
     if l_untyped && r_untyped {
         if lk == .UntypedFloat || rk == .UntypedFloat {
             return intern_type(Type{kind = .UntypedFloat}), true, ""
         }
-        return l, true, "" // both UntypedInteger, intern guarantees same ID, already caught above
+
+        // both UntypedInteger
+        return intern_type(Type{kind = .UntypedInteger}), true, ""
     }
 
-    // One untyped — typed wins only if compatible
+    // Left untyped, right typed
     if l_untyped {
-        if lk == .UntypedFloat && rk == .Integer {
+        if lk == .UntypedFloat && is_integer(r) {
             return TypeId(0), false, "type mismatch: float into integer"
         }
-        if lk == .UntypedFloat && rk == .C_Integer {
-            return TypeId(0), false, "type mismatch: float into integer"
-        }
-        if lk == .UntypedInteger && rk == .Float {
-            return TypeId(0), false, "type mismatch: integer into float" // or allow? up to you
-        }
+
+        // allow untyped int to become any typed numeric
         return r, true, ""
     }
+
+    // Right untyped, left typed
     if r_untyped {
-        if rk == .UntypedFloat && lk == .Integer {
+        if rk == .UntypedFloat && is_integer(l) {
             return TypeId(0), false, "type mismatch: float into integer"
         }
-        if rk == .UntypedFloat && lk == .C_Integer {
-            return TypeId(0), false, "type mismatch: float into integer"
-        }
-        if rk == .UntypedInteger && lk == .Float {
-            return TypeId(0), false, "type mismatch: integer into float"
-        }
+
         return l, true, ""
     }
 
-    // Both typed, different IDs — mismatch
+    // Both typed, different IDs
     return TypeId(0), false, "type mismatch (different types)"
 }
 compare_and_reduce_types :: proc(l, r: TypeId) -> (TypeId, bool, string) {
@@ -92,82 +64,6 @@ compare_and_reduce_types :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     debugln((l), (r));
     //dump_context(get_ctx());
     return 0, false, "types don't match"
-}
-can_binop :: proc(ty: TypeId) -> bool {
-    if is_numeric(ty) do return true
-        return false
-}
-type_size :: proc(t: TypeId) -> int {
-    ty := get_type(t)
-    #partial switch ty.kind {
-    case .C_Integer, .Integer, .Float, .Pointer: return 8
-    case .Rune: return 4
-    case .Byte, .Bool: return 1
-    case .FixedSizeArray:
-        return ty.fixed_size_array.size * type_size(ty.fixed_size_array.type)
-    case .Slice:
-        return 16 // { ptr, i64 } per ty_to_llvm_str
-    case .Struct:
-        // naive sum — see caveat below
-        total := 0
-        for f in ty.structure.fields {
-            total += type_size(f.type)
-        }
-        return total
-    }
-    panic("impl")
-}
-can_transmute_to :: proc(target_id, to_id: TypeId) -> bool {
-    if type_size(target_id) != type_size(to_id) {
-        return false
-    }
-    return true
-}
-can_cast_to :: proc(target_id, to_id: TypeId) -> bool {
-    target := get_type(target_id);
-    to := get_type(to_id);
-
-    if is_int_kind(target.kind) {
-        #partial switch to.kind {
-        case .C_Integer, .Integer, .Float, .Byte, .Bool, .Rune, .Pointer: return true
-        }
-        return false
-    }
-
-    #partial switch target.kind {
-    case .Float: {
-        #partial switch to.kind {
-        case .C_Integer, .Integer, .Float, .Byte, .Rune: return true;
-        }
-        return false
-    }
-    case .Pointer: {
-        #partial switch to.kind {
-        case .Pointer, .C_Integer, .Integer: return true
-        }
-        return false
-    }
-    }
-
-    // Struct, Slice, FixedSizeArray, Function, Void, ZeroInit, Untyped*, Invalid:
-    // no single-instruction cast exists for these. Array/slice->pointer decay,
-    // struct field extraction, etc. happen elsewhere, not here.
-    debugln(target)
-    debugln(to)
-    panic("impl")
-}
-is_array_type :: proc(t: TypeId) -> bool {
-    #partial switch get_type(t).kind {
-    case .FixedSizeArray: return true
-    case .Slice, .String: return true
-    }
-    return false
-}
-can_index :: proc(t: TypeId) -> bool {
-    #partial switch get_type(t).kind {
-    case .C_Integer, .Integer: return true
-    }
-    return false
 }
 get_array_base_type :: proc(t: TypeId) -> (TypeId, bool) {
     ty := get_type(t)
@@ -190,29 +86,22 @@ can_reference :: proc(id: ExprId) -> bool {
     }
     return false;
 }
-can_compare :: proc(ty: Type) -> bool {
-    #partial switch ty.kind {
-    case .C_Integer, .Integer:
-        return true;
+can_equal :: proc(id: TypeId) -> bool {
+    t := get_type(id)
 
-    case .Float:
-        return true;
+    if is_integer(id)   do return true
+    if is_float(id)     do return true
+    if is_byte_like(id) do return true
 
-    case .Rune:
-        return true;
-
-    case .Byte:
-        return true;
-
-    case .Bool:
-        return true; // only for == and != ideally
-
-    case .Pointer:
-        return true; // only equality ideally
-
-    case:
-        return false;
+    #partial switch t.kind {
+    case .Bool, .Pointer, .String:
+        return true
     }
+
+    return false
+}
+can_order :: proc(id: TypeId) -> bool {
+    return is_integer(id) || is_float(id) || is_byte_like(id)
 }
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     switch e in get_expr(id) {
@@ -283,10 +172,10 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             }
         }
 
-        if !can_index(s_ty) {
+        if !can_be_index(s_ty) {
             gala_panic("can't use type:", get_type(s_ty), "to index an array")
         }
-        if !can_index(e_ty) {
+        if !is_valid_index_type(e_ty) {
             gala_panic("can't use type:", get_type(e_ty), "to index an array")
         }
 
@@ -303,7 +192,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         tc_expr(tc, e.target)
         target_ty := expr_ty(e.target)
 
-        if !is_array_type(target_ty) {
+        if !can_be_index(target_ty) {
             gala_panic("can't index type:", tts(target_ty))
         }
 
@@ -319,7 +208,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             }
         }
 
-        if !can_index(i_ty) {
+        if !is_valid_index_type(i_ty) {
             gala_panic("can't use type:", get_type(i_ty), "to index an array")
         }
 
@@ -458,20 +347,32 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
             get_ctx().expr_types[id] = ty;
         }
-
-        case .Equal, .NotEqual, .LessEqual, .GreaterEqual: {
+        case .Equal: {
             // force operands to resolve first
             propagate_type(ty, e.left);
             propagate_type(ty, e.right);
 
-            if !can_compare(get_type(ty)^) {
+            if !can_equal(ty) {
                 highlight_lines(get_span(id).span);
                 gala_panic("can't compare these two expressions");
             }
 
-            
-            bool_ty := ty_from_name("bool");
 
+            bool_ty := ty_from_name("bool");
+            get_ctx().expr_types[id] = bool_ty;
+        }
+        case .NotEqual, .LessEqual, .GreaterEqual: {
+            // force operands to resolve first
+            propagate_type(ty, e.left);
+            propagate_type(ty, e.right);
+
+            if !can_order(ty) {
+                highlight_lines(get_span(id).span);
+                gala_panic("can't compare these two expressions");
+            }
+
+
+            bool_ty := ty_from_name("bool");
             get_ctx().expr_types[id] = bool_ty;
         }
         }

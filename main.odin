@@ -62,9 +62,10 @@ handle_file :: proc(ctx: ^Context, file_name: string) {
     defer delete(tokens)
 
     ast := parse_tokens(file_name, tokens[:])
-    resolve_module_ast(&ast)
+    decs := resolve_module_ast(&ast)
     typecheck_module(&ast)
     cg_module(&ast)
+    ctx.modules[file_name] = {decs, ast};
 }
 destroy_context :: proc(ctx: ^Context) {
     virtual.arena_destroy(&ctx.arena)
@@ -74,9 +75,21 @@ main :: proc() { // odins context is passed down, not up, or some shi
     ctx := init_context()
     context.user_ptr = ctx   // <-- set it here, so it's live for the rest of main's scope
 
-    new_type(&ctx.base_mod, Type{name="int", kind=.Integer});
-    new_type(&ctx.base_mod, Type{name="c_int", kind=.C_Integer});
-    new_type(&ctx.base_mod, Type{name="flt", kind=.Float});
+    // integer types
+    new_type(&ctx.base_mod, Type{name="i8", kind=.Int_8});
+    new_type(&ctx.base_mod, Type{name="i16", kind=.Int16});
+    new_type(&ctx.base_mod, Type{name="i32", kind=.Int32});
+    new_type(&ctx.base_mod, Type{name="i64", kind=.Int64});
+
+    new_type(&ctx.base_mod, Type{name="u8", kind=.UInt_8});
+    new_type(&ctx.base_mod, Type{name="u16", kind=.UInt16});
+    new_type(&ctx.base_mod, Type{name="u32", kind=.UInt32});
+    new_type(&ctx.base_mod, Type{name="u64", kind=.UInt64});
+
+    new_type(&ctx.base_mod, Type{name="f8", kind=.Flt_8});
+    new_type(&ctx.base_mod, Type{name="f16", kind=.Flt16});
+    new_type(&ctx.base_mod, Type{name="f32", kind=.Flt32});
+    new_type(&ctx.base_mod, Type{name="f64", kind=.Flt64});
     new_type(&ctx.base_mod, Type{name="void", kind=.Void});
     new_type(&ctx.base_mod, Type{name="any", kind=.Any});
     new_type(&ctx.base_mod, Type{name="bool", kind=.Bool});

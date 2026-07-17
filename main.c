@@ -1,7 +1,13 @@
-#include "raylib.h"
+#include <stddef.h>
+typedef struct Apple Apple;
+struct Fruit {
+    float x;
+    float y;
+    struct { size_t a; } a;
+};
+struct Apple {
+    size_t s;
+};
 
-void test() {
-    ClearBackground((Color){0,255,0,255});
-}
 int main(void) {
 }
