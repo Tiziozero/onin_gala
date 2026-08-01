@@ -45,10 +45,43 @@ fn print_flt(s: string, n: f32) {
     free(cast(rawptr)data);
     return;
 }
+fn print_byte(s: string, n: byte) {
+    data := to_cstr(s);
+    printf(data, n);
+    free(cast(rawptr)data);
+    return;
+}
 struct v2 {
     x: f32, y: f32
 }
+
 extern fn Vector2Add(a: v2, b: v2): v2;
+
+
+fn dump_i32_2(n: i32): [4]byte {
+    y := n;
+    buf := [4]byte{};
+    memcpy(cast(rawptr)&buf, cast(rawptr)&y, 4);
+    return buf;
+}
+fn dump_i32(n: i32): [4]byte {
+    buf := [4]byte{};
+    y := n;
+    s1 :byte = (cast(^byte)&y)^;
+    a := sizeof(byte);
+    print_byte("n byte 0: %.2x\n", s1);
+    s2 := (cast(^byte)(cast(i64)(&y) + 1))^;
+    print_byte("n byte 1: %.2x\n", s2);
+    s3 := (cast(^byte)(cast(i64)(&y) + 2))^;
+    print_byte("n byte 2: %.2x\n", s3);
+    s4 := (cast(^byte)(cast(i64)(&y) + 3))^;
+    print_byte("n byte 3: %.2x\n", s4);
+    buf[0] = s1;
+    buf[1] = s2;
+    buf[2] = s3;
+    buf[3] = s4;
+    return buf;
+}
 fn main(): i64 {
     s := "Hello, World! %d\n";
     data := to_cstr(s);
@@ -76,11 +109,23 @@ fn main(): i64 {
 
     a := v2{x=1.2, y=2.2};
     b := v2{x=1.0, y=2.0};
-    x := Vector2Add(a, b);
-    print_flt("\tx: %f\n",  x.x);
-    print_flt("\ty: %f\n",  x.y);
-    
+    v := Vector2Add(a, b);
+    print_flt("\tx: %f\n",  v.x);
+    print_flt("\ty: %f\n",  v.y);
+
+    x : i32 = transmute(i32)v.x;
+    buf := dump_i32_2(x);
+    print_byte("xbuf 0: %.2x\n", buf[0]);
+    print_byte("xbuf 1: %.2x\n", buf[1]);
+    print_byte("xbuf 2: %.2x\n", buf[2]);
+    print_byte("xbuf 3: %.2x\n", buf[3]);
+    y : i32 = transmute(i32)v.y;
+    buf = dump_i32_2(y);
+    print_byte("ybuf 0: %.2y\n", buf[0]);
+    print_byte("ybuf 1: %.2y\n", buf[1]);
+    print_byte("ybuf 2: %.2y\n", buf[2]);
+    print_byte("ybuf 3: %.2y\n", buf[3]);
     free(cast(rawptr)data);
     free(cast(rawptr)name);
-    return len(s);
+    return cast(i64)buf[2];
 }

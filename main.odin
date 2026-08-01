@@ -163,7 +163,7 @@ main :: proc() { // odins context is passed down, not up, or some shi
         a.o \
         /usr/lib/crtn.o
         -o name*/
-        command := make([dynamic]string, allocator=get_ctx().allocator);
+        /*command := make([dynamic]string, allocator=get_ctx().allocator);
         append(&command, "ld");
         append(&command, "-dynamic-linker");
         append(&command, "/lib64/ld-linux-x86-64.so.2");
@@ -177,6 +177,40 @@ main :: proc() { // odins context is passed down, not up, or some shi
             append(&command, f)
         }
         append(&command, "/usr/lib/crtn.o")
+        append(&command, "-o")
+        append(&command, get_ctx().program_name)
+        */
+        command := make([dynamic]string, allocator=get_ctx().allocator)
+        append(&command, "ld")
+        append(&command, "-dynamic-linker")
+        append(&command, "/lib64/ld-linux-x86-64.so.2")
+        if os.exists("/usr/lib/crt1.o") {
+            // Arch and similar
+            append(&command, "/usr/lib/crt1.o")
+            append(&command, "/usr/lib/crti.o")
+            append(&command, "-L/usr/lib")
+        } else {
+            // Ubuntu/Debian
+            append(&command, "/usr/lib/x86_64-linux-gnu/crt1.o")
+            append(&command, "/usr/lib/x86_64-linux-gnu/crti.o")
+            append(&command, "-L/usr/lib/x86_64-linux-gnu")
+        }
+
+        append(&command, "-L./lib")
+        append(&command, "-lraylib")
+        append(&command, "-lc")
+        append(&command, "-lm")
+
+        for f in get_ctx().o_files {
+            append(&command, f)
+        }
+
+        if os.exists("/usr/lib/crtn.o") {
+            append(&command, "/usr/lib/crtn.o")
+        } else {
+            append(&command, "/usr/lib/x86_64-linux-gnu/crtn.o")
+        }
+
         append(&command, "-o")
         append(&command, get_ctx().program_name)
 

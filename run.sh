@@ -1,8 +1,5 @@
 #!/bin/bash
 set -x
 
-odin run .
-clang -o a.out a.ll
-./a.out
-echo $?
-echo "end"
+odin build . -out=galac && ./galac main.gala -o main
+export LD_LIBRARY_PATH=./ && ./main

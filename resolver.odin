@@ -49,7 +49,9 @@ new_object :: proc(s: ^Scope, o: Object) -> ObjId {
     assert(len(o.name) > 0);
 
     // make sure they're not already declared
-    assert(!name_exists(s, o.name));
+    if name_exists(s, o.name) {
+        gala_panicf("object %s already exists.", get(s.objects[o.name]).name);
+    }
 
     append(&get_ctx.objs, o);
     id := ObjId(len(get_ctx.objs)-1);

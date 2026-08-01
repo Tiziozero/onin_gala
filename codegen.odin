@@ -609,8 +609,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         // v := cgscope_get(&c.scope, e.name);
         v := cgscope_get(&c.scope, e.name);
         switch v.kind {
-        case .Variable: fallthrough
-        case .Symbol: {
+        case .Variable, .Symbol: {
             t := new_tmp(c)
             cwritefln(c, "\t%s = load %s, ptr %s",
                 t, ty_to_llvm_str(c, expr_ty(id)), v.name);
@@ -1133,7 +1132,13 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
         // return t;
         return ptr_val;
     }
-    case: gala_panic("not an lvalue")
+    case Cast: {
+            v, returns := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(returns);
+            return v;
+    }
+    case:
+        debugln(get(id))
+        gala_panic("not an lvalue")
     }
 }
 cg_item :: proc(c: ^CGCtx, id: ItemId) {
@@ -1257,6 +1262,7 @@ check_rets :: proc(b: Block) -> bool {
 }
 check_fn :: proc(f: FnDec) -> bool {
     if !check_rets(f.block) {
+        highlight_lines(f.span);
         gala_panic("function must return at all branches")
     }
     return true
