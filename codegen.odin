@@ -1132,13 +1132,13 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
         // return t;
         return ptr_val;
     }
-    case Cast: {
+    case Cast, Transmute: {
             v, returns := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(returns);
             return v;
     }
     case:
         debugln(get(id))
-        gala_panic("not an lvalue")
+        panic("not an lvalue")
     }
 }
 cg_item :: proc(c: ^CGCtx, id: ItemId) {

@@ -14,8 +14,8 @@ extern fn WindowShouldClose(): bool;
 extern fn BeginDrawing(): void;
 // RLAPI void EndDrawing(void);                                      // End canvas drawing and swap buffers (double buffering)
 extern fn EndDrawing(): void;
-// RLAPI void ClearBackground(Color color);                          // Set background color (framebuffer clear color)
-extern fn ClearBackground(color: Color): void;
+// RLAPI void ClearBackground(Color colour);                          // Set background colour (framebuffer clear colour)
+extern fn ClearBackground(colour: Color): void;
 
 // RLAPI Color GetColor(unsigned i64 hexValue);                                // Get Color structure from hexadecimal value
 extern fn GetColor(v: i32): Color;
@@ -41,7 +41,7 @@ fn print_int(s: string, n: i64) {
 }
 fn print_flt(s: string, n: f32) {
     data := to_cstr(s);
-    printf(data, n);
+    printf(data, cast(f64)n);
     free(cast(rawptr)data);
     return;
 }
@@ -110,8 +110,8 @@ fn main(): i64 {
     a := v2{x=1.2, y=2.2};
     b := v2{x=1.0, y=2.0};
     v := Vector2Add(a, b);
-    print_flt("\tx: %f\n",  cast(64)v.x);
-    print_flt("\ty: %f\n",  cast(64)v.y);
+    print_flt("\tx: %f\n",  v.x);
+    print_flt("\ty: %f\n",  v.y);
 
     x : i32 = transmute(i32)v.x;
     buf := dump_i32_2(x);
@@ -127,5 +127,15 @@ fn main(): i64 {
     print_byte("ybuf 3: %.2x\n", buf[3]);
     free(cast(rawptr)data);
     free(cast(rawptr)name);
+
+
+    colour := Color{r=225, g=123, b=0, a=100};
+    z : i32 = (transmute(^i32)&colour)^;
+    buf = dump_i32_2(z);
+    print_byte("zbuf 0: %dx\n", buf[0]);
+    print_byte("zbuf 1: %dx\n", buf[1]);
+    print_byte("zbuf 2: %dx\n", buf[2]);
+    print_byte("zbuf 3: %dx\n", buf[3]);
+
     return cast(i64)buf[2];
 }

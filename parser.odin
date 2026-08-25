@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:strconv"
 
 BinopKind :: enum {
@@ -732,7 +733,9 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
         t := consume_token(p); // "any"
         return AnySpecifier{span=t.span};
     }
-    panic("impl");
+    debugln(current_token(p));
+    highlight_lines(current_token(p).span)
+    gala_panic("Invalid token in type specifier.");
 }
 
 parse_fn_signature :: proc(p: ^Parser) -> FnDec {

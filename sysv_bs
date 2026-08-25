@@ -1,0 +1,7 @@
+first apply allignment to largets member of struct
+then divide into 8 byte chunks. (so { i8 i32 i8 } becomes { i64, i8 })
+floating point values go into SSE registers, so they become <2 x float> for  { f32, f32 }
+
+floats also get aligned to largest member and divided into 8byte chunks
+"If the size of an object is larger than four eightbytes, or it contains unaligned fields, it has class MEMORY"
+"f the size of the aggregate exceeds two eightbytes and the first eight-byte isn’t SSE or any other eightbyte isn’t SSEUP, the whole argument is passed in memory."
