@@ -110,8 +110,8 @@ fn main(): i64 {
     a := v2{x=1.2, y=2.2};
     b := v2{x=1.0, y=2.0};
     v := Vector2Add(a, b);
-    print_flt("\tx: %f\n",  v.x);
-    print_flt("\ty: %f\n",  v.y);
+    print_flt("\tx: %f\n",  cast(64)v.x);
+    print_flt("\ty: %f\n",  cast(64)v.y);
 
     x : i32 = transmute(i32)v.x;
     buf := dump_i32_2(x);
@@ -121,10 +121,10 @@ fn main(): i64 {
     print_byte("xbuf 3: %.2x\n", buf[3]);
     y : i32 = transmute(i32)v.y;
     buf = dump_i32_2(y);
-    print_byte("ybuf 0: %.2y\n", buf[0]);
-    print_byte("ybuf 1: %.2y\n", buf[1]);
-    print_byte("ybuf 2: %.2y\n", buf[2]);
-    print_byte("ybuf 3: %.2y\n", buf[3]);
+    print_byte("ybuf 0: %.2x\n", buf[0]);
+    print_byte("ybuf 1: %.2x\n", buf[1]);
+    print_byte("ybuf 2: %.2x\n", buf[2]);
+    print_byte("ybuf 3: %.2x\n", buf[3]);
     free(cast(rawptr)data);
     free(cast(rawptr)name);
     return cast(i64)buf[2];
