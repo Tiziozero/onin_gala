@@ -1,4 +1,4 @@
-// ask claude to fix file.
+// codegen.odin
 package main
 
 import "core:os"
@@ -22,6 +22,7 @@ CGCtx :: struct {
     scope: CGScope,
     llvm_ty: map[TypeId]string,
     strings: map[string]StringGlobalResult,
+    cur_fn_ret: AbiRetLowering, // ABI lowering of the return value of the function currently being emitted
 }
 CGObjectKind :: enum {
     Invalid,
@@ -210,6 +211,10 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     }
     case .Int32: {
         c.llvm_ty[id]="i32";
+        return c.llvm_ty[id]
+    }
+    case .Int16: {
+        c.llvm_ty[id]="i16";
         return c.llvm_ty[id]
     }
     case .Void: {
@@ -625,94 +630,125 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         panic("impl");
     }
     case FnCall: {
+        // Every call — internal Gala function or extern C function alike —
+        // goes through cg_abi_lower_signature. See abi_sysv.odin.
         t := cg_fn_call_target(c, e.target);
-        fn_ty := get_type(expr_ty(e.target));
-        //gen args
-        args:=make([dynamic]string, allocator=get_ctx().allocator)
-        // if it's not external function just do the normal thing
-        if !fn_ty.fn.is_external {
-            for a, i in e.args {
-                r, returns := reduce_expr_to_single_value(c, cg_expr(c, a));
-                assert(returns);
-                v := aprintf(c, "%s %s", ty_to_llvm_str(c, expr_ty(a)), r);
-                   append(&args, v);
+        fn_type_id := expr_ty(e.target)
+        fn_ty := get_type(fn_type_id);
+        sig := cg_abi_lower_signature(c, fn_type_id, .SysV)
+
+        call_args := make([dynamic]string, allocator=get_ctx().allocator)
+
+        // sret slot, if the return value is passed indirectly, comes first
+        sret_slot := ""
+        if sig.ret.mode == .Indirect {
+            sret_slot = new_tmp(c)
+            cwritefln(c, "\t%s = alloca %s", sret_slot, ty_to_llvm_str(c, sig.ret.orig_type))
+            append(&call_args, aprintf(c, "ptr sret(%s) align %d %s",
+                ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align, sret_slot))
+        }
+
+        for a, i in e.args {
+            r, returns := reduce_expr_to_single_value(c, cg_expr(c, a));
+            assert(returns);
+
+            if i >= len(sig.args) {
+                // trailing variadic argument beyond the declared fixed
+                // params — no ABI table entry for it, pass as-is.
+                append(&call_args, aprintf(c, "%s %s", ty_to_llvm_str(c, expr_ty(a)), r))
+                continue
             }
-        } else {
-            for a, i in e.args {
-                r, returns := reduce_expr_to_single_value(c, cg_expr(c, a));
-                assert(returns);
-                arg_ty := expr_ty(a);
-                if fn_ty.fn.is_external {
-                    abi := lower_c_abi_type(arg_ty);
-                    if abi.needs_conversion {
-                        r = cg_abi_convert(c, r, arg_ty, abi.type);
-                    }
-                    arg_ty = abi.type;
+
+            al := sig.args[i]
+            switch al.mode {
+            case .ByVal: {
+                arg_ty_str := ty_to_llvm_str(c, al.orig_type)
+                slot := new_tmp(c)
+                cwritefln(c, "\t%s = alloca %s", slot, arg_ty_str)
+                cwritefln(c, "\tstore %s %s, ptr %s", arg_ty_str, r, slot)
+                append(&call_args, aprintf(c, "ptr byval(%s) align %d %s", arg_ty_str, al.byval_align, slot))
+            }
+            case .Direct: {
+                if al.needs_coercion {
+                    arg_ty_str := ty_to_llvm_str(c, al.orig_type)
+                    slot := new_tmp(c)
+                    cwritefln(c, "\t%s = alloca %s", slot, arg_ty_str)
+                    cwritefln(c, "\tstore %s %s, ptr %s", arg_ty_str, r, slot)
+                    coerced := new_tmp(c)
+                    cwritefln(c, "\t%s = load %s, ptr %s", coerced, al.coerced_type, slot)
+                    append(&call_args, aprintf(c, "%s %s", al.coerced_type, coerced))
+                } else {
+                    append(&call_args, aprintf(c, "%s %s", al.coerced_type, r))
                 }
-                v := aprintf(c, "%s %s", ty_to_llvm_str(c, arg_ty), r);
-                append(&args, v);
+            }
             }
         }
 
-        if get(fn_ty.fn.ret_ty).kind == .Void {
-            cwritef(c, "\tcall %s ", ty_to_llvm_str(c, fn_ty.fn.ret_ty))
-            if fn_ty.fn.is_variadic {
-                cwrite(c, "(");
-                for a, i in fn_ty.fn.args {
-                    cwritef(c, "%s", ty_to_llvm_str(c, a.type));
-                    if i < len(fn_ty.fn.args) - 1 {
-                        cwritef(c, ", ")
-                    }
-                }
-                cwritef(c, ", ..."); // write variadic thingy
-                cwrite(c, ")");
+        // For variadic calls, LLVM needs the full parameter TYPE list
+        // (fixed args, ABI-lowered) between the callee's return type and
+        // the "..." before the actual argument list.
+        variadic_prefix := ""
+        if fn_ty.fn.is_variadic {
+            vb: strings.Builder
+            strings.builder_init(&vb, get_ctx().allocator)
+            strings.write_string(&vb, "(")
+            if sig.ret.mode == .Indirect {
+                strings.write_string(&vb, aprintf(c, "ptr sret(%s), ", ty_to_llvm_str(c, sig.ret.orig_type)))
             }
-            cwritef(c, "%s", t);
-            cwrite(c, "(");
-            for a, i in args {
-                cwritef(c, "%s", a);
-                if i < len(args) - 1 {
-                    debugln(i, len(fn_ty.fn.args))
+            for al in sig.args {
+                if al.mode == .ByVal {
+                    strings.write_string(&vb, aprintf(c, "ptr byval(%s) align %d",
+                        ty_to_llvm_str(c, al.orig_type), al.byval_align))
+                } else {
+                    strings.write_string(&vb, al.coerced_type)
+                }
+                strings.write_string(&vb, ", ")
+            }
+            strings.write_string(&vb, "...)")
+            variadic_prefix = strings.to_string(vb)
+        }
+
+        write_call_args := proc(c: ^CGCtx, call_args: [dynamic]string) {
+            cwrite(c, "(")
+            for a, i in call_args {
+                cwritef(c, "%s", a)
+                if i < len(call_args) - 1 {
                     cwritef(c, ", ")
                 }
             }
-            cwriteln(c, ")");
+            cwriteln(c, ")")
+        }
+
+        if sig.ret.mode == .Indirect {
+            cwritef(c, "\tcall void ")
+            if fn_ty.fn.is_variadic { cwritef(c, "%s", variadic_prefix) }
+            cwritef(c, "%s", t)
+            write_call_args(c, call_args)
+
+            loaded := new_tmp(c)
+            cwritefln(c, "\t%s = load %s, ptr %s", loaded, ty_to_llvm_str(c, sig.ret.orig_type), sret_slot)
+            return {kind=.Value, v=loaded, id=id}
+        } else if sig.ret.coerced_type == "void" {
+            cwritef(c, "\tcall void ")
+            if fn_ty.fn.is_variadic { cwritef(c, "%s", variadic_prefix) }
+            cwritef(c, "%s", t)
+            write_call_args(c, call_args)
             return {kind=.None, id=id}
         } else {
-            ret_ty := fn_ty.fn.ret_ty
-            call_ret_ty := ret_ty
-            abi_info: CAbiInfo
-            if fn_ty.fn.is_external {
-                abi_info = lower_c_abi_type(ret_ty)
-                call_ret_ty = abi_info.type
-            }
+            new_t := new_tmp(c)
+            cwritef(c, "\t%s = call %s ", new_t, sig.ret.coerced_type)
+            if fn_ty.fn.is_variadic { cwritef(c, "%s", variadic_prefix) }
+            cwritef(c, "%s", t)
+            write_call_args(c, call_args)
 
-            new_t := new_tmp(c);
-            cwritef(c, "\t%s = call %s ", new_t, ty_to_llvm_str(c, call_ret_ty))
-            if fn_ty.fn.is_variadic {
-                cwrite(c, "(");
-                for a, i in fn_ty.fn.args {
-                    cwritef(c, "%s", ty_to_llvm_str(c, a.type));
-                    if i < len(fn_ty.fn.args) - 1 {
-                        cwritef(c, ", ")
-                    }
-                }
-                cwritef(c, ", ...");
-                cwrite(c, ")");
-            }
-            cwritef(c, "%s", t);
-            cwrite(c, "(");
-            for a, i in args {
-                cwritef(c, "%s", a);
-                if i < len(args) - 1 {
-                    cwritef(c, ", ")
-                }
-            }
-            cwriteln(c, ")");
-
-            if fn_ty.fn.is_external && abi_info.needs_conversion {
-                unpacked := cg_abi_unconvert(c, new_t, call_ret_ty, ret_ty)
-                return {kind=.Value, v=unpacked, id=id};
+            if sig.ret.needs_coercion {
+                real_ty_str := ty_to_llvm_str(c, sig.ret.orig_type)
+                slot := new_tmp(c)
+                cwritefln(c, "\t%s = alloca %s", slot, real_ty_str)
+                cwritefln(c, "\tstore %s %s, ptr %s", sig.ret.coerced_type, new_t, slot)
+                loaded := new_tmp(c)
+                cwritefln(c, "\t%s = load %s, ptr %s", loaded, real_ty_str, slot)
+                return {kind=.Value, v=loaded, id=id}
             }
             return {kind=.Value, v=new_t, id=id};
         }
@@ -1002,7 +1038,27 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         if e, ok := s.expr.(ExprId); ok {
             r, returns := reduce_expr_to_single_value(c, cg_expr(c, e));
             assert(returns);
-            cwritefln(c, "\tret %s %s", ty_to_llvm_str(c, expr_ty(e)), r)
+            ret_ty_str := ty_to_llvm_str(c, expr_ty(e))
+
+            switch c.cur_fn_ret.mode {
+            case .Indirect: {
+                // caller-allocated slot, already passed in as %.sret
+                cwritefln(c, "\tstore %s %s, ptr %s", ret_ty_str, r, "%.sret")
+                cwriteln(c, "\tret void")
+            }
+            case .Direct: {
+                if c.cur_fn_ret.needs_coercion {
+                    slot := new_tmp(c)
+                    cwritefln(c, "\t%s = alloca %s", slot, ret_ty_str)
+                    cwritefln(c, "\tstore %s %s, ptr %s", ret_ty_str, r, slot)
+                    coerced := new_tmp(c)
+                    cwritefln(c, "\t%s = load %s, ptr %s", coerced, c.cur_fn_ret.coerced_type, slot)
+                    cwritefln(c, "\tret %s %s", c.cur_fn_ret.coerced_type, coerced)
+                } else {
+                    cwritefln(c, "\tret %s %s", ret_ty_str, r)
+                }
+            }
+            }
         } else {
             cwriteln(c, "\tret void")
         }
@@ -1145,64 +1201,43 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
     case StructDec: {
     }
-    // updated caude version that follows C abi
     case ExternFnDec: {
+        // Declarations go through the same cg_abi_lower_signature as
+        // definitions and calls — no more separate hand-rolled C ABI path.
         objid := get_ctx().item_objects[id]
         obj := get_ctx().objs[objid]
-        fn_ty := get_type(obj.type.(TypeId))
+        fn_type_id := obj.type.(TypeId)
+        fn_ty := get_type(fn_type_id)
+
+        sig := cg_abi_lower_signature(c, fn_type_id, .SysV)
 
         cwrite(c, "declare ");
-
-        // return type — lower_c_abi_type gala_panics on Void, so guard it
-        ret_ty := fn_ty.fn.ret_ty
-        if get_type(ret_ty).kind != .Void {
-            ret_ty = lower_c_abi_type(ret_ty).type
-        }
-        cwritef(c, "%s ", ty_to_llvm_str(c, ret_ty));
-
+        cwritef(c, "%s ", sig.ret.mode == .Indirect ? "void" : sig.ret.coerced_type)
         cwritef(c, "@%s ", obj.name);
         cwrite(c, "(");
+
+        wrote_any := false
+        if sig.ret.mode == .Indirect {
+            cwritef(c, "ptr sret(%s) align %d", ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align)
+            wrote_any = true
+        }
         for a, i in fn_ty.fn.args {
-            c.scope.vars[a.name] = {.Argument, aprintf(c, "%%%s", a.name)};
-            abi := lower_c_abi_type(a.type)
-            cwritef(c, "%s %s", ty_to_llvm_str(c, abi.type), c.scope.vars[a.name].name);
-            if i < len(fn_ty.fn.args) - 1 {
-                cwritef(c, ", ")
+            if wrote_any { cwritef(c, ", ") }
+            wrote_any = true
+            al := sig.args[i]
+            switch al.mode {
+            case .ByVal:
+                cwritef(c, "ptr byval(%s) align %d", ty_to_llvm_str(c, al.orig_type), al.byval_align)
+            case .Direct:
+                cwritef(c, "%s", al.coerced_type)
             }
         }
         if fn_ty.fn.is_variadic {
-            cwritef(c, ", ...");
+            if wrote_any { cwritef(c, ", ") }
+            cwritef(c, "...");
         }
         cwriteln(c, ")");
     }
-    /*case ExternFnDec: {
-        // get type
-        objid :=get_ctx().item_objects[id]
-        obj := get_ctx().objs[objid]
-        fn_ty := get_type(obj.type.(TypeId))
-
-        // write
-        cwrite(c, "declare ");
-        // write return type
-        cwritef(c, "%s ", ty_to_llvm_str(c, fn_ty.fn.ret_ty));
-        // write name
-        cwritef(c, "@%s ", obj.name);
-        // write args
-        cwrite(c, "(");
-        for a, i in fn_ty.fn.args {
-            // write name to scope
-            c.scope.vars[a.name] = {.Argument, aprintf(c, "%%%s", a.name)};
-            cwritef(c, "%s %s", ty_to_llvm_str(c, a.type), c.scope.vars[a.name].name);
-            if i < len(fn_ty.fn.args) - 1 {
-                debugln(i, len(fn_ty.fn.args))
-                cwritef(c, ", ")
-            }
-        }
-        if fn_ty.fn.is_variadic {
-            cwritef(c, ", ..."); // write variadic thingy
-        }
-        cwriteln(c, ")");
-    }*/
     case FnDec: {
         // double check type is a function
         assert(check_fn(i));
@@ -1214,29 +1249,77 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
         // get type
         objid :=get_ctx().item_objects[id]
         obj := get_ctx().objs[objid]
-        fn_ty := get_type(obj.type.(TypeId))
+        fn_type_id := obj.type.(TypeId)
+        fn_ty := get_type(fn_type_id)
+
+        sig := cg_abi_lower_signature(c, fn_type_id, .SysV)
+        old_ret := c.cur_fn_ret
+        c.cur_fn_ret = sig.ret
 
         // write
         cwrite(c, "define ");
-        // write return type
-        cwritef(c, "%s ", ty_to_llvm_str(c, fn_ty.fn.ret_ty));
-        // write name
+        cwritef(c, "%s ", sig.ret.mode == .Indirect ? "void" : sig.ret.coerced_type)
         cwritef(c, "@%s ", obj.name);
-        // write args
         cwrite(c, "(");
+
+        wrote_any := false
+        if sig.ret.mode == .Indirect {
+            cwritef(c, "ptr sret(%s) align %d %%.sret", ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align)
+            wrote_any = true
+        }
+
+        // raw parameter names as they appear in the signature, pre-coercion
+        param_raw_names := make([dynamic]string, allocator=get_ctx().allocator)
         for a, i in fn_ty.fn.args {
-            // write name to scope
-            c.scope.vars[a.name] = {.Argument, aprintf(c, "%%%s", a.name)};
-            cwritef(c, "%s %s", ty_to_llvm_str(c, a.type), c.scope.vars[a.name].name);
-            if i < len(fn_ty.fn.args) - 1 {
-                debugln(i, len(fn_ty.fn.args))
-                cwritef(c, ", ")
+            if wrote_any { cwritef(c, ", ") }
+            wrote_any = true
+            al := sig.args[i]
+            switch al.mode {
+            case .ByVal: {
+                // already an address — the parameter itself IS the pointer,
+                // no local alloca needed; bind as .Variable (load-on-read,
+                // same as any other addressable local)
+                pname := aprintf(c, "%%%s", a.name)
+                cwritef(c, "ptr byval(%s) align %d %s", ty_to_llvm_str(c, al.orig_type), al.byval_align, pname)
+                append(&param_raw_names, pname)
+                c.scope.vars[a.name] = {.Variable, pname};
+            }
+            case .Direct: {
+                if al.needs_coercion {
+                    // raw coerced value comes in under a temp name; the
+                    // real binding is reconstructed in the prologue below
+                    pname := aprintf(c, "%%%s.abi", a.name)
+                    cwritef(c, "%s %s", al.coerced_type, pname)
+                    append(&param_raw_names, pname)
+                } else {
+                    pname := aprintf(c, "%%%s", a.name)
+                    cwritef(c, "%s %s", al.coerced_type, pname)
+                    append(&param_raw_names, pname)
+                    c.scope.vars[a.name] = {.Argument, pname};
+                }
+            }
             }
         }
         cwrite(c, ") ");
         cwriteln(c, "{");
         // entry block
         cwriteln(c, "entry:");
+
+        // prologue: unconvert any coerced-by-value struct args back into
+        // a real aggregate SSA value via a memory roundtrip
+        for a, i in fn_ty.fn.args {
+            al := sig.args[i]
+            if al.mode == .Direct && al.needs_coercion {
+                real_ty_str := ty_to_llvm_str(c, al.orig_type)
+                slot := new_tmp(c)
+                cwritefln(c, "\t%s = alloca %s", slot, real_ty_str)
+                cwritefln(c, "\tstore %s %s, ptr %s", al.coerced_type, param_raw_names[i], slot)
+                loaded := new_tmp(c)
+                cwritefln(c, "\t%s = load %s, ptr %s", loaded, real_ty_str, slot)
+                c.scope.vars[a.name] = {.Argument, loaded};
+            }
+        }
+
         for statement, index in i.block.stmts {
             cg_stmt(c, statement);
             if stmt_ends_block(statement) && index != len(i.block.stmts) - 1 {
@@ -1244,8 +1327,9 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
             }
         }
         cwriteln(c, "}");
-        // reset scope
+        // reset scope + return-lowering context
         c.scope = old_scope
+        c.cur_fn_ret = old_ret
     }
     case: panic("impl")
     }
@@ -1396,7 +1480,7 @@ cg_module :: proc(ast: ^AST) {
     cg_ast(&cgctx, ast)
 
     // print result
-    debugln(strings.to_string(sb))
+    // debugln(strings.to_string(sb))
 
     // write
     dir_err := os.make_directory(".gala_build")
@@ -1418,6 +1502,8 @@ cg_module :: proc(ast: ^AST) {
         p, err := os.process_start({command={"llc", "-filetype=obj", "-O2", 
             ll_name, "-o", o_name}});
         if err != .NONE {
+            debugln("llc", "-filetype=obj", "-O2", 
+            ll_name, "-o", o_name)
             gala_panic("Failed to start clang process:", err);
         }
         p_state, werr := os.process_wait(p)
@@ -1456,5 +1542,3 @@ path_to_file_prefix :: proc(c: ^CGCtx, path: string) -> string {
     files_prefixes[path] = out
     return out
 }
-
-

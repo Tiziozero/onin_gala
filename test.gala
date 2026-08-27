@@ -1,0 +1,706 @@
+extern fn printf(fmt: ^byte, ..any);
+
+
+// ------------------------------------------------------------
+// Basic scalar functions
+// ------------------------------------------------------------
+
+fn f_int(a: i32): i32 {
+    return a + 1;
+}
+
+fn f_long(a: i64, b: i64): i64 {
+    return a * b;
+}
+
+fn f_double(a: f64, b: f64): f64 {
+    return a + b;
+}
+
+fn f_float(a: f32, b: f32): f32 {
+    return a * b;
+}
+
+
+// ------------------------------------------------------------
+// Very small integer structs
+// ------------------------------------------------------------
+
+struct S1 {
+    a: byte
+}
+
+struct S2 {
+    a: i16
+}
+
+struct S3 {
+    a: byte,
+    b: i16
+}
+
+struct S4 {
+    a: i32
+}
+
+struct S5 {
+    a: i32,
+    b: i32
+}
+
+struct S8 {
+    a: i64
+}
+
+struct S12 {
+    a: i64,
+    b: i32
+}
+
+struct S16 {
+    a: i64,
+    b: i64
+}
+
+
+// ------------------------------------------------------------
+// Integer structs crossing eightbyte boundaries
+// ------------------------------------------------------------
+
+struct Int3 {
+    a: i64,
+    b: i64,
+    c: i64
+}
+
+struct Int4 {
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64
+}
+
+
+// ------------------------------------------------------------
+// Pure SSE structs
+// ------------------------------------------------------------
+
+struct F1 {
+    a: f32
+}
+
+struct F2 {
+    a: f32,
+    b: f32
+}
+
+struct F3 {
+    a: f32,
+    b: f32,
+    c: f32
+}
+
+struct F4 {
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32
+}
+
+struct D1 {
+    a: f64
+}
+
+struct D2 {
+    a: f64,
+    b: f64
+}
+
+struct D3 {
+    a: f64,
+    b: f64,
+    c: f64
+}
+
+
+// ------------------------------------------------------------
+// Mixed INTEGER / SSE structs
+// ------------------------------------------------------------
+
+struct IntFloat {
+    a: i32,
+    b: f32
+}
+
+struct FloatInt {
+    a: f32,
+    b: i32
+}
+
+struct IntDouble {
+    a: i32,
+    b: f64
+}
+
+struct DoubleInt {
+    a: f64,
+    b: i32
+}
+
+struct LongFloat {
+    a: i64,
+    b: f32
+}
+
+struct FloatLong {
+    a: f32,
+    b: i64
+}
+
+struct LongDouble_ {
+    a: i64,
+    b: f64
+}
+
+struct DoubleLong {
+    a: f64,
+    b: i64
+}
+
+
+// ------------------------------------------------------------
+// Nested structs
+// ------------------------------------------------------------
+
+struct NestedInt {
+    a: S8,
+    b: S8
+}
+
+struct NestedFloat {
+    a: F2,
+    b: F2
+}
+
+struct NestedMixed {
+    a: IntFloat,
+    b: IntFloat
+}
+
+struct NestedLarge {
+    a: S16,
+    b: S16
+}
+
+
+// ------------------------------------------------------------
+// Arrays inside structs
+// ------------------------------------------------------------
+
+struct ArrayInt2 {
+    a: [2]i32
+}
+
+struct ArrayInt3 {
+    a: [3]i32
+}
+
+struct ArrayDouble2 {
+    a: [2]f64
+}
+
+struct ArrayFloat4 {
+    a: [4]f32
+}
+
+
+// ------------------------------------------------------------
+// Return structs
+// ------------------------------------------------------------
+
+fn ret_s1(x: byte): S1 {
+    return S1{a=x};
+}
+
+fn ret_s5(a: i32, b: i32): S5 {
+    return S5{a=a, b=b};
+}
+
+fn ret_s8(x: i64): S8 {
+    return S8{a=x};
+}
+
+fn ret_s12(a: i64, b: i32): S12 {
+    return S12{a=a, b=b};
+}
+
+fn ret_s16(a: i64, b: i64): S16 {
+    return S16{a=a, b=b};
+}
+
+fn ret_int3(a: i64, b: i64, c: i64): Int3 {
+    return Int3{a=a, b=b, c=c};
+}
+
+fn ret_f1(a: f32): F1 {
+    return F1{a=a};
+}
+
+fn ret_f2(a: f32, b: f32): F2 {
+    return F2{a=a, b=b};
+}
+
+fn ret_f4(a: f32, b: f32, c: f32, d: f32): F4 {
+    return F4{a=a, b=b, c=c, d=d};
+}
+
+fn ret_d1(a: f64): D1 {
+    return D1{a=a};
+}
+
+fn ret_d2(a: f64, b: f64): D2 {
+    return D2{a=a, b=b};
+}
+
+fn ret_int_float(a: i32, b: f32): IntFloat {
+    return IntFloat{a=a, b=b};
+}
+
+fn ret_float_int(a: f32, b: i32): FloatInt {
+    return FloatInt{a=a, b=b};
+}
+
+fn ret_int_double(a: i32, b: f64): IntDouble {
+    return IntDouble{a=a, b=b};
+}
+
+fn ret_double_int(a: f64, b: i32): DoubleInt {
+    return DoubleInt{a=a, b=b};
+}
+
+fn ret_long_float(a: i64, b: f32): LongFloat {
+    return LongFloat{a=a, b=b};
+}
+
+fn ret_float_long(a: f32, b: i64): FloatLong {
+    return FloatLong{a=a, b=b};
+}
+
+
+// ------------------------------------------------------------
+// Struct arguments
+// ------------------------------------------------------------
+
+fn arg_s1(x: S1): i64 {
+    return cast(i64)x.a;
+}
+
+fn arg_s5(x: S5): i64 {
+    return cast(i64)x.a + cast(i64)x.b;
+}
+
+fn arg_s8(x: S8): i64 {
+    return x.a;
+}
+
+fn arg_s12(x: S12): i64 {
+    return x.a + cast(i64)x.b;
+}
+
+fn arg_s16(x: S16): i64 {
+    return x.a + x.b;
+}
+
+fn arg_int3(x: Int3): i64 {
+    return x.a + x.b + x.c;
+}
+
+fn arg_f1(x: F1): i64 {
+    return cast(i64)x.a;
+}
+
+fn arg_f2(x: F2): i64 {
+    return cast(i64)(x.a + x.b);
+}
+
+fn arg_f4(x: F4): i64 {
+    return cast(i64)(x.a + x.b + x.c + x.d);
+}
+
+fn arg_d1(x: D1): i64 {
+    return cast(i64)x.a;
+}
+
+fn arg_d2(x: D2): i64 {
+    return cast(i64)(x.a + x.b);
+}
+
+fn arg_int_float(x: IntFloat): i64 {
+    return cast(i64)x.a + cast(i64)x.b;
+}
+
+fn arg_float_int(x: FloatInt): i64 {
+    return cast(i64)x.a + cast(i64)x.b;
+}
+
+fn arg_int_double(x: IntDouble): i64 {
+    return cast(i64)x.a + cast(i64)x.b;
+}
+
+fn arg_double_int(x: DoubleInt): i64 {
+    return cast(i64)x.a + cast(i64)x.b;
+}
+
+fn arg_long_float(x: LongFloat): i64 {
+    return x.a + cast(i64)x.b;
+}
+
+fn arg_float_long(x: FloatLong): i64 {
+    return cast(i64)x.a + x.b;
+}
+
+
+// ------------------------------------------------------------
+// Multiple structs in one call
+// ------------------------------------------------------------
+
+fn many_integer_structs(
+    a: S8,
+    b: S8,
+    c: S8,
+    d: S8,
+    e: S8,
+    f: S8,
+    g: S8
+): i64 {
+    return
+        a.a +
+        b.a +
+        c.a +
+        d.a +
+        e.a +
+        f.a +
+        g.a;
+}
+
+fn many_sse_structs(
+    a: D1,
+    b: D1,
+    c: D1,
+    d: D1,
+    e: D1,
+    f: D1,
+    g: D1,
+    h: D1,
+    i: D1
+): i64 {
+    return cast(i64)(
+        a.a +
+        b.a +
+        c.a +
+        d.a +
+        e.a +
+        f.a +
+        g.a +
+        h.a +
+        i.a
+    );
+}
+
+
+// ------------------------------------------------------------
+// Mix scalar and struct arguments
+// ------------------------------------------------------------
+
+fn mixed_args1(
+    a: i32,
+    b: S16,
+    c: f64,
+    d: F2,
+    e: i64
+): i64 {
+    return
+        cast(i64)a +
+        b.a +
+        b.b +
+        cast(i64)c +
+        cast(i64)d.a +
+        cast(i64)d.b +
+        e;
+}
+
+fn mixed_args2(
+    a: IntDouble,
+    b: i32,
+    c: DoubleInt,
+    d: f64,
+    e: S8
+): i64 {
+    return
+        cast(i64)a.a +
+        cast(i64)a.b +
+        cast(i64)b +
+        cast(i64)c.a +
+        cast(i64)c.b +
+        cast(i64)d +
+        e.a;
+}
+
+
+// ------------------------------------------------------------
+// Large structs / indirect passing
+// ------------------------------------------------------------
+
+fn large_return(x: Int3): Int3 {
+    x.a = x.a + 1;
+    x.b = x.b + 2;
+    x.c = x.c + 3;
+
+    return x;
+}
+
+fn huge_return(x: Int4): Int4 {
+    x.a = x.a + 1;
+    x.b = x.b + 2;
+    x.c = x.c + 3;
+    x.d = x.d + 4;
+
+    return x;
+}
+
+
+
+
+// ------------------------------------------------------------
+// Call-site torture test
+// ------------------------------------------------------------
+
+fn test_calls(): i64 {
+    sink := cast(i64)0;
+
+    s1 := S1{a=1};
+    s5 := S5{a=2, b=3};
+    s8 := S8{a=4};
+    s12 := S12{a=5, b=6};
+    s16 := S16{a=7, b=8};
+
+    i3 := Int3{
+        a=10,
+        b=11,
+        c=12
+    };
+
+    f1 := F1{a=1.0};
+
+    f2 := F2{
+        a=2.0,
+        b=3.0
+    };
+
+    f4 := F4{
+        a=4.0,
+        b=5.0,
+        c=6.0,
+        d=7.0
+    };
+
+    d1 := D1{a=1.0};
+
+    d2 := D2{
+        a=2.0,
+        b=3.0
+    };
+
+    int_float := IntFloat{
+        a=1,
+        b=2.0
+    };
+
+    float_int := FloatInt{
+        a=3.0,
+        b=4
+    };
+
+    int_double := IntDouble{
+        a=5,
+        b=6.0
+    };
+
+    double_int := DoubleInt{
+        a=7.0,
+        b=8
+    };
+
+    long_float := LongFloat{
+        a=9,
+        b=10.0
+    };
+
+    float_long := FloatLong{
+        a=11.0,
+        b=12
+    };
+
+
+    // --------------------------------------------------------
+    // Basic struct arguments
+    // --------------------------------------------------------
+
+    sink = sink + arg_s1(s1);
+    sink = sink + arg_s5(s5);
+    sink = sink + arg_s8(s8);
+    sink = sink + arg_s12(s12);
+    sink = sink + arg_s16(s16);
+
+    sink = sink + arg_int3(i3);
+
+    sink = sink + arg_f1(f1);
+    sink = sink + arg_f2(f2);
+    sink = sink + arg_f4(f4);
+
+    sink = sink + arg_d1(d1);
+    sink = sink + arg_d2(d2);
+
+    sink = sink + arg_int_float(int_float);
+    sink = sink + arg_float_int(float_int);
+
+    sink = sink + arg_int_double(int_double);
+    sink = sink + arg_double_int(double_int);
+
+    sink = sink + arg_long_float(long_float);
+    sink = sink + arg_float_long(float_long);
+
+
+    // --------------------------------------------------------
+    // Struct returns
+    // --------------------------------------------------------
+
+    s1 = ret_s1(20);
+    s5 = ret_s5(21, 22);
+    s8 = ret_s8(23);
+    s12 = ret_s12(24, 25);
+    s16 = ret_s16(26, 27);
+
+    i3 = ret_int3(28, 29, 30);
+
+    f1 = ret_f1(31.0);
+    f2 = ret_f2(32.0, 33.0);
+    f4 = ret_f4(34.0, 35.0, 36.0, 37.0);
+
+    d1 = ret_d1(38.0);
+    d2 = ret_d2(39.0, 40.0);
+
+    int_float = ret_int_float(41, 42.0);
+    float_int = ret_float_int(43.0, 44);
+
+    int_double = ret_int_double(45, 46.0);
+    double_int = ret_double_int(47.0, 48);
+
+    long_float = ret_long_float(49, 50.0);
+    float_long = ret_float_long(51.0, 52);
+
+
+    // --------------------------------------------------------
+    // Register exhaustion
+    // --------------------------------------------------------
+
+    sink = sink + many_integer_structs(
+        S8{a=1},
+        S8{a=2},
+        S8{a=3},
+        S8{a=4},
+        S8{a=5},
+        S8{a=6},
+        S8{a=7}
+    );
+
+    sink = sink + many_sse_structs(
+        D1{a=1.0},
+        D1{a=2.0},
+        D1{a=3.0},
+        D1{a=4.0},
+        D1{a=5.0},
+        D1{a=6.0},
+        D1{a=7.0},
+        D1{a=8.0},
+        D1{a=9.0}
+    );
+
+
+    // --------------------------------------------------------
+    // Mixed classes
+    // --------------------------------------------------------
+
+    sink = sink + mixed_args1(
+        1,
+        S16{a=2, b=3},
+        4.0,
+        F2{a=5.0, b=6.0},
+        7
+    );
+
+    sink = sink + mixed_args2(
+        IntDouble{a=1, b=2.0},
+        3,
+        DoubleInt{a=4.0, b=5},
+        6.0,
+        S8{a=7}
+    );
+
+
+    // --------------------------------------------------------
+    // MEMORY-class / large returns
+    // --------------------------------------------------------
+
+    i3 = large_return(i3);
+
+    i4 := Int4{
+        a=1,
+        b=2,
+        c=3,
+        d=4
+    };
+
+    i4 = huge_return(i4);
+
+
+    // --------------------------------------------------------
+    // Make sure results are observable
+    // --------------------------------------------------------
+
+    sink = sink +
+        cast(i64)s1.a +
+        cast(i64)s5.a +
+        cast(i64)s5.b +
+        s8.a +
+        s12.a +
+        cast(i64)s12.b +
+        s16.a +
+        s16.b;
+
+    sink = sink +
+        i3.a +
+        i3.b +
+        i3.c;
+
+    sink = sink +
+        cast(i64)f1.a +
+        cast(i64)f2.a +
+        cast(i64)f2.b +
+        cast(i64)d1.a +
+        cast(i64)d2.a +
+        cast(i64)d2.b;
+
+    sink = sink +
+        i4.a +
+        i4.b +
+        i4.c +
+        i4.d;
+
+    return sink;
+}
+
+
+fn main(): i64 {
+    return test_calls();
+}
