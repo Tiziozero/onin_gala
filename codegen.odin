@@ -245,9 +245,9 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
 // eg "%t1"
 new_tmp::proc(c: ^CGCtx, p:="",symbol:=false) -> string {
     if symbol {
-        return fmt.aprintf("@t%s%d", p, next_tmp_index(c), allocator=c.arena.block_allocator);
+        return fmt.aprintf("@%s%d", p, next_tmp_index(c), allocator=c.arena.block_allocator);
     }
-    return fmt.aprintf("%%t%s%d", p, next_tmp_index(c), allocator=c.arena.block_allocator);
+    return fmt.aprintf("%%%s%d", p, next_tmp_index(c), allocator=c.arena.block_allocator);
 }
 aprintf :: proc(c: ^CGCtx, format: string, data: ..any) -> string {
     res := fmt.aprintf(format, ..data, allocator=c.arena.block_allocator)

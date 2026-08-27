@@ -5,6 +5,7 @@ import "core:fmt"
 CAbiInfo :: struct {
     type: TypeId,
     needs_conversion: bool,
+    alignment: int, // 0 if none
 }
 
 lower_c_abi_type :: proc(type_id: TypeId) -> CAbiInfo {
