@@ -1,0 +1,124 @@
+// Gala bindings for libtestlib.so
+
+struct Color {
+    r: byte,
+    g: byte,
+    b: byte,
+    a: byte
+}
+
+struct V2 {
+    x: f32,
+    y: f32
+}
+
+struct Pair {
+    a: i32,
+    b: i32
+}
+
+struct V3 {
+    x: f32,
+    y: f32,
+    z: f32
+}
+
+extern fn test_i32(n: i32): void;
+extern fn test_i64(n: i64): void;
+extern fn test_f32(n: f32): void;
+extern fn test_byte(n: byte): void;
+
+extern fn test_i32_pair(a: i32, b: i32): void;
+extern fn test_mixed(i: i32, l: i64, f: f32, b: byte): void;
+
+extern fn test_color(c: Color): void;
+extern fn test_v2(v: V2): void;
+extern fn test_pair(p: Pair): void;
+extern fn test_v3(v: V3): void;
+extern fn test_mixed_structs(c: Color, v: V2, n: i64): void;
+
+extern fn test_color_ptr(c: ^Color): void;
+
+extern fn make_color(r: byte, g: byte, b: byte, a: byte): Color;
+extern fn make_v2(x: f32, y: f32): V2;
+extern fn make_pair(a: i32, b: i32): Pair;
+extern fn make_v3(x: f32, y: f32, z: f32): V3;
+
+extern fn inspect_color(c: Color): i32;
+extern fn print_struct_layouts(): void;
+
+fn main(): i64 {
+    print_struct_layouts();
+
+    test_i32(0-12345);
+    test_i64(1234567890123);
+    test_f32(3.1416);
+    test_byte(0xab);
+
+    test_i32_pair(123, 0-456);
+    test_mixed(0-123, 9876543210, 2.5, 0xfe);
+
+    c := Color{r=123, g=222, b=255, a=200};
+    v := V2{x=1.25, y=0-2.5};
+    p := Pair{a=111, b=222};
+    v3 := V3{x=1.0, y=2.0, z=3.0};
+
+    test_color(c);
+    test_v2(v);
+    test_pair(p);
+    test_v3(v3);
+    test_mixed_structs(c, v, 9999);
+
+    test_color_ptr(&c);
+
+    returned_color := make_color(1, 2, 3, 4);
+    print_int("returned_color.r = %d\n", cast(i64)returned_color.r);
+    print_int("returned_color.g = %d\n", cast(i64)returned_color.g);
+    print_int("returned_color.b = %d\n", cast(i64)returned_color.b);
+    print_int("returned_color.a = %d\n", cast(i64)returned_color.a);
+
+    returned_v := make_v2(10.5, 20.5);
+    print_flt("returned_v.x = %f\n", returned_v.x);
+    print_flt("returned_v.y = %f\n", returned_v.y);
+
+    returned_p := make_pair(333, 444);
+    print_int("returned_p.a = %d\n", cast(i64)returned_p.a);
+    print_int("returned_p.b = %d\n", cast(i64)returned_p.b);
+
+    returned_v3 := make_v3(4.0, 5.0, 6.0);
+    print_flt("returned_v3.x = %f\n", returned_v3.x);
+    print_flt("returned_v3.y = %f\n", returned_v3.y);
+    print_flt("returned_v3.z = %f\n", returned_v3.z);
+
+    packed := inspect_color(c);
+    print_int("packed = %d\n", cast(i64)packed);
+
+    return 0;
+}
+
+// These helpers are expected to already exist in your runtime/library.
+extern fn printf(fmt: ^byte, ..any);
+extern fn calloc(n: i64, size: i64): rawptr;
+extern fn memcpy(dest: rawptr, src: rawptr, size: i64);
+extern fn free(ptr: rawptr);
+
+fn to_cstr(s: string): ^byte {
+    size := len(s)*sizeof(byte);
+    cstr := calloc(1, size + 1);
+    memcpy(cstr, transmute(rawptr)&s[0], size);
+    return cast(^byte)cstr;
+}
+
+fn print_int(s: string, n: i64) {
+    data := to_cstr(s);
+    printf(data, n);
+    free(cast(rawptr)data);
+    return;
+}
+
+fn print_flt(s: string, n: f32) {
+    data := to_cstr(s);
+    printf(data, cast(f64)n);
+    free(cast(rawptr)data);
+    return;
+}

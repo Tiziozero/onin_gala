@@ -630,7 +630,6 @@ parse_primary :: proc(p: ^Parser) -> ExprId {
         }
         return id
     }
-    // debugln(current_token(p));
     highlight_lines(current_token(p).span);
     gala_panic("invalid primary token")
 }
@@ -733,7 +732,6 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
         t := consume_token(p); // "any"
         return AnySpecifier{span=t.span};
     }
-    debugln(current_token(p));
     highlight_lines(current_token(p).span)
     gala_panic("Invalid token in type specifier.");
 }
@@ -776,7 +774,6 @@ parse_fn_signature :: proc(p: ^Parser) -> FnDec {
     }
     f.span.start = kw.span.start
     f.span.end = end.span.end
-    debugln(f)
     return f;
 }
 parse_module_kw :: proc(p: ^Parser) -> ItemId {
@@ -847,21 +844,19 @@ expect_symbol :: proc(p: ^Parser, str: string) -> Token {
     c := current_token(p);
     if c.kind != .Symbol {
         highlight_lines(c.span);
-        debugln("Expected symbol, got:", c);
-        gala_panic(c);
+        gala_panic("Expected symbol, got:", c);
     }
     if c.text != str {
         highlight_lines(c.span);
-        debugln("Expected", str, "got:", c.text);
-        gala_panic(c);
+        gala_panic("Expected", str, "got:", c.text);
     }
     return consume_token(p)
 }
 expect_ident :: proc(p: ^Parser) -> Token {
     c := current_token(p);
     if c.kind != .Ident {
-        debugln("Expected ident got:", c);
-        gala_panic("");
+        highlight_lines(c.span)
+        gala_panic("Expected ident got:", c);
     }
     return consume_token(p)
 }

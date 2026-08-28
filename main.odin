@@ -197,7 +197,9 @@ main :: proc() { // odins context is passed down, not up, or some shi
         }
 
         append(&command, "-L./lib")
+        append(&command, "-L.")
         append(&command, "-lraylib")
+        append(&command, "-ltestlib")
         append(&command, "-lc")
         append(&command, "-lm")
 
@@ -231,7 +233,9 @@ main :: proc() { // odins context is passed down, not up, or some shi
         if p_state.exit_code != 0 {
             gala_panic("Failed to link machine code. exit code:", p_state.exit_code);
         }
-        debugln("clang exit code:", p_state.exit_code);
+        if p_state.exit_code != 0 {
+            gala_panic("clang exit code:", p_state.exit_code);
+        }
     }
     destroy_context(ctx);
     free_all(context.temp_allocator);

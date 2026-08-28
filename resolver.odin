@@ -56,7 +56,6 @@ new_object :: proc(s: ^Scope, o: Object) -> ObjId {
     append(&get_ctx.objs, o);
     id := ObjId(len(get_ctx.objs)-1);
     s.objects[o.name] = id
-    debugln("new object:", o.name, o.kind);
     return id
 }
 
@@ -192,14 +191,12 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     case Number: {
     } // nothing
     case Symbol: {
-        debugln("RESOLVING SYMBOL");
         obj, ok := scope_get_object(s, e.name);
         if !ok {
             highlight_lines(get_span(id).span);
             gala_panic("Couldn't find", e.name, "in scope.");
         }
         get_ctx().expr_objects[id] = obj
-        debugln("obj in symbol:", obj, get(obj));
     }
     case FnCall: {
         resolve_expr(s, e.target);
@@ -213,7 +210,6 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
 }
 // only intern function and pointers
 intern_type :: proc(t: Type) -> TypeId {
-    debugln(t.kind);
     assert(t.kind == .Pointer || t.kind == .Function || 
             t.kind == .UntypedInteger || t.kind == .UntypedFloat || 
             t.kind == .FixedSizeArray || t.kind == .ZeroInit ||
@@ -222,7 +218,6 @@ intern_type :: proc(t: Type) -> TypeId {
         if type_cmp(ty, t, true) { return TypeId(id) }
     }
     append(&get_ctx().types, t);
-    debugln("NEW TYPE:", t);
     return TypeId(len(get_ctx().types)-1)
 }
 scope_get_object :: proc(s: ^Scope, n: string) -> (ObjId, bool) {
@@ -247,15 +242,11 @@ scope_get_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
         if ok { return id, true }
         scope = scope.parent
     }
-    debugln(n)
 
-    debugln("existing:")
     t := s;
     for t != nil {
         for ty in s.types {
-            debugln(ty)
         }
-        debugln("scope:", t.parent)
         t = t.parent
     }
     return 0, false
@@ -294,12 +285,10 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
 get_untyped_default :: proc(t: TypeId) -> TypeId {
     #partial switch get_type(t).kind {
     case .UntypedInteger: {
-        debugln("returning int for untyped int");
         v, ok := get_ctx().base_mod.types["i64"]; assert(ok);
         return v
     }
     case .UntypedFloat: {
-        debugln("returning float for untyped float");
         v, ok := get_ctx().base_mod.types["f64"]; assert(ok);
         return v
     }
@@ -391,7 +380,6 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     defer delete(declared);
 
     for f,i in sd.fields {
-        debugln("STRUCT DEC FIELD RES %s %d", f.name, i);
         if d, ok := declared[f.name]; ok {
             highlight_lines(f.span);
             gala_panic("Field already exists.");
@@ -429,7 +417,6 @@ resolve_fn_dec_signature :: proc(s: ^ModuleScope, fndec: FnDecSignature) -> (Typ
     for a, i in fndec.args {
         t := resolve_type_specifier(&new_scope, a.t)
         if da, ok := declared[a.name]; ok {
-            debugln(a, da);
             // print declared arf
             print_lines(get_file_lines(get_ctx().current_file, da.span), da.span)
             gala_panic("Duplicate argument. Arg already declared here.")
@@ -439,7 +426,6 @@ resolve_fn_dec_signature :: proc(s: ^ModuleScope, fndec: FnDecSignature) -> (Typ
         new_object(&new_scope, Object{.Argument, a.name, t});
     }
     if fndec.is_variadic {
-        debugln("is variadic");
         t := resolve_type_specifier(s, fndec.variadic_ty);
         variadic_ty = t
         is_variadic = true
@@ -447,7 +433,6 @@ resolve_fn_dec_signature :: proc(s: ^ModuleScope, fndec: FnDecSignature) -> (Typ
     fnty.fn.args = args
     fnty.fn.is_variadic = is_variadic
     fnty.fn.variadic_ty = variadic_ty
-    debugln("Function is variadic?", fnty.fn.is_variadic);
     // free args scope
     return fnty, new_scope
 }
@@ -456,20 +441,17 @@ resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     oid, ook := s.obj_foreward[fndec.name]; assert(ook); // make sure fd exists
     obj := get(oid); // gets pointer, so modify that
 
-    debugln("extern",fndec);
     fnty, scope := resolve_fn_dec_signature(s, fndec);
     fnty.fn.is_external = true;
     free_scope(&scope);
 
     // intern type
     tyid := intern_type(fnty);
-    debugln("EXTERN FN RETURN TYPE:", tyid, fnty.fn.ret_ty, fndec.name);
 
     obj.type = tyid
     obj.name = fndec.name;
     // update object
     get_ctx().objs[oid] = obj^
-    debugln("obj:", oid, obj^);
 
     delete_key(&s.obj_foreward, fndec.name); // delete fd and create object
     s.objects[fndec.name] = oid; // recreate link
@@ -487,13 +469,11 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 
     // intern type
     tyid := intern_type(fnty);
-    debugln("FN RETURN TYPE:", tyid, fnty.fn.ret_ty, fndec.name);
 
     obj.type = tyid
     obj.name = fndec.name;
     // update object
     get_ctx().objs[oid] = obj^
-    debugln("obj:", oid, obj^);
 
     delete_key(&s.obj_foreward, fndec.name); // delete fd and create object
     s.objects[fndec.name] = oid; // recreate link

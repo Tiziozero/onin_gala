@@ -3,144 +3,515 @@ extern fn calloc(n: i64, size: i64): rawptr;
 extern fn memcpy(dest: rawptr, src: rawptr, size: i64);
 extern fn free(ptr: rawptr);
 
-// RLAPI void InitWindow(i64 width, i64 height, const char *title);  // Initialize window and OpenGL context
+// ------------------------------------------------------------
+// Raylib
+// ------------------------------------------------------------
+
 extern fn InitWindow(width: i64, height: i64, title: ^byte): void;
-// RLAPI void CloseWindow(void);                                     // Close window and unload OpenGL context
 extern fn CloseWindow(): void;
-// RLAPI bool WindowShouldClose(void);                               // Check if application should close (KEY_ESCAPE pressed or windows close icon clicked)
 extern fn WindowShouldClose(): bool;
 
-// RLAPI void BeginDrawing(void);                                    // Setup canvas (framebuffer) to start drawing
 extern fn BeginDrawing(): void;
-// RLAPI void EndDrawing(void);                                      // End canvas drawing and swap buffers (double buffering)
 extern fn EndDrawing(): void;
-// RLAPI void ClearBackground(Color colour);                          // Set background colour (framebuffer clear colour)
 extern fn ClearBackground(colour: Color): void;
 
-// RLAPI Color GetColor(unsigned i64 hexValue);                                // Get Color structure from hexadecimal value
-extern fn GetColor(v: i32): Color;
+extern fn DrawRectangle(
+    posX: i64,
+    posY: i64,
+    width: i64,
+    height: i64,
+    colour: Color,
+): void;
 
+extern fn DrawText(
+    text: ^byte,
+    posX: i64,
+    posY: i64,
+    fontSize: i64,
+    colour: Color,
+): void;
+
+extern fn IsKeyDown(key: i64): bool;
+extern fn IsKeyPressed(key: i64): bool;
+
+extern fn GetFrameTime(): f32;
+extern fn GetRandomValue(min: i64, max: i64): i64;
+
+extern fn TextFormat(fmt: ^byte, ..any): ^byte;
+
+// ------------------------------------------------------------
+// Types
+// ------------------------------------------------------------
 
 struct Color {
-    r: byte,        // Color red value
-    g: byte,        // Color green value
-    b: byte,        // Color blue value
-    a: byte        // Color alpha value
+    r: byte,
+    g: byte,
+    b: byte,
+    a: byte,
 }
+
+struct Player {
+    x: f32,
+    y: f32,
+    size: f32,
+    speed: f32,
+}
+
+struct Enemy {
+    x: f32,
+    y: f32,
+    size: f32,
+    speed: f32,
+    active: bool,
+}
+
+// ------------------------------------------------------------
+// Helpers
+// ------------------------------------------------------------
+
 fn to_cstr(s: string): ^byte {
-    size := len(s)*sizeof(byte);
+    size := len(s) * sizeof(byte);
     cstr := calloc(1, size + 1);
-    memcpy(cstr, transmute(rawptr)&s[0], size);
+
+    if len(s) > 0 {
+        memcpy(
+            cstr,
+            transmute(rawptr)&s[0],
+            size,
+        );
+    }
+
     return cast(^byte)cstr;
 }
+
 fn print_int(s: string, n: i64) {
     data := to_cstr(s);
     printf(data, n);
     free(cast(rawptr)data);
-    return;
-}
-fn print_flt(s: string, n: f32) {
-    data := to_cstr(s);
-    printf(data, cast(f64)n);
-    free(cast(rawptr)data);
-    return;
-}
-fn print_byte(s: string, n: byte) {
-    data := to_cstr(s);
-    printf(data, n);
-    free(cast(rawptr)data);
-    return;
-}
-struct v2 {
-    x: f32, y: f32
 }
 
-extern fn Vector2Add(a: v2, b: v2): v2;
+fn rects_overlap(
+    ax: f32,
+    ay: f32,
+    aw: f32,
+    ah: f32,
+    bx: f32,
+    by: f32,
+    bw: f32,
+    bh: f32,
+): bool {
 
-
-fn dump_i32_2(n: i32): [4]byte {
-    y := n;
-    buf := [4]byte{};
-    memcpy(cast(rawptr)&buf, cast(rawptr)&y, 4);
-    return buf;
-}
-fn dump_i32(n: i32): [4]byte {
-    buf := [4]byte{};
-    y := n;
-    s1 :byte = (cast(^byte)&y)^;
-    a := sizeof(byte);
-    print_byte("n byte 0: %.2x\n", s1);
-    s2 := (cast(^byte)(cast(i64)(&y) + 1))^;
-    print_byte("n byte 1: %.2x\n", s2);
-    s3 := (cast(^byte)(cast(i64)(&y) + 2))^;
-    print_byte("n byte 2: %.2x\n", s3);
-    s4 := (cast(^byte)(cast(i64)(&y) + 3))^;
-    print_byte("n byte 3: %.2x\n", s4);
-    buf[0] = s1;
-    buf[1] = s2;
-    buf[2] = s3;
-    buf[3] = s4;
-    return buf;
-}
-fn main(): i64 {
-    s := "Hello, World! %d\n";
-    data := to_cstr(s);
-    printf(data, 9);
-    printf(data, 8);
-    name := to_cstr("Hello, Raylib from Gala!!");
-    InitWindow(800, 600, name);
-
-    c := Color{r=123, g=222, b=255, a= 255};
-    if !true {
-        printf(data, 7);
+    if ax >= bx + bw {
+        return false;
     }
-    print_int("r: %d\n", cast(i64)c.r);
-    print_int("g: %d\n", cast(i64)c.g);
-    print_int("b: %d\n", cast(i64)c.b);
-    print_int("a: %d\n", cast(i64)c.a);
-    from_int := GetColor(4278190335);
-    print_int("GetColor:\n", 0);
-    print_int("\tr: %d\n", cast(i64)from_int.r);
-    print_int("\tg: %d\n", cast(i64)from_int.g);
-    print_int("\tb: %d\n", cast(i64)from_int.b);
-    print_int("\ta: %d\n", cast(i64)from_int.a);
-    print_flt("smth: %f\n", 3.1416);
+
+    if ax + aw <= bx {
+        return false;
+    }
+
+    if ay >= by + bh {
+        return false;
+    }
+
+    if ay + ah <= by {
+        return false;
+    }
+
+    return true;
+}
+
+// ------------------------------------------------------------
+// Main
+// ------------------------------------------------------------
+
+fn main(): i64 {
+
+    // --------------------------------------------------------
+    // Window
+    // --------------------------------------------------------
+
+    title := to_cstr("Gala Dodge");
+
+    InitWindow(
+        800,
+        600,
+        title,
+    );
+
+    // --------------------------------------------------------
+    // Colours
+    // --------------------------------------------------------
+
+    background := Color{
+        r = 20,
+        g = 22,
+        b = 30,
+        a = 255,
+    };
+
+    player_colour := Color{
+        r = 80,
+        g = 170,
+        b = 255,
+        a = 255,
+    };
+
+    enemy_colour := Color{
+        r = 230,
+        g = 70,
+        b = 70,
+        a = 255,
+    };
+
+    white := Color{
+        r = 255,
+        g = 255,
+        b = 255,
+        a = 255,
+    };
+
+    grey := Color{
+        r = 150,
+        g = 150,
+        b = 160,
+        a = 255,
+    };
+
+    // --------------------------------------------------------
+    // Text
+    // --------------------------------------------------------
+
+    score_fmt := to_cstr("Score: %d");
+    game_over_text := to_cstr("GAME OVER");
+    restart_text := to_cstr("Press R to restart");
+    controls_text := to_cstr("WASD / Arrow Keys to move");
+
+    // --------------------------------------------------------
+    // Player
+    // --------------------------------------------------------
+
+    player := Player{
+        x = 375.0,
+        y = 500.0,
+        size = 40.0,
+        speed = 300.0,
+    };
+
+    // --------------------------------------------------------
+    // Enemies
+    // --------------------------------------------------------
+
+    enemies := [32]Enemy{};
+
+    // --------------------------------------------------------
+    // Game state
+    // --------------------------------------------------------
+
+    alive := true;
+
+    spawn_timer: f32 = 0.0;
+    score_timer: f32 = 0.0;
+
+    score: i64 = 0;
+
+    difficulty: f32 = 1.0;
+
+    // --------------------------------------------------------
+    // Main loop
+    // --------------------------------------------------------
+
     while !WindowShouldClose() {
+
+        dt := GetFrameTime();
+
+        // ====================================================
+        // UPDATE
+        // ====================================================
+
+        if alive {
+
+            // ------------------------------------------------
+            // Player movement
+            // ------------------------------------------------
+
+            if IsKeyDown(65) || IsKeyDown(262) {
+                player.x = player.x + player.speed * dt;
+            }
+
+            if IsKeyDown(68) || IsKeyDown(263) {
+                player.x = player.x + player.speed * dt;
+            }
+
+            if IsKeyDown(87) || IsKeyDown(265) {
+                player.y = player.y - player.speed * dt;
+            }
+
+            if IsKeyDown(83) || IsKeyDown(264) {
+                player.y = player.y + player.speed * dt;
+            }
+
+            // ------------------------------------------------
+            // Keep player inside window
+            // ------------------------------------------------
+
+            if player.x < 0.0 {
+                player.x = 0.0;
+            }
+
+            if player.y < 0.0 {
+                player.y = 0.0;
+            }
+
+            if player.x + player.size > 800.0 {
+                player.x = 800.0 - player.size;
+            }
+
+            if player.y + player.size > 600.0 {
+                player.y = 600.0 - player.size;
+            }
+
+            // ------------------------------------------------
+            // Score
+            // ------------------------------------------------
+
+            score_timer = score_timer + dt;
+
+            if score_timer >= 1.0 {
+                score = score + 1;
+                score_timer = score_timer - 1.0;
+            }
+
+            // ------------------------------------------------
+            // Difficulty
+            // ------------------------------------------------
+
+            difficulty = 1.0 + cast(f32)score * 0.025;
+
+            if difficulty > 3.0 {
+                difficulty = 3.0;
+            }
+
+            // ------------------------------------------------
+            // Spawn enemies
+            // ------------------------------------------------
+
+            spawn_timer = spawn_timer + dt;
+
+            spawn_delay: f32 = 0.7 - cast(f32)score * 0.005;
+
+            if spawn_delay < 0.2 {
+                spawn_delay = 0.2;
+            }
+
+            if spawn_timer >= spawn_delay {
+
+                spawn_timer = 0.0;
+
+                i: i64 = 0;
+
+                while i < 32 {
+
+                    if !enemies[i].active {
+
+                        enemies[i].active = true;
+
+                        enemies[i].size = 30.0;
+
+                        enemies[i].x = cast(f32)GetRandomValue(
+                            0,
+                            770,
+                        );
+
+                        enemies[i].y = 0.0;
+
+                        enemies[i].speed =
+                            cast(f32)GetRandomValue(120, 220)
+                            * difficulty;
+
+                        break;
+                    }
+
+                    i = i + 1;
+                }
+            }
+
+            // ------------------------------------------------
+            // Update enemies
+            // ------------------------------------------------
+
+            i: i64 = 0;
+
+            while i < 32 {
+
+                if enemies[i].active {
+
+                    enemies[i].y =
+                        enemies[i].y
+                        + enemies[i].speed * dt;
+
+                    // Enemy left screen
+                    if enemies[i].y > 600.0 {
+
+                        enemies[i].active = false;
+
+                    } else {
+
+                        // Collision
+                        hit := rects_overlap(
+                            player.x,
+                            player.y,
+                            player.size,
+                            player.size,
+
+                            enemies[i].x,
+                            enemies[i].y,
+                            enemies[i].size,
+                            enemies[i].size,
+                        );
+
+                        if hit {
+                            alive = false;
+                        }
+                    }
+                }
+
+                i = i + 1;
+            }
+        }
+
+        // ====================================================
+        // RESTART
+        // ====================================================
+
+        if !alive {
+
+            if IsKeyPressed(82) {
+
+                player.x = 375.0;
+                player.y = 500.0;
+
+                score = 0;
+
+                score_timer = 0.0;
+                spawn_timer = 0.0;
+
+                difficulty = 1.0;
+
+                i: i64 = 0;
+
+                while i < 32 {
+                    enemies[i].active = false;
+                    i = i + 1;
+                }
+
+                alive = true;
+            }
+        }
+
+        // ====================================================
+        // DRAW
+        // ====================================================
+
         BeginDrawing();
-        ClearBackground(Color{r=255, g=255, b=0, a=255});
+
+        ClearBackground(background);
+
+        // ----------------------------------------------------
+        // Player
+        // ----------------------------------------------------
+
+        DrawRectangle(
+            cast(i64)player.x,
+            cast(i64)player.y,
+            cast(i64)player.size,
+            cast(i64)player.size,
+            player_colour,
+        );
+
+        // ----------------------------------------------------
+        // Enemies
+        // ----------------------------------------------------
+
+        i: i64 = 0;
+
+        while i < 32 {
+
+            if enemies[i].active {
+
+                DrawRectangle(
+                    cast(i64)enemies[i].x,
+                    cast(i64)enemies[i].y,
+                    cast(i64)enemies[i].size,
+                    cast(i64)enemies[i].size,
+                    enemy_colour,
+                );
+            }
+
+            i = i + 1;
+        }
+
+        // ----------------------------------------------------
+        // UI
+        // ----------------------------------------------------
+
+        score_text := TextFormat(
+            score_fmt,
+            score,
+        );
+
+        DrawText(
+            score_text,
+            20,
+            20,
+            30,
+            white,
+        );
+
+        DrawText(
+            controls_text,
+            20,
+            565,
+            18,
+            grey,
+        );
+
+        // ----------------------------------------------------
+        // Game over
+        // ----------------------------------------------------
+
+        if !alive {
+
+            DrawText(
+                game_over_text,
+                300,
+                250,
+                50,
+                white,
+            );
+
+            DrawText(
+                restart_text,
+                300,
+                315,
+                24,
+                white,
+            );
+        }
+
         EndDrawing();
     }
 
+    // --------------------------------------------------------
+    // Cleanup
+    // --------------------------------------------------------
 
-    a := v2{x=1.2, y=2.2};
-    b := v2{x=1.0, y=2.0};
-    v := Vector2Add(a, b);
-    print_flt("\tx: %f\n",  v.x);
-    print_flt("\ty: %f\n",  v.y);
+    free(cast(rawptr)title);
+    free(cast(rawptr)score_fmt);
+    free(cast(rawptr)game_over_text);
+    free(cast(rawptr)restart_text);
+    free(cast(rawptr)controls_text);
 
-    x : i32 = transmute(i32)v.x;
-    buf := dump_i32_2(x);
-    print_byte("xbuf 0: %.2x\n", buf[0]);
-    print_byte("xbuf 1: %.2x\n", buf[1]);
-    print_byte("xbuf 2: %.2x\n", buf[2]);
-    print_byte("xbuf 3: %.2x\n", buf[3]);
-    y : i32 = transmute(i32)v.y;
-    buf = dump_i32_2(y);
-    print_byte("ybuf 0: %.2x\n", buf[0]);
-    print_byte("ybuf 1: %.2x\n", buf[1]);
-    print_byte("ybuf 2: %.2x\n", buf[2]);
-    print_byte("ybuf 3: %.2x\n", buf[3]);
-    free(cast(rawptr)data);
-    free(cast(rawptr)name);
+    CloseWindow();
 
-
-    colour := Color{r=225, g=123, b=0, a=100};
-    z : i32 = (transmute(^i32)&colour)^;
-    buf = dump_i32_2(z);
-    print_byte("zbuf 0: %dx\n", buf[0]);
-    print_byte("zbuf 1: %dx\n", buf[1]);
-    print_byte("zbuf 2: %dx\n", buf[2]);
-    print_byte("zbuf 3: %dx\n", buf[3]);
-
-    return cast(i64)buf[2];
+    return 0;
 }

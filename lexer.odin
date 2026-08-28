@@ -90,15 +90,41 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
             }
         } else if is_num(c) {
             start := i
-            for (i < len(buf) && is_num(buf[i])) ||
-                (i < len(buf) && buf[i] == '.' && is_num(buf[i+1])) {
-                i += 1
+
+            if c == '0' && i + 1 < len(buf) &&
+                (buf[i+1] == 'x' || buf[i+1] == 'X') {
+
+                i += 2
+
+                hex_start := i
+                for i < len(buf) && hex_digit_val(buf[i]) >= 0 {
+                    i += 1
+                }
+
+                if i == hex_start {
+                    highlight_lines(Span{start, i})
+                    gala_panic("expected hexadecimal digits after 0x")
+                }
+            } else {
+                // Decimal integer / floating-point literal
+                for i < len(buf) && is_num(buf[i]) {
+                    i += 1
+                }
+
+                if i < len(buf) && buf[i] == '.' &&
+                    i + 1 < len(buf) && is_num(buf[i+1]) {
+                    i += 1
+                    for i < len(buf) && is_num(buf[i]) {
+                        i += 1
+                    }
+                }
             }
-            ident := cast(string)buf[start:i];
+
+            text := cast(string)buf[start:i]
             append(&tokens, Token{
                 span = Span{start, i},
                 kind = .Number,
-                text = ident,
+                text = text,
             })
         } else if is_alpha(c) {
             start := i

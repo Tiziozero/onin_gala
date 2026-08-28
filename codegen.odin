@@ -5,7 +5,33 @@ import "core:os"
 import "core:io"
 import "core:fmt"
 import "core:strings"
+import "core:strconv"
 import "core:mem"
+parse_integer_literal :: proc(s: string) -> (i64, bool) {
+    if len(s) >= 2 && s[0] == '0' &&
+        (s[1] == 'x' || s[1] == 'X') {
+
+        if len(s) == 2 {
+            return 0, false
+        }
+
+        value: i64 = 0
+
+        for c in s[2:] {
+            d := hex_digit_val(cast(byte)c)
+            if d < 0 {
+                return 0, false
+            }
+
+            value = value * 16 + i64(d)
+        }
+
+        return value, true
+    }
+
+    v, ok := strconv.parse_int(s)
+    return cast(i64)v, ok
+}
 CGExprRes :: struct {
     id: ExprId,
     kind: enum {Invalid, Address, Value, Binop, Number, Struct, None},
@@ -268,7 +294,6 @@ cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
     }
     panic("no");
 }
-import "core:strconv"
 
 // LLVM textual IR: a `float`-typed constant that doesn't round-trip exactly
 // through decimal must be printed as hex bits of the *double* representation
@@ -531,17 +556,23 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         if is_float(expr_ty(id)) {
             #partial switch get_type(expr_ty(id)).kind {
             case .Flt64: {
-                f, ok := strconv.parse_f64(e.text); assert(ok);
-                return {kind=.Number, v=llvm_double_const(f)};
+                f, ok := strconv.parse_f64(e.text)
+                assert(ok)
+                return {kind=.Number, v=llvm_double_const(f)}
             }
             case .Flt32: {
-                f, ok := strconv.parse_f32(e.text); assert(ok);
-                return {kind=.Number, v=llvm_float_const(f)};
+                f, ok := strconv.parse_f32(e.text)
+                assert(ok)
+                return {kind=.Number, v=llvm_float_const(f)}
             }
-        case: panic("impl")
+            case: panic("impl")
             }
         }
-        return {kind=.Number, v=e.text};
+
+        n, ok := parse_integer_literal(e.text)
+        assert(ok)
+
+        return {kind=.Number, v=aprintf(c, "%d", n)}
     }
     case Binop: {
         l_v, returns_l := reduce_expr_to_single_value(c, cg_expr(c, e.left))
@@ -1478,10 +1509,6 @@ cg_module :: proc(ast: ^AST) {
     }
     // gen
     cg_ast(&cgctx, ast)
-
-    // print result
-    // debugln(strings.to_string(sb))
-
     // write
     dir_err := os.make_directory(".gala_build")
     if dir_err != io.Error.None {

@@ -8,7 +8,7 @@ TcContext :: struct {
 expr_ty :: proc(id: ExprId) -> TypeId {
     t, ok  := get_ctx().expr_types[id];
     if !ok {
-        debugln(id, "has no type")
+        gala_panic(id, "has no type")
     }
     assert(ok);
     return t
@@ -59,9 +59,6 @@ compare_and_reduce_types :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     if is_numeric(l) && is_numeric(r) {
         return compare_and_reduce_numerics(l, r);
     }
-    debugln(get(l));
-    debugln(get(r));
-    debugln((l), (r));
     //dump_context(get_ctx());
     return 0, false, "types don't match"
 }
@@ -288,12 +285,10 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         get_ctx().expr_types[id] = to
     }
     case Symbol: {
-        debugln(e, "is a symbol", get_expr(id))
         obj := get_ctx().expr_objects[id];
         get_ctx().expr_types[id] = get_obj(obj).type.(TypeId)
     }
     case Number: {
-        debugln("is a number")
         // check if it's an untyped float or int
         for c in e.text {
             if c == '.' {
@@ -329,9 +324,9 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             highlight_lines(get_span(id).span)
             gala_panic(s)
         }
-        if is_untyped(ty) {
+        /*if is_untyped(ty) {
             ty = get_untyped_default(ty);
-        }
+        }*/
         propagate_type(ty, e.left);
         propagate_type(ty, e.right);
 
@@ -382,9 +377,6 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         ty := get_type(expr_ty(e.target));
         assert(ty.kind == .Function)
         fargs := ty.fn.args;
-        debugln("fn ty:",expr_ty(e.target), ty, )
-        debugln("expr:", get(e.target));
-        debugln("expr sym:", get(get_ctx().expr_objects[e.target]));
         if ty.fn.is_variadic {
             if len(e.args) < len(fargs) {
                 highlight_lines(get_span(id).span);
@@ -409,7 +401,6 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             farg := fargs[i];
             r, ok, s := compare_and_reduce_types(farg.type, expr_ty(earg));
             if !ok {
-                debugln(ty.fn);
                 highlight_lines(get_span(earg).span);
                 gala_panicf("Type Mismatch: %s (expected %s, got %s)",
                     s, tts(farg.type), tts(expr_ty(earg)));
@@ -475,9 +466,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             resolved_ty = expr_ty(stmt.value);
             // if it's untyped then get default type
             if is_untyped(resolved_ty.(TypeId)) {
-                debugln("it's untyped")
                 t := get_untyped_default(resolved_ty.(TypeId))
-                debugln("got:", t, get(t));
                 propagate_type(t, stmt.value)
             } else if get(resolved_ty.(TypeId)).kind == .ZeroInit {
                 highlight_lines(get_span(s).span);
@@ -485,7 +474,6 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             }
             // set obj type to expr type
             resolved_ty = expr_ty(stmt.value);
-            debugln("setting vardec type to:", get_type(resolved_ty.(TypeId)))
             get_obj(get_ctx().stmt_objects[s]).type = resolved_ty;
         } else { // otherwise if the vardec has a specified type compare
             expected_type := resolved_ty.(TypeId)
@@ -559,7 +547,6 @@ tc_item :: proc(tc: ^TcContext, id: ItemId) {
     case FnDec: {
         fn, ok := get_ctx().item_objects[id]; assert(ok);
         type := get_type(get_obj(fn).type.(TypeId));
-        debugln(type)
         assert(type.kind == .Function);
         new_tc := tc^;
         new_tc.in_function = true;
@@ -577,7 +564,6 @@ typecheck_module :: proc(ast: ^AST) {
     }
 }
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
-    debugln("propagating:", get_type(ty), "to", get_expr(expr));
     switch e in get_expr(expr) {
     case UnNot: {
         return // bool
