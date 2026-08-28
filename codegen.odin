@@ -319,6 +319,21 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         // string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
     // in cg_expr:
     switch e in get_expr(id) {
+    case UnNegative: {
+        v, returns := reduce_expr_to_single_value(c, cg_expr(c, e.expr))
+        assert(returns)
+
+        t := expr_ty(e.expr)
+        llvm_ty := ty_to_llvm_str(c, t)
+
+        result := new_tmp(c)
+        if is_float(t) {
+            cwritefln(c, "\t%s = fneg %s %s", result, llvm_ty, v)
+        } else {
+            cwritefln(c, "\t%s = sub %s 0, %s", result, llvm_ty, v)
+        }
+        return {kind=.Value, v=result}
+    }
     case UnNot: {
         v, returns := reduce_expr_to_single_value(c, cg_expr(c, e.expr))
         assert(returns)
@@ -580,37 +595,42 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         r_v, returns_r := reduce_expr_to_single_value(c, cg_expr(c, e.right))
         assert(returns_r);
 
-        // Use the OPERAND type, not expr_ty(id) — comparisons return Bool
-        // but the instruction needs the type of the things being compared.
         operand_ty := expr_ty(e.left)
-
         op := ""
         if is_integer_signed(operand_ty) {
-            switch e.kind {
+            #partial switch e.kind {
             case .Addition:     op = "add"
             case .Subtraction:  op = "sub"
             case .Multiply:     op = "mul"
-            case .Divide:       op = "sdiv" // signed div; use udiv if you track unsigned types
+            case .Divide:       op = "sdiv"
             case .Equal:        op = "icmp eq"
             case .NotEqual:     op = "icmp ne"
             case .LessEqual:    op = "icmp sle"
             case .GreaterEqual: op = "icmp sge"
+            case .Less:         op = "icmp slt"
+            case .Greater:      op = "icmp sgt"
+            case .BitAnd:       op = "and"
+            case .BitOr:        op = "or"
             case: panic("impl")
             }
         } else if is_integer_unsigned(operand_ty) {
-            switch e.kind {
+            #partial switch e.kind {
             case .Addition:     op = "add"
             case .Subtraction:  op = "sub"
             case .Multiply:     op = "mul"
-            case .Divide:       op = "udiv" // signed div; use udiv if you track unsigned types
-            case .Equal:        op = "icmp ueq"
-            case .NotEqual:     op = "icmp une"
-            case .LessEqual:    op = "icmp usle"
-            case .GreaterEqual: op = "icmp usge"
+            case .Divide:       op = "udiv"
+            case .Equal:        op = "icmp eq"
+            case .NotEqual:     op = "icmp ne"
+            case .LessEqual:    op = "icmp ule"
+            case .GreaterEqual: op = "icmp uge"
+            case .Less:         op = "icmp ult"
+            case .Greater:      op = "icmp ugt"
+            case .BitAnd:       op = "and"
+            case .BitOr:        op = "or"
             case: panic("impl")
             }
         } else if is_float(operand_ty) {
-            switch e.kind {
+            #partial switch e.kind {
             case .Addition:     op = "fadd"
             case .Subtraction:  op = "fsub"
             case .Multiply:     op = "fmul"
@@ -619,7 +639,9 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .NotEqual:     op = "fcmp one"
             case .LessEqual:    op = "fcmp ole"
             case .GreaterEqual: op = "fcmp oge"
-            case: panic("impl")
+            case .Less:         op = "fcmp olt"
+            case .Greater:      op = "fcmp ogt"
+            case: panic("impl")   // BitAnd/BitOr never reach here — tc_expr's is_integer(ty) check already rejected float operands
             }
         } else if get_type(operand_ty).kind == .Bool {
             #partial switch e.kind {
@@ -627,6 +649,10 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
                 op = "icmp eq"
             case .NotEqual:
                 op = "icmp ne"
+            case .LogicalAnd:
+                op = "and"
+            case .LogicalOr:
+                op = "or"
             case:
                 gala_panic("can't order booleans")
             }
@@ -1030,11 +1056,12 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     }
     case VarDec:{
         // get object
-        obj := get_obj(get_ctx().stmt_objects[id]);
+        id :=get_ctx().stmt_objects[id] 
+        obj := get_obj(id);
         // gen value
         v := cg_expr(c, s.value)
         // write name to scope
-        c.scope.vars[s.name] = {.Variable, aprintf(c, "%%%s", s.name)};
+        c.scope.vars[s.name] = {.Variable, aprintf(c, "%%%s.%d", s.name, id)};
         name := c.scope.vars[s.name].name
         if true {
             value, returns :=  reduce_expr_to_single_value(c, v);

@@ -102,6 +102,15 @@ can_order :: proc(id: TypeId) -> bool {
 }
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     switch e in get_expr(id) {
+    case UnNegative: {
+        tc_expr(tc, e.expr);
+        t := expr_ty(e.expr)
+        if !is_numeric(t) {
+            highlight_lines(get_span_expr(id).span);
+            gala_panic("Can't negate a non-numeric expression.");
+        }
+        get_ctx().expr_types[id] = t
+    }
     case UnNot: {
         tc_expr(tc, e.expr);
         if get(expr_ty(e.expr)).kind != .Bool {
@@ -343,6 +352,9 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             get_ctx().expr_types[id] = ty;
         }
         case .Equal: {
+            if is_untyped(ty) {
+                ty = get_untyped_default(ty);
+            }
             // force operands to resolve first
             propagate_type(ty, e.left);
             propagate_type(ty, e.right);
@@ -356,8 +368,10 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             bool_ty := ty_from_name("bool");
             get_ctx().expr_types[id] = bool_ty;
         }
-        case .NotEqual, .LessEqual, .GreaterEqual: {
-            // force operands to resolve first
+        case .NotEqual, .LessEqual, .GreaterEqual, .Less, .Greater: {
+            if is_untyped(ty) {
+                ty = get_untyped_default(ty);
+            }
             propagate_type(ty, e.left);
             propagate_type(ty, e.right);
 
@@ -366,9 +380,31 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
                 gala_panic("can't compare these two expressions");
             }
 
-
             bool_ty := ty_from_name("bool");
             get_ctx().expr_types[id] = bool_ty;
+        }
+        case .BitAnd, .BitOr: {
+            if is_untyped(ty) {
+                ty = get_untyped_default(ty)
+            }
+            propagate_type(ty, e.left);
+            propagate_type(ty, e.right);
+
+            if !is_integer(ty) {
+                highlight_lines(get_span(id).span);
+                gala_panic("bitwise operators require integer operands");
+            }
+
+            get_ctx().expr_types[id] = ty;
+        }
+        case .LogicalAnd, .LogicalOr: {
+            if get_type(ty).kind != .Bool {
+                highlight_lines(get_span(id).span);
+                gala_panic("logical operators require boolean operands");
+            }
+            propagate_type(ty, e.left);
+            propagate_type(ty, e.right);
+            get_ctx().expr_types[id] = ty;
         }
         }
     }
@@ -565,6 +601,9 @@ typecheck_module :: proc(ast: ^AST) {
 }
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
     switch e in get_expr(expr) {
+    case UnNegative: {
+        propagate_type(ty, e.expr);
+    }
     case UnNot: {
         return // bool
     }

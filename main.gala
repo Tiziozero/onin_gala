@@ -88,6 +88,7 @@ fn print_int(s: string, n: i64) {
     data := to_cstr(s);
     printf(data, n);
     free(cast(rawptr)data);
+    return;
 }
 
 fn rects_overlap(
@@ -235,7 +236,7 @@ fn main(): i64 {
             // ------------------------------------------------
 
             if IsKeyDown(65) || IsKeyDown(262) {
-                player.x = player.x + player.speed * dt;
+                player.x = player.x - player.speed * dt;
             }
 
             if IsKeyDown(68) || IsKeyDown(263) {
@@ -309,7 +310,8 @@ fn main(): i64 {
 
                 i: i64 = 0;
 
-                while i < 32 {
+                on := true;
+                while i < 32 && on {
 
                     if !enemies[i].active {
 
@@ -328,7 +330,7 @@ fn main(): i64 {
                             cast(f32)GetRandomValue(120, 220)
                             * difficulty;
 
-                        break;
+                        on = false;
                     }
 
                     i = i + 1;

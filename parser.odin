@@ -1,6 +1,5 @@
 package main
 
-import "core:fmt"
 import "core:strconv"
 
 BinopKind :: enum {
@@ -12,6 +11,12 @@ BinopKind :: enum {
     NotEqual,
     LessEqual,
     GreaterEqual,
+    Less,
+    Greater,
+    LogicalAnd,
+    LogicalOr,
+    BitAnd,
+    BitOr,
 };
 Binop :: struct {
     kind: BinopKind,
@@ -40,6 +45,9 @@ Len :: struct { target: ExprId };
 Sizeof :: struct { t: TypeSpecifier };
 BoolLitTrue :: distinct struct {}
 BoolLitFalse :: distinct struct {}
+UnNegative :: struct {
+    expr: ExprId,
+}
 Expr :: union {
     StructLit,
     Binop,
@@ -54,6 +62,7 @@ Expr :: union {
     Reference,
     Deref,
     UnNot,
+    UnNegative,
     FixedSizeArray,
     String,
     Len,
@@ -105,21 +114,34 @@ op_kind :: proc(t: Token) -> (kind: BinopKind, ok: bool) {
     case "!=": return .NotEqual,     true
     case "<=": return .LessEqual,    true
     case ">=": return .GreaterEqual, true
+    case "<":  return .Less,         true
+    case ">":  return .Greater,      true
+    case "&&": return .LogicalAnd,   true
+    case "||": return .LogicalOr,    true
+    case "&":  return .BitAnd,       true
+    case "|":  return .BitOr,        true
     }
     return {}, false
 }
 
-// Standard precedence: comparisons bind looser than + -, which bind looser than * /
 op_precedence :: proc(t: Token) -> int {
     switch t.text {
-    case "==", "!=", "<=", ">=":
+    case "||":
         return 1
-    case "+", "-":
+    case "&&":
         return 2
-    case "*", "/":
+    case "|":
         return 3
+    case "&":
+        return 4
+    case "==", "!=", "<=", ">=", "<", ">":
+        return 5
+    case "+", "-":
+        return 6
+    case "*", "/":
+        return 7
     }
-    return -1 // not a binop -> stops parse_binop loop
+    return -1
 }
 
 op_is_right_assoc :: proc(t: Token) -> bool {
@@ -128,6 +150,7 @@ op_is_right_assoc :: proc(t: Token) -> bool {
 // Entry point
 parse_condition :: proc(p: ^Parser) -> ExprId {
     prev_ignore_struct_lit := p.ignore_struct_lit
+    p.ignore_struct_lit = true
     e := parse_expr(p)
     p.ignore_struct_lit = prev_ignore_struct_lit
     return e;
@@ -257,7 +280,19 @@ parse_unary :: proc(p: ^Parser) -> ExprId {
             span={token.span.start,get_span(expr).span.end}
         }
         return id
-    }
+        } else if is_symbol(current_token(p), "-") {
+            token := consume_token(p); // "-"
+            expr := parse_unary(p);
+            id := new_expr(Expr(UnNegative{expr}));
+            get_ctx().spans.exprs[id] = {
+                file_name=get_ctx().current_file,
+                span={token.span.start, get_span(expr).span.end}
+            }
+            return id
+        } else if is_symbol(current_token(p), "+") {
+            consume_token(p); // "+", unary plus is a no-op
+            return parse_unary(p);
+        }
     return parse_postfix(p);
 }
 parse_binop :: proc(p: ^Parser, min_prec: int) -> ExprId {
@@ -428,7 +463,7 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
     } else if is_kw(current_token(p), .If) {
         token := consume_token(p); // "if"
         s := IfElse{}
-        s.base_con = parse_expr(p);
+        s.base_con = parse_condition(p);
         s.base_block = parse_block(p);
         alts := make([dynamic]AltCon, allocator=get_ctx().allocator);
         for is_kw(current_token(p), .Else) && is_kw(next_token(p), .If) {

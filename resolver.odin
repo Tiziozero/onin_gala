@@ -102,6 +102,9 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
 }
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
+    case UnNegative: {
+        resolve_expr(s, e.expr);
+    }
     case UnNot: {
         resolve_expr(s, e.expr);
     }
