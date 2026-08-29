@@ -317,7 +317,15 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                 buf[i] == '!' && buf[i+1] == '=' ||
                 buf[i] == '=' && buf[i+1] == '=' ||
                 buf[i] == '|' && buf[i+1] == '|' ||
-                buf[i] == '&' && buf[i+1] == '&'
+                buf[i] == '&' && buf[i+1] == '&' ||
+                buf[i] == '+' && buf[i+1] == '=' ||
+                buf[i] == '-' && buf[i+1] == '=' ||
+                buf[i] == '*' && buf[i+1] == '=' ||
+                buf[i] == '/' && buf[i+1] == '=' ||
+                buf[i] == '&' && buf[i+1] == '=' ||
+                buf[i] == '|' && buf[i+1] == '=' ||
+                buf[i] == '~' && buf[i+1] == '=' ||
+                buf[i] == '%' && buf[i+1] == '='
                 {
                 append(&tokens, Token{
                     span = Span{i, i + 2},

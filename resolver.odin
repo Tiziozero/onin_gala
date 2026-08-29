@@ -220,7 +220,7 @@ new_fn_type :: proc(t: Type) -> TypeId {
 }
 // only intern function and pointers
 intern_type :: proc(t: Type) -> TypeId {
-    assert(t.kind == .Pointer || t.kind == .Function || 
+    assert(t.kind == .Pointer || 
             t.kind == .UntypedInteger || t.kind == .UntypedFloat || 
             t.kind == .FixedSizeArray || t.kind == .ZeroInit ||
             t.kind == .Slice || t.kind == .String || t.kind == .Any)

@@ -7,6 +7,7 @@ BinopKind :: enum {
     Subtraction,
     Multiply,
     Divide,
+    Modulo,
     Equal,
     NotEqual,
     LessEqual,
@@ -17,6 +18,7 @@ BinopKind :: enum {
     LogicalOr,
     BitAnd,
     BitOr,
+    BitXor,
 };
 Binop :: struct {
     kind: BinopKind,
@@ -112,6 +114,7 @@ op_kind :: proc(t: Token) -> (kind: BinopKind, ok: bool) {
     case "-":  return .Subtraction,  true
     case "*":  return .Multiply,     true
     case "/":  return .Divide,       true
+    case "%":  return .Modulo,       true
     case "==": return .Equal,        true
     case "!=": return .NotEqual,     true
     case "<=": return .LessEqual,    true
@@ -121,6 +124,7 @@ op_kind :: proc(t: Token) -> (kind: BinopKind, ok: bool) {
     case "&&": return .LogicalAnd,   true
     case "||": return .LogicalOr,    true
     case "&":  return .BitAnd,       true
+    case "~":  return .BitXor,       true
     case "|":  return .BitOr,        true
     }
     return {}, false
@@ -134,14 +138,16 @@ op_precedence :: proc(t: Token) -> int {
         return 2
     case "|":
         return 3
-    case "&":
+    case "~":
         return 4
-    case "==", "!=", "<=", ">=", "<", ">":
+    case "&":
         return 5
-    case "+", "-":
+    case "==", "!=", "<=", ">=", "<", ">":
         return 6
-    case "*", "/":
+    case "+", "-":
         return 7
+    case "*", "/", "%":
+        return 8
     }
     return -1
 }
@@ -149,7 +155,6 @@ op_precedence :: proc(t: Token) -> int {
 op_is_right_assoc :: proc(t: Token) -> bool {
     return false // extend for ** etc.
 }
-// Entry point
 parse_condition :: proc(p: ^Parser) -> ExprId {
     prev_ignore_struct_lit := p.ignore_struct_lit
     p.ignore_struct_lit = true
@@ -348,6 +353,7 @@ VarDec :: struct {
     value: ExprId,
 }
 Assignment :: struct {
+    kind: BinopKind,
     target, value: ExprId,
 }
 Return :: struct {
@@ -532,9 +538,64 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
                     end=end.span.end
                 }
             }
+            return id;
+        } else if is_symbol(current_token(p), "+=") ||
+                  is_symbol(current_token(p), "-=") ||
+                  is_symbol(current_token(p), "*=") ||
+                  is_symbol(current_token(p), "/=") ||
+                  is_symbol(current_token(p), "%=") ||
+                  is_symbol(current_token(p), "&=") ||
+                  is_symbol(current_token(p), "|=") ||
+                  is_symbol(current_token(p), "~=") {
+            token := consume_token(p);
+
+            kind : BinopKind;
+            if token.text == "+=" {
+                kind = .Addition;
+            } else if token.text == "-=" {
+                kind = .Subtraction;
+            } else if token.text == "*=" {
+                kind = .Multiply;
+            } else if token.text == "/=" {
+                kind = .Divide;
+            } else if token.text == "%=" {
+                kind = .Modulo;
+            } else if token.text == "&=" {
+                kind = .BitAnd;
+            } else if token.text == "|=" {
+                kind = .BitOr;
+            } else if token.text == "~=" {
+                kind = .BitXor;
+            }
+
+            v := parse_expr(p);
+            end := expect_symbol(p, ";");
+
+            value := new_expr(Binop{kind=kind,left=expr, right=v})
+            get_ctx().spans.exprs[value] = {
+                file_name=get_ctx().current_file,
+                span={
+                    start=get_span(expr).span.start,
+                    end=get_span(v).span.end,
+                }
+            }; // set span for expr
+            id := new_stmt(Stmt(Assignment{
+                target=expr,
+                value=value,
+                kind=kind,
+            }));
+
+            get_ctx().spans.stmts[id] = {
+                file_name=get_ctx().current_file,
+                span={
+                    start=get_ctx().spans.exprs[expr].span.start,
+                    end=end.span.end,
+                }
+            }
 
             return id;
         }
+
         expect_symbol(p, ";");
         id := new_stmt(Stmt(ExprId(expr)));
         get_ctx().spans.stmts[id] = {

@@ -610,6 +610,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .Subtraction:  op = "sub"
             case .Multiply:     op = "mul"
             case .Divide:       op = "sdiv"
+            case .Modulo:       op = "srem"
             case .Equal:        op = "icmp eq"
             case .NotEqual:     op = "icmp ne"
             case .LessEqual:    op = "icmp sle"
@@ -617,6 +618,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .Less:         op = "icmp slt"
             case .Greater:      op = "icmp sgt"
             case .BitAnd:       op = "and"
+            case .BitXor:       op = "xor"
             case .BitOr:        op = "or"
             case: panic("impl")
             }
@@ -626,6 +628,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .Subtraction:  op = "sub"
             case .Multiply:     op = "mul"
             case .Divide:       op = "udiv"
+            case .Modulo:       op = "urem"
             case .Equal:        op = "icmp eq"
             case .NotEqual:     op = "icmp ne"
             case .LessEqual:    op = "icmp ule"
@@ -633,6 +636,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .Less:         op = "icmp ult"
             case .Greater:      op = "icmp ugt"
             case .BitAnd:       op = "and"
+            case .BitXor:       op = "xor"
             case .BitOr:        op = "or"
             case: panic("impl")
             }
@@ -648,7 +652,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .GreaterEqual: op = "fcmp oge"
             case .Less:         op = "fcmp olt"
             case .Greater:      op = "fcmp ogt"
-            case: panic("impl")   // BitAnd/BitOr never reach here — tc_expr's is_integer(ty) check already rejected float operands
+            case: panic("impl")
             }
         } else if get_type(operand_ty).kind == .Bool {
             #partial switch e.kind {

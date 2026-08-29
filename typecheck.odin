@@ -341,10 +341,16 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         propagate_type(ty, e.right);
 
         switch e.kind {
-        case .Addition, .Subtraction, .Multiply, .Divide: {
+        case .Addition, .Subtraction, .Multiply, .Divide, .Modulo: {
             if !can_binop(ty) {
                 highlight_lines(get_span(id).span);
                 gala_panic("can't perform a binop on these two expressions");
+            }
+            if e.kind == .Modulo {
+                if !is_int_kind(get(ty).kind) {
+                    highlight_lines(get_span(id).span)
+                    gala_panic("can't take modulo of non-integer numbers.")
+                }
             }
 
             propagate_type(ty, e.left);
@@ -384,7 +390,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             bool_ty := ty_from_name("bool");
             get_ctx().expr_types[id] = bool_ty;
         }
-        case .BitAnd, .BitOr: {
+        case .BitAnd, .BitOr, .BitXor: {
             if is_untyped(ty) {
                 ty = get_untyped_default(ty)
             }
