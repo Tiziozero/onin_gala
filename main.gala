@@ -1,519 +1,426 @@
-extern fn printf(fmt: ^byte, ..any);
-extern fn calloc(n: i64, size: i64): rawptr;
-extern fn memcpy(dest: rawptr, src: rawptr, size: i64);
-extern fn free(ptr: rawptr);
+// ============================================================
+// Control Flow Test
+// Tests:
+//   - functions
+//   - returns
+//   - if / else
+//   - nested if / else
+//   - while
+//   - break
+//   - continue
+//   - nested loops
+//   - arrays
+//   - structs
+//   - arithmetic
+//   - comparisons
+//   - boolean operators
+//
+// Note:
+//   "+=" does not exist.
+// ============================================================
 
-// ------------------------------------------------------------
-// Raylib
-// ------------------------------------------------------------
-
-extern fn InitWindow(width: i64, height: i64, title: ^byte): void;
-extern fn CloseWindow(): void;
-extern fn WindowShouldClose(): bool;
-
-extern fn BeginDrawing(): void;
-extern fn EndDrawing(): void;
-extern fn ClearBackground(colour: Color): void;
-
-extern fn DrawRectangle(
-    posX: i64,
-    posY: i64,
-    width: i64,
-    height: i64,
-    colour: Color,
-): void;
-
-extern fn DrawText(
-    text: ^byte,
-    posX: i64,
-    posY: i64,
-    fontSize: i64,
-    colour: Color,
-): void;
-
-extern fn IsKeyDown(key: i64): bool;
-extern fn IsKeyPressed(key: i64): bool;
-
-extern fn GetFrameTime(): f32;
-extern fn GetRandomValue(min: i64, max: i64): i64;
-
-extern fn TextFormat(fmt: ^byte, ..any): ^byte;
 
 // ------------------------------------------------------------
 // Types
 // ------------------------------------------------------------
 
-struct Color {
-    r: byte,
-    g: byte,
-    b: byte,
-    a: byte,
-}
-
-struct Player {
-    x: f32,
-    y: f32,
-    size: f32,
-    speed: f32,
-}
-
-struct Enemy {
-    x: f32,
-    y: f32,
-    size: f32,
-    speed: f32,
+struct TestData {
+    value: i64,
     active: bool,
 }
 
-// ------------------------------------------------------------
-// Helpers
-// ------------------------------------------------------------
-
-fn to_cstr(s: string): ^byte {
-    size := len(s) * sizeof(byte);
-    cstr := calloc(1, size + 1);
-
-    if len(s) > 0 {
-        memcpy(
-            cstr,
-            transmute(rawptr)&s[0],
-            size,
-        );
-    }
-
-    return cast(^byte)cstr;
-}
-
-fn print_int(s: string, n: i64) {
-    data := to_cstr(s);
-    printf(data, n);
-    free(cast(rawptr)data);
-    return;
-}
-
-fn rects_overlap(
-    ax: f32,
-    ay: f32,
-    aw: f32,
-    ah: f32,
-    bx: f32,
-    by: f32,
-    bw: f32,
-    bh: f32,
-): bool {
-
-    if ax >= bx + bw {
-        return false;
-    }
-
-    if ax + aw <= bx {
-        return false;
-    }
-
-    if ay >= by + bh {
-        return false;
-    }
-
-    if ay + ah <= by {
-        return false;
-    }
-
-    return true;
-}
 
 // ------------------------------------------------------------
-// Main
+// Simple if / else
+// Every branch returns
+// ------------------------------------------------------------
+
+fn positive_or_negative(n: i64): i64 {
+
+    if n > 0 {
+        return 1;
+    } else {
+        return -1;
+    }
+}
+
+
+// ------------------------------------------------------------
+// Nested if / else
+// Every possible branch returns
+// ------------------------------------------------------------
+
+fn classify_number(n: i64): i64 {
+
+    if n > 0 {
+
+        if n > 100 {
+            return 2;
+        } else {
+            return 1;
+        }
+
+    } else {
+
+        if n == 0 {
+            return 0;
+        } else {
+            return -1;
+        }
+    }
+}
+
+
+// ------------------------------------------------------------
+// Boolean operators
+// ------------------------------------------------------------
+
+fn test_boolean_logic(a: bool, b: bool): i64 {
+
+    if a && b {
+        return 1;
+    } else {
+
+        if a || b {
+            return 2;
+        } else {
+            return 0;
+        }
+    }
+}
+
+
+fn continue_test(max: i64): i64 {
+    total: i64 = 0;
+    i: i64 = 0;
+
+    while i < max {
+
+       i = i + 1;
+
+       if i == 3 {
+           continue;
+       } else {
+
+           if i == 7 {
+               continue;
+           } else {
+               total = total + i;
+           }
+       }
+   }
+
+   return total;
+}
+
+
+
+// ------------------------------------------------------------
+// Break
+// Stops when target is reached
+// ------------------------------------------------------------
+
+fn find_number(max: i64, target: i64): i64 {
+
+    i: i64 = 0;
+
+    while i < max {
+
+        if i == target {
+            break;
+        } else {
+            i = i + 1;
+        }
+    }
+
+    if i == target {
+        return i;
+    } else {
+        return -1;
+    }
+}
+
+
+// ------------------------------------------------------------
+// Break + continue together
+// ------------------------------------------------------------
+
+fn test_break_and_continue(max: i64): i64 {
+
+    total: i64 = 0;
+    i: i64 = 0;
+
+    while i < max {
+
+        i = i + 1;
+
+        if i == 3 {
+            continue;
+        } else {
+
+            if i == 8 {
+                break;
+            } else {
+                total = total + i;
+            }
+        }
+    }
+
+    return total;
+}
+
+
+// ------------------------------------------------------------
+// Nested loops
+// Break only exits the inner loop
+// ------------------------------------------------------------
+
+fn nested_break_test(size: i64): i64 {
+
+    total: i64 = 0;
+
+    x: i64 = 0;
+
+    while x < size {
+
+        y: i64 = 0;
+
+        while y < size {
+
+            if y == 2 {
+                break;
+            } else {
+                total = total + 1;
+            }
+
+            y = y + 1;
+        }
+
+        x = x + 1;
+    }
+
+    return total;
+}
+
+
+// ------------------------------------------------------------
+// Nested loops with continue
+// ------------------------------------------------------------
+
+fn nested_continue_test(size: i64): i64 {
+
+    total: i64 = 0;
+
+    x: i64 = 0;
+
+    while x < size {
+
+        y: i64 = 0;
+
+        while y < size {
+
+            y = y + 1;
+
+            if y == 2 {
+                continue;
+            } else {
+                total = total + 1;
+            }
+        }
+
+        x = x + 1;
+    }
+
+    return total;
+}
+
+
+// ------------------------------------------------------------
+// Arrays
+// ------------------------------------------------------------
+
+fn array_test(): i64 {
+
+    values := [5]i64{ };
+    
+    values[0] = 10;
+    values[1] = 20;
+    values[2] = 30;
+    values[3] = 40;
+    values[4] = 50;
+    total: i64 = 0;
+    i: i64 = 0;
+
+    while i < 5 {
+
+        if values[i] > 25 {
+            total = total + values[i];
+        } else {
+            total = total - values[i];
+        }
+
+        i = i + 1;
+    }
+
+    return total;
+}
+
+
+// ------------------------------------------------------------
+// Structs
+// ------------------------------------------------------------
+
+fn struct_test(): i64 {
+
+    data := TestData{
+        value = 10,
+        active = true,
+    };
+
+    if data.active {
+
+        if data.value > 5 {
+            return data.value;
+        } else {
+            return -1;
+        }
+
+    } else {
+        return 0;
+    }
+}
+
+
+// ------------------------------------------------------------
+// Array of structs
+// ------------------------------------------------------------
+
+fn struct_array_test(): i64 {
+
+    data := [3]TestData{};
+
+    data[0].value = 10;
+    data[0].active = true;
+
+    data[1].value = 20;
+    data[1].active = false;
+
+    data[2].value = 30;
+    data[2].active = true;
+
+    total: i64 = 0;
+    i: i64 = 0;
+
+    while i < 3 {
+
+        if !data[i].active {
+            i = i + 1;
+            continue;
+        } else {
+            total = total + data[i].value;
+        }
+
+        i = i + 1;
+    }
+
+    return total;
+}
+
+
+// ------------------------------------------------------------
+// Multiple comparisons
+// ------------------------------------------------------------
+
+fn comparison_test(a: i64, b: i64): i64 {
+
+    if a == b {
+        return 0;
+    } else {
+
+        if a > b {
+            return 1;
+        } else {
+
+            if a < b {
+                return -1;
+            } else {
+                return 99;
+            }
+        }
+    }
+}
+
+
+// ------------------------------------------------------------
+// Main test
 // ------------------------------------------------------------
 
 fn main(): i64 {
 
-    // --------------------------------------------------------
-    // Window
-    // --------------------------------------------------------
-
-    title := to_cstr("Gala Dodge");
-
-    InitWindow(
-        800,
-        600,
-        title,
-    );
-
-    // --------------------------------------------------------
-    // Colours
-    // --------------------------------------------------------
-
-    background := Color{
-        r = 20,
-        g = 22,
-        b = 30,
-        a = 255,
-    };
-
-    player_colour := Color{
-        r = 80,
-        g = 170,
-        b = 255,
-        a = 255,
-    };
-
-    enemy_colour := Color{
-        r = 230,
-        g = 70,
-        b = 70,
-        a = 255,
-    };
-
-    white := Color{
-        r = 255,
-        g = 255,
-        b = 255,
-        a = 255,
-    };
-
-    grey := Color{
-        r = 150,
-        g = 150,
-        b = 160,
-        a = 255,
-    };
-
-    // --------------------------------------------------------
-    // Text
-    // --------------------------------------------------------
-
-    score_fmt := to_cstr("Score: %d");
-    game_over_text := to_cstr("GAME OVER");
-    restart_text := to_cstr("Press R to restart");
-    controls_text := to_cstr("WASD / Arrow Keys to move");
-
-    // --------------------------------------------------------
-    // Player
-    // --------------------------------------------------------
-
-    player := Player{
-        x = 375.0,
-        y = 500.0,
-        size = 40.0,
-        speed = 300.0,
-    };
-
-    // --------------------------------------------------------
-    // Enemies
-    // --------------------------------------------------------
+    a := positive_or_negative(10);
+    b := positive_or_negative(-10);
 
-    enemies := [32]Enemy{};
+    c := classify_number(200);
+    d := classify_number(50);
+    e := classify_number(0);
+    f := classify_number(-10);
 
-    // --------------------------------------------------------
-    // Game state
-    // --------------------------------------------------------
+    g := test_boolean_logic(true, true);
+    h := test_boolean_logic(true, false);
+    i := test_boolean_logic(false, false);
 
-    alive := true;
+    odd_sum := continue_test(10);
 
-    spawn_timer: f32 = 0.0;
-    score_timer: f32 = 0.0;
+    found := find_number(10, 5);
+    not_found := find_number(5, 20);
 
-    score: i64 = 0;
+    break_continue := test_break_and_continue(20);
 
-    difficulty: f32 = 1.0;
+    nested_break := nested_break_test(5);
+    nested_continue := nested_continue_test(5);
 
-    // --------------------------------------------------------
-    // Main loop
-    // --------------------------------------------------------
+    array_result := array_test();
+    struct_result := struct_test();
+    struct_array_result := struct_array_test();
 
-    while !WindowShouldClose() {
+    comparison_a := comparison_test(10, 10);
+    comparison_b := comparison_test(20, 10);
+    comparison_c := comparison_test(10, 20);
 
-        dt := GetFrameTime();
+    // Use all results so assignments / variables
+    // are exercised by the test.
 
-        // ====================================================
-        // UPDATE
-        // ====================================================
+    total: i64 = 0;
 
-        if alive {
+    total = total + a;
+    total = total + b;
 
-            // ------------------------------------------------
-            // Player movement
-            // ------------------------------------------------
+    total = total + c;
+    total = total + d;
+    total = total + e;
+    total = total + f;
 
-            if IsKeyDown(65) || IsKeyDown(262) {
-                player.x = player.x - player.speed * dt;
-            }
+    total = total + g;
+    total = total + h;
+    total = total + i;
 
-            if IsKeyDown(68) || IsKeyDown(263) {
-                player.x = player.x + player.speed * dt;
-            }
+    total = total + odd_sum;
 
-            if IsKeyDown(87) || IsKeyDown(265) {
-                player.y = player.y - player.speed * dt;
-            }
+    total = total + found;
+    total = total + not_found;
 
-            if IsKeyDown(83) || IsKeyDown(264) {
-                player.y = player.y + player.speed * dt;
-            }
+    total = total + break_continue;
 
-            // ------------------------------------------------
-            // Keep player inside window
-            // ------------------------------------------------
+    total = total + nested_break;
+    total = total + nested_continue;
 
-            if player.x < 0.0 {
-                player.x = 0.0;
-            }
+    total = total + array_result;
+    total = total + struct_result;
+    total = total + struct_array_result;
 
-            if player.y < 0.0 {
-                player.y = 0.0;
-            }
+    total = total + comparison_a;
+    total = total + comparison_b;
+    total = total + comparison_c;
 
-            if player.x + player.size > 800.0 {
-                player.x = 800.0 - player.size;
-            }
-
-            if player.y + player.size > 600.0 {
-                player.y = 600.0 - player.size;
-            }
-
-            // ------------------------------------------------
-            // Score
-            // ------------------------------------------------
-
-            score_timer = score_timer + dt;
-
-            if score_timer >= 1.0 {
-                score = score + 1;
-                score_timer = score_timer - 1.0;
-            }
-
-            // ------------------------------------------------
-            // Difficulty
-            // ------------------------------------------------
-
-            difficulty = 1.0 + cast(f32)score * 0.025;
-
-            if difficulty > 3.0 {
-                difficulty = 3.0;
-            }
-
-            // ------------------------------------------------
-            // Spawn enemies
-            // ------------------------------------------------
-
-            spawn_timer = spawn_timer + dt;
-
-            spawn_delay: f32 = 0.7 - cast(f32)score * 0.005;
-
-            if spawn_delay < 0.2 {
-                spawn_delay = 0.2;
-            }
-
-            if spawn_timer >= spawn_delay {
-
-                spawn_timer = 0.0;
-
-                i: i64 = 0;
-
-                on := true;
-                while i < 32 && on {
-
-                    if !enemies[i].active {
-
-                        enemies[i].active = true;
-
-                        enemies[i].size = 30.0;
-
-                        enemies[i].x = cast(f32)GetRandomValue(
-                            0,
-                            770,
-                        );
-
-                        enemies[i].y = 0.0;
-
-                        enemies[i].speed =
-                            cast(f32)GetRandomValue(120, 220)
-                            * difficulty;
-
-                        on = false;
-                    }
-
-                    i = i + 1;
-                }
-            }
-
-            // ------------------------------------------------
-            // Update enemies
-            // ------------------------------------------------
-
-            i: i64 = 0;
-
-            while i < 32 {
-
-                if enemies[i].active {
-
-                    enemies[i].y =
-                        enemies[i].y
-                        + enemies[i].speed * dt;
-
-                    // Enemy left screen
-                    if enemies[i].y > 600.0 {
-
-                        enemies[i].active = false;
-
-                    } else {
-
-                        // Collision
-                        hit := rects_overlap(
-                            player.x,
-                            player.y,
-                            player.size,
-                            player.size,
-
-                            enemies[i].x,
-                            enemies[i].y,
-                            enemies[i].size,
-                            enemies[i].size,
-                        );
-
-                        if hit {
-                            alive = false;
-                        }
-                    }
-                }
-
-                i = i + 1;
-            }
-        }
-
-        // ====================================================
-        // RESTART
-        // ====================================================
-
-        if !alive {
-
-            if IsKeyPressed(82) {
-
-                player.x = 375.0;
-                player.y = 500.0;
-
-                score = 0;
-
-                score_timer = 0.0;
-                spawn_timer = 0.0;
-
-                difficulty = 1.0;
-
-                i: i64 = 0;
-
-                while i < 32 {
-                    enemies[i].active = false;
-                    i = i + 1;
-                }
-
-                alive = true;
-            }
-        }
-
-        // ====================================================
-        // DRAW
-        // ====================================================
-
-        BeginDrawing();
-
-        ClearBackground(background);
-
-        // ----------------------------------------------------
-        // Player
-        // ----------------------------------------------------
-
-        DrawRectangle(
-            cast(i64)player.x,
-            cast(i64)player.y,
-            cast(i64)player.size,
-            cast(i64)player.size,
-            player_colour,
-        );
-
-        // ----------------------------------------------------
-        // Enemies
-        // ----------------------------------------------------
-
-        i: i64 = 0;
-
-        while i < 32 {
-
-            if enemies[i].active {
-
-                DrawRectangle(
-                    cast(i64)enemies[i].x,
-                    cast(i64)enemies[i].y,
-                    cast(i64)enemies[i].size,
-                    cast(i64)enemies[i].size,
-                    enemy_colour,
-                );
-            }
-
-            i = i + 1;
-        }
-
-        // ----------------------------------------------------
-        // UI
-        // ----------------------------------------------------
-
-        score_text := TextFormat(
-            score_fmt,
-            score,
-        );
-
-        DrawText(
-            score_text,
-            20,
-            20,
-            30,
-            white,
-        );
-
-        DrawText(
-            controls_text,
-            20,
-            565,
-            18,
-            grey,
-        );
-
-        // ----------------------------------------------------
-        // Game over
-        // ----------------------------------------------------
-
-        if !alive {
-
-            DrawText(
-                game_over_text,
-                300,
-                250,
-                50,
-                white,
-            );
-
-            DrawText(
-                restart_text,
-                300,
-                315,
-                24,
-                white,
-            );
-        }
-
-        EndDrawing();
-    }
-
-    // --------------------------------------------------------
-    // Cleanup
-    // --------------------------------------------------------
-
-    free(cast(rawptr)title);
-    free(cast(rawptr)score_fmt);
-    free(cast(rawptr)game_over_text);
-    free(cast(rawptr)restart_text);
-    free(cast(rawptr)controls_text);
-
-    CloseWindow();
-
-    return 0;
+    return total;
 }

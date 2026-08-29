@@ -211,6 +211,13 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     case: panic("impl");
     }
 }
+// always allocates a new TypeId, never dedupes — function types are nominal,
+// not structural (distinct decls with identical signatures must stay distinct)
+new_fn_type :: proc(t: Type) -> TypeId {
+    assert(t.kind == .Function)
+    append(&get_ctx().types, t);
+    return TypeId(len(get_ctx().types)-1)
+}
 // only intern function and pointers
 intern_type :: proc(t: Type) -> TypeId {
     assert(t.kind == .Pointer || t.kind == .Function || 
@@ -301,6 +308,7 @@ get_untyped_default :: proc(t: TypeId) -> TypeId {
 }
 resolve_stmt :: proc(s: ^Scope, id: StmtId) {
     #partial switch stmt in get(id) {
+    case BreakStmt, ContinueStmt: {}
     case WhileLoop: {
         resolve_expr(s, stmt.cond);
         b := stmt.block
@@ -410,6 +418,7 @@ resolve_fn_dec_signature :: proc(s: ^ModuleScope, fndec: FnDecSignature) -> (Typ
     } else {
         fnty.fn.ret_ty = void_type();
     }
+    debugln("RESOLVING FN:", fndec.name);
     // new scope for args
     // args
     new_scope := new_scope(s);
@@ -418,6 +427,7 @@ resolve_fn_dec_signature :: proc(s: ^ModuleScope, fndec: FnDecSignature) -> (Typ
     is_variadic := false;
     variadic_ty: TypeId
     for a, i in fndec.args {
+        debugln("RESOLVING FN ARG:", a.name);
         t := resolve_type_specifier(&new_scope, a.t)
         if da, ok := declared[a.name]; ok {
             // print declared arf
@@ -449,7 +459,7 @@ resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     free_scope(&scope);
 
     // intern type
-    tyid := intern_type(fnty);
+    tyid := new_fn_type(fnty);
 
     obj.type = tyid
     obj.name = fndec.name;
@@ -471,7 +481,7 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     free_scope(&fnscope);
 
     // intern type
-    tyid := intern_type(fnty);
+    tyid := new_fn_type(fnty);
 
     obj.type = tyid
     obj.name = fndec.name;

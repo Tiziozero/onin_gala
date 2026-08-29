@@ -61,9 +61,13 @@ handle_file :: proc(ctx: ^Context, file_name: string) {
     tokens := lex_file(data)
     defer delete(tokens)
 
+    debugln("PARSING FILE");
     ast := parse_tokens(file_name, tokens[:])
+    debugln("RESOLVINF SYMBOLS");
     decs := resolve_module_ast(&ast)
+    debugln("TYPECHECKING");
     typecheck_module(&ast)
+    debugln("CODE GEN");
     cg_module(&ast)
     ctx.modules[file_name] = {decs, ast};
 }

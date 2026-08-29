@@ -35,6 +35,7 @@ Context :: struct {
 
     stmt_objects:       map[StmtId]ObjId,
     stmt_types:         map[StmtId]TypeId,
+    break_lables:       map[StmtId]StmtId, // includes continue
 
     // for other stuff that need to know things only available
     // at resolution phase

@@ -4,6 +4,7 @@ import "core:slice"
 TcContext :: struct {
     in_function: bool,
     fn_ret_ty: Maybe(TypeId),
+    in_loop: Maybe(StmtId),
 }
 expr_ty :: proc(id: ExprId) -> TypeId {
     t, ok  := get_ctx().expr_types[id];
@@ -459,7 +460,17 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
 tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
     switch stmt in get_stmt(s) {
+    case BreakStmt, ContinueStmt: {
+        lid /* loop id */ := tc.in_loop;
+        if lid == nil {
+            highlight_lines(get_span(s).span);
+            gala_panic("Not in loop/if stmt");
+        }
+        get_ctx().break_lables[s] = lid.(StmtId);
+    }
     case WhileLoop: {
+        last_loop := tc.in_loop;
+        tc.in_loop = s;
         tc_expr(tc, stmt.cond);
         if is_untyped(expr_ty(stmt.cond)) {
             t := get_untyped_default(expr_ty(stmt.cond));
@@ -470,9 +481,12 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             gala_panic("Expression is not of type boolean.");
         }
         tc_block(tc, stmt.block);
+        tc.in_loop = last_loop;
     }
     case ExprId: tc_expr(tc, stmt);
     case IfElse: {
+        last_loop := tc.in_loop;
+        tc.in_loop = s;
         tc_expr(tc, stmt.base_con);
         // make it numeric
         if get_type(expr_ty(stmt.base_con)).kind != .Bool {
@@ -492,6 +506,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
         if stmt.has_else_block {
             tc_block(tc, stmt.else_block);
         }
+        tc.in_loop = last_loop;
     }
     case VarDec: {
         tc_expr(tc, stmt.value)
@@ -581,9 +596,13 @@ tc_item :: proc(tc: ^TcContext, id: ItemId) {
         // ok ig?
     }
     case FnDec: {
+        debugln("TC FN:", i.name);
         fn, ok := get_ctx().item_objects[id]; assert(ok);
         type := get_type(get_obj(fn).type.(TypeId));
         assert(type.kind == .Function);
+        for arg in type.fn.args {
+            debugln("ARG:", arg.name);
+        }
         new_tc := tc^;
         new_tc.in_function = true;
         new_tc.fn_ret_ty = type.fn.ret_ty;

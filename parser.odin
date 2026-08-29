@@ -37,6 +37,8 @@ Transmute :: struct {
     target: ExprId,
 }
 ZeroInit :: struct {}
+BreakStmt :: struct {label: string};
+ContinueStmt :: struct {label: string};
 StructLit :: struct {
     name: string,
     fields: map[string]struct{expr:ExprId,span:Span},
@@ -358,6 +360,8 @@ Stmt :: union {
     ExprId,
     IfElse,
     WhileLoop,
+    BreakStmt,
+    ContinueStmt,
 }
 WhileLoop :: struct { cond: ExprId, block: Block }
 AltCon :: struct{cond:ExprId, block:Block}
@@ -496,7 +500,25 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
             span=token.span
         }
         return id;
-    } else { // otherwise try stmt
+    } else if is_kw(current_token(p), .Break) {
+        token := consume_token(p); // "break"
+        end_semi := expect_symbol(p, ";");
+        id := new_stmt(BreakStmt{});
+        get_ctx().spans.stmts[id] = {
+            file_name=get_ctx().current_file,
+            span=token.span
+        }
+        return id;
+    } else if is_kw(current_token(p), .Continue) {
+        token := consume_token(p); // "continue"
+        end_semi := expect_symbol(p, ";");
+        id := new_stmt(ContinueStmt{});
+        get_ctx().spans.stmts[id] = {
+            file_name=get_ctx().current_file,
+            span=token.span
+        }
+        return id;
+    } else {
         expr := parse_expr(p);
         if is_symbol(current_token(p), "=") {
             token := consume_token(p); // "="
@@ -777,6 +799,7 @@ parse_fn_signature :: proc(p: ^Parser) -> FnDec {
     f := FnDec{};
     name := expect_ident(p);
     f.name = name.text;
+    debugln("FNDEC  NAME:", name.text)
     // args
     args := make([dynamic]FnDecArg)
     expect_symbol(p, "(");
@@ -791,6 +814,7 @@ parse_fn_signature :: proc(p: ^Parser) -> FnDec {
             break;
         }
         name := expect_ident(p);
+        debugln("FNDEC ARG NAME:", name)
         expect_symbol(p, ":")
         ty := parse_type(p);
         append(&args, FnDecArg{name=name.text, t=ty, span=name.span})

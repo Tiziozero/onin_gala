@@ -49,6 +49,13 @@ CGCtx :: struct {
     llvm_ty: map[TypeId]string,
     strings: map[string]StringGlobalResult,
     cur_fn_ret: AbiRetLowering, // ABI lowering of the return value of the function currently being emitted
+    break_labels: map[StmtId]string,    // loop (or if/else passthrough) StmtId -> label to jump to on `break`
+    continue_labels: map[StmtId]string, // loop (or if/else passthrough) StmtId -> label to jump to on `continue`
+    // "currently active" loop targets, saved/restored around each WhileLoop's
+    // body so that any IfElse nested inside (however deeply) can register
+    // itself as pointing at the same targets — see cg_stmt's IfElse case.
+    cur_break_label: string,
+    cur_continue_label: string,
 }
 CGObjectKind :: enum {
     Invalid,
@@ -668,7 +675,6 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             v=aprintf(c, "%s %s %s, %s", op, ty_to_llvm_str(c, operand_ty), l_v, r_v)}
     }
     case Symbol: {
-        // v := cgscope_get(&c.scope, e.name);
         v := cgscope_get(&c.scope, e.name);
         switch v.kind {
         case .Variable, .Symbol: {
@@ -857,6 +863,10 @@ reduce_expr_to_single_value :: proc(c: ^CGCtx, e: CGExprRes) -> (string, bool) {
 }
 stmt_ends_block :: proc(stmt: StmtId) -> bool {
     switch s in get(stmt) {
+    // both are unconditional jumps (`br label ...`) — an LLVM basic-block
+    // terminator, exactly like Return, so nothing may follow either in
+    // the same block.
+    case BreakStmt, ContinueStmt: return true;
     case WhileLoop: {
         return check_rets(s.block);
     }
@@ -889,6 +899,27 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     // cwritefln(c, "\t; cg_stmt \"%s\"",
         // string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
     switch s in get_stmt(id) {
+    case BreakStmt: {
+        // get_ctx().break_lables maps this break's own StmtId to the
+        // StmtId of the construct it targets (the enclosing loop, or —
+        // if it was registered while inside nested if/else — the
+        // innermost IfElse, which itself carries the same loop's label
+        // through via the passthrough registration below).
+        target_id := get_ctx().break_lables[id]
+        label, ok := c.break_labels[target_id]
+        if !ok {
+            gala_panic("break: no enclosing loop label found")
+        }
+        cwritefln(c, "\tbr label %%%s", label)
+    }
+    case ContinueStmt: {
+        target_id := get_ctx().break_lables[id]
+        label, ok := c.continue_labels[target_id]
+        if !ok {
+            gala_panic("continue: no enclosing loop label found")
+        }
+        cwritefln(c, "\tbr label %%%s", label)
+    }
     case WhileLoop: {
         
         id_suffix := next_tmp_index(c)
@@ -896,6 +927,19 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         cond_label := aprintf(c, "while_cond_label%d", id_suffix);
         body_label := aprintf(c, "while_body_label%d", id_suffix);
         end_label  := aprintf(c, "while_end_label%d", id_suffix);
+
+        // register this loop's break/continue targets, keyed by its own
+        // StmtId (this is what get_ctx().break_lables[break/continue id]
+        // resolves to), and set them as "current" so any IfElse nested in
+        // the body — at any depth — can register the same targets under
+        // its own StmtId too.
+        c.break_labels[id] = end_label
+        c.continue_labels[id] = cond_label
+
+        old_break := c.cur_break_label
+        old_continue := c.cur_continue_label
+        c.cur_break_label = end_label
+        c.cur_continue_label = cond_label
 
         // jump into condition check
         cwritefln(c, "\tbr label %%%s", cond_label);
@@ -939,12 +983,32 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
 
         // exit
         cwritefln(c, "%s:", end_label);
+
+        c.cur_break_label = old_break
+        c.cur_continue_label = old_continue
     }
     case ExprId:
         reduce_expr_to_single_value(c, cg_expr(c, s));
     case IfElse: {
         id_suffix := next_tmp_index(c)
         end_label := aprintf(c, "end_label%d", id_suffix);
+
+        // Passthrough registration: if this IfElse sits inside an
+        // enclosing loop (tracked via c.cur_break_label/cur_continue_label,
+        // set by WhileLoop around its body), register the SAME targets
+        // under this IfElse's own StmtId. This makes a break/continue
+        // resolve correctly regardless of whether the resolution phase
+        // pointed it directly at the loop or at this intermediate IfElse.
+        // Guarded so an IfElse outside any loop doesn't insert a bogus
+        // empty-string entry (which would otherwise satisfy the `ok` check
+        // in BreakStmt/ContinueStmt and mask a real "break outside loop"
+        // error).
+        if c.cur_break_label != "" {
+            c.break_labels[id] = c.cur_break_label
+        }
+        if c.cur_continue_label != "" {
+            c.continue_labels[id] = c.cur_continue_label
+        }
 
         // Precompute all labels we'll need up front so branch targets
         // can reference "the next check" before that block is emitted.
@@ -1012,7 +1076,9 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             c.scope = new_gcscope(&old);
             for statement, i in a.block.stmts {
                 cg_stmt(c, statement);
-                if stmt_ends_block(statement) && i != len(s.base_block.stmts) - 1 {
+                // fixed: was comparing against len(s.base_block.stmts) —
+                // must check this alt branch's own block length.
+                if stmt_ends_block(statement) && i != len(a.block.stmts) - 1 {
                     gala_panic("nothing past will be executed");
                 }
             }
@@ -1030,7 +1096,9 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             c.scope = new_gcscope(&old);
             for statement, i in s.else_block.stmts {
                 cg_stmt(c, statement);
-                if stmt_ends_block(statement) && i != len(s.base_block.stmts) - 1 {
+                // fixed: was comparing against len(s.base_block.stmts) —
+                // must check the else block's own length.
+                if stmt_ends_block(statement) && i != len(s.else_block.stmts) - 1 {
                     gala_panic("nothing past will be executed");
                 }
             }
@@ -1310,9 +1378,14 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
         fn_type_id := obj.type.(TypeId)
         fn_ty := get_type(fn_type_id)
 
+        debugln("ENTER FN:", obj.name)
         sig := cg_abi_lower_signature(c, fn_type_id, .SysV)
         old_ret := c.cur_fn_ret
         c.cur_fn_ret = sig.ret
+
+        for a, i in fn_ty.fn.args {
+            debugln("  ARG", i, "name =", a.name, "type =", a.type)
+        }
 
         // write
         cwrite(c, "define ");
@@ -1329,6 +1402,7 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
         // raw parameter names as they appear in the signature, pre-coercion
         param_raw_names := make([dynamic]string, allocator=get_ctx().allocator)
         for a, i in fn_ty.fn.args {
+            debugln("ADDING ARG:", a.name)
             if wrote_any { cwritef(c, ", ") }
             wrote_any = true
             al := sig.args[i]
@@ -1416,7 +1490,15 @@ cgscope_get :: proc(scope: ^CGScope, v: string) -> CGObj {
         if ok do return n
         s = s.parent
     }
-    gala_panic(v, "doesn't exist")
+    s = scope
+    for s != nil {
+        for var in s.vars {
+            debugln("\t:", var)
+        }
+        s = s.parent
+    }
+    debugln(v, "doesn't exist")
+    return CGObj{kind=.Invalid}
 }
 
 // Escapes a byte for LLVM's c"..." string-constant syntax.
@@ -1483,6 +1565,8 @@ cg_module :: proc(ast: ^AST) {
     cgctx.b = &sb
     cgctx.llvm_ty = make(map[TypeId]string, allocator=get_ctx().allocator);
     cgctx.strings = make(map[string]StringGlobalResult, allocator=get_ctx().allocator);
+    cgctx.break_labels = make(map[StmtId]string, allocator=get_ctx().allocator);
+    cgctx.continue_labels = make(map[StmtId]string, allocator=get_ctx().allocator);
     cgctx.scope = new_gcscope(nil);
 
 

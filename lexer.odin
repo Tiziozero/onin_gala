@@ -29,6 +29,8 @@ Keyword :: enum {
     While,
     Extern,
     Struct,
+    Break,
+    Continue,
 }
 
 Token :: struct {
@@ -175,6 +177,18 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                     span = Span{start, i},
                     kind = .Keyword,
                     kw   = .Extern,
+                })
+            }else if ident == "break" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .Keyword,
+                    kw   = .Break,
+                })
+            }else if ident == "continue" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .Keyword,
+                    kw   = .Continue,
                 })
             }else if ident == "cast" {
                 append(&tokens, Token{
