@@ -1,8 +1,90 @@
-syn keyword galaKeyword fn struct return if else
-syn match galaNumber "\d\+"
-syn keyword galaType f16 f32 f64 u8 u16 u32 u64 i8 i16 i32 i64
+" ~/.vim/syntax/gala.vim
+
+if exists("b:current_syntax")
+    finish
+endif
+
+" ─────────────────────────────────────────────
+" Keywords
+" ─────────────────────────────────────────────
+
+syn keyword galaKeyword fn struct return if else while otherwise
+syn keyword galaKeyword extern break continue import
+
+" Builtin compiler/type operations
+syn keyword galaBuiltin cast transmute len sizeof any
+
+" Boolean literals
+syn keyword galaBoolean true false
+
+" ─────────────────────────────────────────────
+" Types
+" ─────────────────────────────────────────────
+
+syn keyword galaType
+            \ bool byte string
+            \ f16 f32 f64
+            \ i8 i16 i32 i64
+            \ u8 u16 u32 u64
+
+" ─────────────────────────────────────────────
+" Numbers
+" ─────────────────────────────────────────────
+
+" Hexadecimal
+syn match galaNumber "\<0[xX][0-9a-fA-F]\+\>"
+
+" Decimal integers
+syn match galaNumber "\<[0-9]\+\>"
+
+" Floating point
+syn match galaNumber "\<[0-9]\+\.[0-9]\+\>"
+
+" ─────────────────────────────────────────────
+" Strings
+" ─────────────────────────────────────────────
+
+syn region galaString
+            \ start=+"+
+            \ skip=+\\."+ 
+            \ end=+"+
+            \ contains=galaEscape
+
+syn match galaEscape contained "\\\\\|\\\"\|\\n\|\\t\|\\r\|\\0\|\\x[0-9a-fA-F]\{2}"
+
+" ─────────────────────────────────────────────
+" Comments
+" ─────────────────────────────────────────────
+
+syn match galaComment "//.*$"
+
+syn region galaComment
+            \ start="/\*"
+            \ end="\*/"
+
+" ─────────────────────────────────────────────
+" Function declarations / calls
+" ─────────────────────────────────────────────
+
+" fn foo(...)
+syn match galaFunctionDecl "\<fn\>\s\+\zs[A-Za-z_][A-Za-z0-9_]*"
+
+" foo(...)
+syn match galaFunctionCall "\<[A-Za-z_][A-Za-z0-9_]*\>\ze\s*("
+
+" ─────────────────────────────────────────────
+" Highlight links
+" ─────────────────────────────────────────────
 
 hi def link galaKeyword Keyword
-hi def link galaNumber Number
+hi def link galaBuiltin Keyword
+hi def link galaBoolean Boolean
 hi def link galaType Type
-" hi galaType guifg=#FF00FF ctermfg=Magenta
+hi def link galaNumber Number
+hi def link galaString String
+hi def link galaEscape SpecialChar
+hi def link galaComment Comment
+hi def link galaFunctionDecl Function
+hi def link galaFunctionCall Function
+
+let b:current_syntax = "gala"

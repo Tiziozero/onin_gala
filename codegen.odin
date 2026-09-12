@@ -1327,8 +1327,46 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
         panic("not an lvalue")
     }
 }
+// Declarations go through the same cg_abi_lower_signature as
+// definitions and calls — no more separate hand-rolled C ABI path.
+cg_fn_declaration :: proc(c: ^CGCtx, i: Item, id: ItemId) {
+    objid := get_ctx().item_objects[id]
+    obj := get_ctx().objs[objid]
+    fn_type_id := obj.type.(TypeId)
+    fn_ty := get_type(fn_type_id)
+
+    sig := cg_abi_lower_signature(c, fn_type_id, .SysV)
+
+    cwrite(c, "declare ");
+    cwritef(c, "%s ", sig.ret.mode == .Indirect ? "void" : sig.ret.coerced_type)
+    cwritef(c, "@%s ", obj.name);
+    cwrite(c, "(");
+
+    wrote_any := false
+    if sig.ret.mode == .Indirect {
+        cwritef(c, "ptr sret(%s) align %d", ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align)
+        wrote_any = true
+    }
+    for a, i in fn_ty.fn.args {
+        if wrote_any { cwritef(c, ", ") }
+        wrote_any = true
+        al := sig.args[i]
+        switch al.mode {
+        case .ByVal:
+            cwritef(c, "ptr byval(%s) align %d", ty_to_llvm_str(c, al.orig_type), al.byval_align)
+        case .Direct:
+            cwritef(c, "%s", al.coerced_type)
+        }
+    }
+    if fn_ty.fn.is_variadic {
+        if wrote_any { cwritef(c, ", ") }
+        cwritef(c, "...");
+    }
+    cwriteln(c, ")");
+}
 cg_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
+    case Import: {} // ok
     case StructDec: {
     }
     case ExternFnDec: {
@@ -1557,6 +1595,52 @@ emit_string_global :: proc(name: string, content: string) -> StringGlobalResult 
         s           = name,
     }
 }
+cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
+    for id in items {
+        debugln("CG ITEMS ITEM", get_item(id));
+        switch i in get_item(id) {
+        case Import: {
+            m := get_ctx().modules[i.fname];
+            cg_items_dec(ctx, m.ast.items, true); // gen items into this
+        }
+        case StructDec: {
+            item := i;
+            c := ctx;
+            cwritef(c, "%%%s = ", i.name);
+            cwrite(c, "type {")
+            ty :=get_type(get_ctx().item_types[id])
+            for f, i in ty.structure.fields {
+                debugfln("for struct %s field %d (%s) type %s",
+                    item.name, i, f.name,
+                    ty_to_llvm_str(c,f.type));
+                cwritef(c, "%s", ty_to_llvm_str(c,f.type));
+                if i != len(get_type(get_ctx().item_types[id]).structure.fields) -1 {
+                    cwrite(c, ",");
+                }
+            }
+            cwriteln(c, "}")
+        }
+        case FnDec: { 
+            debugln("ITEM FN:", i.name, aprintf(ctx, "@%s", i.name));
+            // declare first;
+            // it's a function , so use "@main" instead of "%main"
+            ctx.scope.vars[i.name] = {.Symbol, aprintf(ctx, "@%s", i.name)};
+            if is_import {
+                cg_fn_declaration(ctx, i, id);
+            }
+        }
+        case ExternFnDec: { 
+            debugln("ITEM EFN:", i.name);
+            // declare first;
+            // it's a function , so use "@main" instead of "%main"
+            ctx.scope.vars[i.name] = {.Symbol, aprintf(ctx, "@%s", i.name)};
+            if is_import {
+                cg_fn_declaration(ctx, i, id);
+            }
+        }
+        }
+    }
+}
 cg_module :: proc(ast: ^AST) {
     cgctx := CGCtx{}
     arena : mem.Dynamic_Arena;
@@ -1585,37 +1669,11 @@ cg_module :: proc(ast: ^AST) {
     fmt.sbprintfln(cgctx.b, "target triple = \"x86_64-pc-linux-gnu\" ");
 
     // structs need to be declared first??
-    for id in ast.items {
-        switch i in get_item(id) {
-        case StructDec: {
-            item := i;
-            c := &cgctx;
-            cwritef(c, "%%%s = ", i.name);
-            cwrite(c, "type {")
-            ty :=get_type(get_ctx().item_types[id])
-            for f, i in ty.structure.fields {
-                debugfln("for struct %s field %d (%s) type %s",
-                    item.name, i, f.name,
-                    ty_to_llvm_str(c,f.type));
-                cwritef(c, "%s", ty_to_llvm_str(c,f.type));
-                if i != len(get_type(get_ctx().item_types[id]).structure.fields) -1 {
-                    cwrite(c, ",");
-                }
-            }
-            cwriteln(c, "}")
-        }
-        case FnDec: { 
-            // declare first;
-            // it's a function , so use "@main" instead of "%main"
-            cgctx.scope.vars[i.name] = {.Symbol, aprintf(&cgctx, "@%s", i.name)};
-        }
-        case ExternFnDec: { 
-            // declare first;
-            // it's a function , so use "@main" instead of "%main"
-            cgctx.scope.vars[i.name] = {.Symbol, aprintf(&cgctx, "@%s", i.name)};
-        }
-        }
+    cg_items_dec(&cgctx, ast.items);
+    for i, v in cgctx.scope.vars {
+        debugln("OBJ:", v.name);
     }
+
     for s in get_ctx().data {
         t := new_tmp(&cgctx,p="string", symbol=true)
         v := emit_string_global(t, s);

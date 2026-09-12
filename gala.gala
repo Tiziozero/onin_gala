@@ -1,0 +1,10 @@
+extern fn printf(fmt:^byte, ..any);
+fn fn_in_gala(i: i32) {
+    s := "v from gala.gala: %d\n\0";
+    printf(&s[0], i);
+    return;
+}
+fn main2(i:i32) {
+    fn_in_gala(i);
+    return;
+}

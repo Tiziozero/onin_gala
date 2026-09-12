@@ -31,6 +31,7 @@ Keyword :: enum {
     Struct,
     Break,
     Continue,
+    Import,
 }
 
 Token :: struct {
@@ -189,6 +190,12 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                     span = Span{start, i},
                     kind = .Keyword,
                     kw   = .Continue,
+                })
+            }else if ident == "import" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .Keyword,
+                    kw   = .Import,
                 })
             }else if ident == "cast" {
                 append(&tokens, Token{

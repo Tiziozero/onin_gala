@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 Field :: struct {
     name: string,
     type: TypeId,
@@ -196,6 +197,7 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     case Symbol: {
         obj, ok := scope_get_object(s, e.name);
         if !ok {
+            debugln("objects:", s.items);
             highlight_lines(get_span(id).span);
             gala_panic("Couldn't find", e.name, "in scope.");
         }
@@ -496,6 +498,28 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     item := get(id)
     // foreward
     switch i in item {
+    case Import:        {
+        decs, ok := get_ctx().modules[i.fname];
+        if !ok {
+            fmt.panicf("File import \"%s\" is not in ctx modules.\n", i.fname);
+        }
+        for item, v in decs.declarations.items {
+            _, exists := s.items[item];
+            if exists {
+                debugln(item, v);
+                gala_panic("duplicate name.");
+            }
+            s.items[item] = v
+        }
+        for obj, v in decs.declarations.objects {
+            _, exists := s.objects[obj];
+            if exists {
+                debugln(item, v);
+                gala_panic("duplicate name.");
+            }
+            s.objects[obj] = v
+        }
+    }
     case StructDec:     new_type_fd(s, Type{kind=.Struct, name=i.name})
     case FnDec:         new_object_fd(s, Object{kind=.Variable, name=i.name});
     case ExternFnDec:   new_object_fd(s, Object{kind=.Variable, name=i.name});
@@ -506,6 +530,7 @@ resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
     item := get(id)
 
     switch _ in item {
+    case Import:        {}
     case StructDec:     resolve_struct_dec_item(s, id);
     case FnDec:         resolve_fn_dec_item(s, id);
     case ExternFnDec:   resolve_extern_fn_dec_item(s, id);

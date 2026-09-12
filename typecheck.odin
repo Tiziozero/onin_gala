@@ -595,6 +595,7 @@ tc_block :: proc(tc: ^TcContext, b: Block) {
 tc_item :: proc(tc: ^TcContext, id: ItemId) {
     item := get_item(id)
     switch i in item {
+    case Import: {} // ok
     case StructDec: {
         // ok?
     }

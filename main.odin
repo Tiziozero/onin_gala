@@ -200,10 +200,10 @@ main :: proc() { // odins context is passed down, not up, or some shi
             append(&command, "-L/usr/lib/x86_64-linux-gnu")
         }
 
-        append(&command, "-L./lib")
-        append(&command, "-L.")
-        append(&command, "-lraylib")
-        append(&command, "-ltestlib")
+        // append(&command, "-L./lib")
+        // append(&command, "-L.")
+        // append(&command, "-lraylib")
+        // append(&command, "-ltestlib")
         append(&command, "-lc")
         append(&command, "-lm")
 

@@ -786,7 +786,11 @@ ExternFnDec :: struct {
     span: Span,
 }
 
+Import :: struct {
+    fname, alias: string,
+}
 Item :: union {
+    Import,
     StructDec,
     FnDec,
     ExternFnDec,
@@ -957,8 +961,27 @@ parse_module_kw :: proc(p: ^Parser) -> ItemId {
         }
         return id;
     }
+    case .Import: { // import "file.gala";
+        current_name := get_ctx().current_file;
+        token := consume_token(p); // "import"
+        fname := consume_token(p); // file name?
+        if fname.kind != .String {
+            highlight_lines(fname.span)
+            gala_panic("Expected string.");
+        }
+        semi := expect_symbol(p, ";"); // ";"
+        handle_file(get_ctx(), fname.text);
+        id := new_item(Item(Import{fname=fname.text}))
+        get_ctx().spans.items[id] = {
+            file_name=get_ctx().current_file,
+            span={token.span.start, semi.span.end}
+        }
+        get_ctx().current_file = current_name
+        return id;
+    }
     case: panic("impl");
     }
+    panic("impl");
 }
 expect_symbol :: proc(p: ^Parser, str: string) -> Token {
     c := current_token(p);
