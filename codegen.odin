@@ -1,6 +1,7 @@
 // codegen.odin
 package main
 
+import "core:debug/trace"
 import "core:os"
 import "core:io"
 import "core:fmt"
@@ -46,7 +47,6 @@ CGCtx :: struct {
     b: ^strings.Builder,
     tmp_id: int,
     scope: CGScope,
-    llvm_ty: map[TypeId]string,
     strings: map[string]StringGlobalResult,
     cur_fn_ret: AbiRetLowering, // ABI lowering of the return value of the function currently being emitted
     break_labels: map[StmtId]string,    // loop (or if/else passthrough) StmtId -> label to jump to on `break`
@@ -218,7 +218,7 @@ ty_to_llvm_transmute_op :: proc(from_id, to_id: TypeId) -> (op: string, result: 
 }
 
 ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
-    t, ok := c.llvm_ty[id];
+    t, ok := get_ctx().llvm_ty[id];
     if ok { /*debugln("type found for:", id);*/ return t }
     ty := get_type(id)
     #partial switch ty.kind {
@@ -227,32 +227,32 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
         gala_panic("bug")
     case .Pointer: {
         s := fmt.aprintf("ptr", allocator=c.arena.block_allocator )
-        c.llvm_ty[id]=s
+        get_ctx().llvm_ty[id]=s
         return s
     }
     case .Flt64: {
-        c.llvm_ty[id]="double";
-        return c.llvm_ty[id]
+        get_ctx().llvm_ty[id]="double";
+        return get_ctx().llvm_ty[id]
     }
     case .Flt32: {
-        c.llvm_ty[id]="float";
-        return c.llvm_ty[id]
+        get_ctx().llvm_ty[id]="float";
+        return get_ctx().llvm_ty[id]
     }
     case .Int64: {
-        c.llvm_ty[id]="i64";
-        return c.llvm_ty[id]
+        get_ctx().llvm_ty[id]="i64";
+        return get_ctx().llvm_ty[id]
     }
     case .Int32: {
-        c.llvm_ty[id]="i32";
-        return c.llvm_ty[id]
+        get_ctx().llvm_ty[id]="i32";
+        return get_ctx().llvm_ty[id]
     }
     case .Int16: {
-        c.llvm_ty[id]="i16";
-        return c.llvm_ty[id]
+        get_ctx().llvm_ty[id]="i16";
+        return get_ctx().llvm_ty[id]
     }
     case .Void: {
-        c.llvm_ty[id]="void";
-        return c.llvm_ty[id]
+        get_ctx().llvm_ty[id]="void";
+        return get_ctx().llvm_ty[id]
     }
     case .Byte: return "i8";
     case .Bool: return "i1";
@@ -260,8 +260,8 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     case .Struct: {
         if ty.name != "" {
             n := aprintf(c, "%%%s", ty.name);
-            c.llvm_ty[id]=n;
-            return c.llvm_ty[id]
+            get_ctx().llvm_ty[id]=n;
+            return get_ctx().llvm_ty[id]
         } else {
             debugln(ty);
             panic("impl")
@@ -270,8 +270,8 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     case .FixedSizeArray: {
             n := aprintf(c, "[%d x %s]", ty.fixed_size_array.size,
                    ty_to_llvm_str(c, ty.fixed_size_array.type));
-            c.llvm_ty[id]=n;
-            return c.llvm_ty[id]
+            get_ctx().llvm_ty[id]=n;
+            return get_ctx().llvm_ty[id]
     }
     case .Slice, .String: {
         return "{ ptr, i64 }";
@@ -288,7 +288,7 @@ new_tmp::proc(c: ^CGCtx, p:="",symbol:=false) -> string {
     return fmt.aprintf("%%%s%d", p, next_tmp_index(c), allocator=c.arena.block_allocator);
 }
 aprintf :: proc(c: ^CGCtx, format: string, data: ..any) -> string {
-    res := fmt.aprintf(format, ..data, allocator=c.arena.block_allocator)
+    res := fmt.aprintf(format, ..data, allocator=get_ctx().allocator)
     return res
 }
 // returns value
@@ -1329,7 +1329,8 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
 }
 // Declarations go through the same cg_abi_lower_signature as
 // definitions and calls — no more separate hand-rolled C ABI path.
-cg_fn_declaration :: proc(c: ^CGCtx, i: Item, id: ItemId) {
+cg_fn_declaration :: proc(c: ^CGCtx, i: Item, id: ItemId, is_extern := false) {
+    if is_extern do debugln("IS EXTERNNNN");
     objid := get_ctx().item_objects[id]
     obj := get_ctx().objs[objid]
     fn_type_id := obj.type.(TypeId)
@@ -1338,8 +1339,14 @@ cg_fn_declaration :: proc(c: ^CGCtx, i: Item, id: ItemId) {
     sig := cg_abi_lower_signature(c, fn_type_id, .SysV)
 
     cwrite(c, "declare ");
+    name: string
+    if is_extern {
+        name = obj.name
+    } else {
+        name = get_ctx().cg_item_names[id] // use compilers cg item name
+    }
     cwritef(c, "%s ", sig.ret.mode == .Indirect ? "void" : sig.ret.coerced_type)
-    cwritef(c, "@%s ", obj.name);
+    cwritef(c, "@%s ", name);
     cwrite(c, "(");
 
     wrote_any := false
@@ -1432,7 +1439,8 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
         // write
         cwrite(c, "define ");
         cwritef(c, "%s ", sig.ret.mode == .Indirect ? "void" : sig.ret.coerced_type)
-        cwritef(c, "@%s ", obj.name);
+        obj_name := get_ctx().cg_item_names[id] // use compilers cg item name
+        cwritef(c, "@%s ", obj_name);
         cwrite(c, "(");
 
         wrote_any := false
@@ -1600,13 +1608,15 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
         debugln("CG ITEMS ITEM", get_item(id));
         switch i in get_item(id) {
         case Import: {
-            m := get_ctx().modules[i.fname];
+            mid := get_ctx().modules[i.fname];
+            m := get_ctx().mods[mid];
             cg_items_dec(ctx, m.ast.items, true); // gen items into this
         }
         case StructDec: {
             item := i;
             c := ctx;
-            cwritef(c, "%%%s = ", i.name);
+            name := mod_item_name(c, id);
+            cwritef(c, "%%%s = ", name);
             cwrite(c, "type {")
             ty :=get_type(get_ctx().item_types[id])
             for f, i in ty.structure.fields {
@@ -1621,27 +1631,52 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
             cwriteln(c, "}")
         }
         case FnDec: { 
-            debugln("ITEM FN:", i.name, aprintf(ctx, "@%s", i.name));
+            name := mod_item_name(ctx, id);
+            debugln("ITEM FN:", i.name, aprintf(ctx, "@%s", name));
             // declare first;
             // it's a function , so use "@main" instead of "%main"
-            ctx.scope.vars[i.name] = {.Symbol, aprintf(ctx, "@%s", i.name)};
+            ctx.scope.vars[i.name] = {.Symbol, aprintf(ctx, "@%s", name)};
             if is_import {
-                cg_fn_declaration(ctx, i, id);
+                cg_fn_declaration(ctx, i, id, is_extern=false);
             }
         }
         case ExternFnDec: { 
-            debugln("ITEM EFN:", i.name);
+            name := i.name // use normal name here since it's external
+            get_ctx().cg_item_names[id] = name
+            debugln("ITEM EFN:", name);
             // declare first;
             // it's a function , so use "@main" instead of "%main"
-            ctx.scope.vars[i.name] = {.Symbol, aprintf(ctx, "@%s", i.name)};
+            ctx.scope.vars[i.name] = {.Symbol, aprintf(ctx, "@%s", name)};
             if is_import {
-                cg_fn_declaration(ctx, i, id);
+                cg_fn_declaration(ctx, i, id, is_extern = true);
             }
         }
         }
     }
 }
-cg_module :: proc(ast: ^AST) {
+// Finds the top-level `main` function item in this module's AST (not one
+// pulled in via an import — entry point must be declared directly in the
+// entry file). Returns its ItemId so the caller can resolve its name
+// through the normal item/obj lookup, since item naming is going to change
+// soon and we don't want a separate hardcoded path for the entry symbol.
+find_main_item :: proc(ast: ^AST) -> (ItemId, bool) {
+    for id in ast.items {
+        #partial switch i in get_item(id) {
+        case FnDec:
+            if i.name == "main" {
+                return id, true
+            }
+        }
+    }
+    return {}, false
+}
+cg_module :: proc(m: ModId) {
+    module := get_ctx().mods[m]
+    ast := &module.ast;
+    is_entry := false
+    if module.path == get_ctx().entry_file {
+        is_entry = true
+    }
     cgctx := CGCtx{}
     arena : mem.Dynamic_Arena;
     mem.dynamic_arena_init(&arena)
@@ -1651,7 +1686,6 @@ cg_module :: proc(ast: ^AST) {
     strings.builder_init(&sb)
     defer strings.builder_destroy(&sb)
     cgctx.b = &sb
-    cgctx.llvm_ty = make(map[TypeId]string, allocator=get_ctx().allocator);
     cgctx.strings = make(map[string]StringGlobalResult, allocator=get_ctx().allocator);
     cgctx.break_labels = make(map[StmtId]string, allocator=get_ctx().allocator);
     cgctx.continue_labels = make(map[StmtId]string, allocator=get_ctx().allocator);
@@ -1660,19 +1694,12 @@ cg_module :: proc(ast: ^AST) {
 
     // boilerplate + garbage
     fmt.sbprintfln(cgctx.b, "; target info")
-    // fmt.sbprintfln(cgctx.b, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"");
-    // fmt.sbprintfln(cgctx.b, "target triple = \"x86_64-pc-linux-gnu\"")
-
-    //target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
-    //target triple = "x86_64-pc-linux-gnu"
     fmt.sbprintfln(cgctx.b, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"");
     fmt.sbprintfln(cgctx.b, "target triple = \"x86_64-pc-linux-gnu\" ");
 
+
     // structs need to be declared first??
     cg_items_dec(&cgctx, ast.items);
-    for i, v in cgctx.scope.vars {
-        debugln("OBJ:", v.name);
-    }
 
     for s in get_ctx().data {
         t := new_tmp(&cgctx,p="string", symbol=true)
@@ -1682,6 +1709,19 @@ cg_module :: proc(ast: ^AST) {
     }
     // gen
     cg_ast(&cgctx, ast)
+    if is_entry {
+        main_id, found := find_main_item(ast)
+        if !found {
+            gala_panic("entry file has no `main` function")
+        }
+        name := get_ctx().cg_item_names[main_id];
+        entry := aprintf(&cgctx, "@%s", name)
+
+        fmt.sbprintfln(cgctx.b,` define i32 @main(i32 %%argc, ptr %%argv) {{
+            %%result = call i32 %s()
+            ret i32 %%result
+        }`,  entry);
+    }
     // write
     dir_err := os.make_directory(".gala_build")
     if dir_err != io.Error.None {
@@ -1690,14 +1730,16 @@ cg_module :: proc(ast: ^AST) {
         }
     }
     c := &cgctx;
-    ll_name := aprintf(c,".gala_build/%s.ll", get_ctx().current_file)
+    name := mod_prefix_from_path(get_ctx().current_file, "gala.mod");
+    ll_name := aprintf(c,".gala_build/%s.ll", name)
+    debugln(ll_name)
     e := os.write_entire_file_from_string(ll_name, strings.to_string(sb))
     if e != io.Error.None {
         gala_panic("Failed to write to file:", e);
     }
     
     {
-        o_name := aprintf(c,".gala_build/%s.o", get_ctx().current_file)
+        o_name := aprintf(c,".gala_build/%s.o", name)
         // compile llvm "llc -filetype=obj a.ll -o a.o"
         p, err := os.process_start({command={"llc", "-filetype=obj", "-O2", 
             ll_name, "-o", o_name}});
@@ -1741,4 +1783,85 @@ path_to_file_prefix :: proc(c: ^CGCtx, path: string) -> string {
     out := string(buf)
     files_prefixes[path] = out
     return out
+}
+
+mod_type_name :: proc(c: ^CGCtx, tid: TypeId) -> string {
+    name, ok := get_ctx().cg_ty_names[tid];
+    if !ok {
+        mid, mid_ok := get_ctx().ty_modules[tid]
+        if !mid_ok {
+            debugln("MODULE:", tid)
+            panic("type has no module associated with it.");
+        }
+        mod_prefix, mok := get_ctx().cg_module_prefix[mid];
+        if !mok {
+            module := get_ctx().mods[mid];
+            mod_prefix = mod_prefix_from_path(module.path, prefix="gala.");
+            get_ctx().cg_module_prefix[mid] = mod_prefix
+        }
+        name = aprintf(c, "%s.%s", mod_prefix, get(tid).name);
+        get_ctx().cg_ty_names[tid] = name
+    }
+    return name
+}
+mod_item_name :: proc(c: ^CGCtx, id: ItemId) -> string {
+    oid := get_ctx().item_objects[id]
+    name, ok := get_ctx().cg_item_names[id];
+    if !ok {
+        mid, mok2 := get_ctx().obj_modules[oid]
+        if !mok2 {
+            debugln("OBJ MODULE:", oid, id)
+            panic("item has no module associated with it.");
+        }
+        mod_prefix, mok := get_ctx().cg_module_prefix[mid];
+        if !mok {
+            module := get_ctx().mods[mid];
+            mod_prefix = mod_prefix_from_path(module.path, prefix="gala.mod");
+            get_ctx().cg_module_prefix[mid] = mod_prefix
+        }
+        name = aprintf(c, "%s.%s", mod_prefix, get(oid).name);
+        get_ctx().cg_item_names[id] = name
+    }
+    return name
+}
+
+import "core:path/filepath"
+
+// "abc/efg/abc.txt" -> "myprefix_abc_efg_abc"
+mod_prefix_from_path :: proc(path: string, prefix: string = "prefix") -> string {
+    dir_all := filepath.dir(path); // "abc/efg"
+
+    dir, err := filepath.clean(dir_all);
+    assert(err == .None)
+
+    normalized, was_allocated := strings.replace_all(dir, "\\", "/");
+    defer if was_allocated {
+        delete(normalized);
+    }
+
+    parts := strings.split(normalized, "/");
+    defer delete(parts);
+
+    sb := strings.builder_make();
+    strings.write_string(&sb, prefix);
+
+    for part in parts {
+        if part == "" || part == "." {
+            continue;
+        }
+        strings.write_string(&sb, "_");
+        strings.write_string(&sb, part);
+    }
+
+    // Append the filename (without extension).
+    base := filepath.base(path); // "abc.txt"
+    ext := filepath.ext(base);   // ".txt"
+    stem := base[:len(base)-len(ext)]; // "abc"
+
+    if stem != "" {
+        strings.write_string(&sb, "_");
+        strings.write_string(&sb, stem);
+    }
+
+    return strings.to_string(sb);
 }

@@ -1,5 +1,6 @@
 #!/bin/bash
 set -x
+set -e
 
 odin build . -out=galac && ./galac main.gala -o main
 export LD_LIBRARY_PATH=./ && ./main

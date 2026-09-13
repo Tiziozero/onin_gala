@@ -1,4 +1,4 @@
-import "gala.gala";
+import "src/gala.gala";
 
 fn main() {
     if false == false {

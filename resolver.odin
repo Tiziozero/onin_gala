@@ -45,7 +45,7 @@ name_exists :: proc(scope: ^Scope, n: string) -> bool {
     return false
 }
 new_object :: proc(s: ^Scope, o: Object) -> ObjId {
-    get_ctx := get_ctx()
+    ctx := get_ctx()
     assert(o.kind != .Invalid);
     assert(len(o.name) > 0);
 
@@ -54,14 +54,16 @@ new_object :: proc(s: ^Scope, o: Object) -> ObjId {
         gala_panicf("object %s already exists.", get(s.objects[o.name]).name);
     }
 
-    append(&get_ctx.objs, o);
-    id := ObjId(len(get_ctx.objs)-1);
+    append(&ctx.objs, o);
+    id := ObjId(len(ctx.objs)-1);
     s.objects[o.name] = id
+    debugln("SETTING OBJ MOD ID:", id, get_ctx().current_module_id);
+    ctx.obj_modules[id] = get_ctx().current_module_id;
     return id
 }
 
 new_type :: proc(s: ^Scope, t: Type) -> TypeId {
-    get_ctx := get_ctx();
+    ctx := get_ctx();
     assert(t.kind != .Invalid);
     assert(len(t.name) > 0);
 
@@ -70,35 +72,42 @@ new_type :: proc(s: ^Scope, t: Type) -> TypeId {
         gala_panicf("Name \"%s\" already declared.", t.name);
     }
 
-    append(&get_ctx.types, t);
-    id := TypeId(len(get_ctx.types)-1);  // allocate type
+    append(&ctx.types, t);
+    id := TypeId(len(ctx.types)-1);  // allocate type
     s.types[t.name] = id
+    ctx.ty_modules[id] = ctx.current_module_id;
     return id
 }
 new_object_fd :: proc(s: ^ModuleScope, o: Object) -> ObjId {
-    get_ctx := get_ctx()
+    ctx := get_ctx()
     assert(o.kind != .Invalid);
     assert(len(o.name) > 0);
 
     // make sure it doesn't exist
-    assert(!name_exists(s, o.name));
+    if name_exists(s, o.name) {
+        gala_panicf("Name \"%s\" already declared.", o.name);
+    }
 
-    append(&get_ctx.objs, o);
-    id := ObjId(len(get_ctx.objs)-1);
+    append(&ctx.objs, o);
+    id := ObjId(len(ctx.objs)-1);
     s.obj_foreward[o.name] = id
+    ctx.obj_modules[id] = ctx.current_module_id;
     return id
 }
 new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
-    get_ctx := get_ctx()
+    ctx := get_ctx()
     assert(t.kind != .Invalid);
     assert(len(t.name) > 0);
 
     // make sure it doesn't exist
-    assert(!name_exists(s, t.name));
+    if name_exists(s, t.name) {
+        gala_panicf("Name \"%s\" already declared.", t.name);
+    }
 
-    append(&get_ctx.types, t);
-    id := TypeId(len(get_ctx.types)-1); 
+    append(&ctx.types, t);
+    id := TypeId(len(ctx.types)-1); 
     s.ty_foreward[t.name] = id
+    ctx.ty_modules[id] = ctx.current_module_id;
     return id
 }
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
@@ -499,10 +508,12 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     // foreward
     switch i in item {
     case Import:        {
-        decs, ok := get_ctx().modules[i.fname];
+        modid, ok := get_ctx().modules[i.fname];
         if !ok {
-            fmt.panicf("File import \"%s\" is not in ctx modules.\n", i.fname);
+            fmt.panicf("File import \"%s\" doesn't have a module id associated with it.\n", i.fname);
         }
+        decs:= get_ctx().mods[modid];
+
         for item, v in decs.declarations.items {
             _, exists := s.items[item];
             if exists {
@@ -575,7 +586,16 @@ free_module_scope :: proc(s: ^ModuleScope) {
 
     s^ = {};
 }
-resolve_module_ast :: proc(ast: ^AST) -> ModuleScope {
+Module :: struct {
+    declarations: ModuleScope,
+    ast: AST,
+    path: string,
+}
+resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
+    append(&get_ctx().mods, Module{});
+    mid := ModId(len(get_ctx().mods) - 1);
+    get_ctx().current_module_id = mid; // for objects and what not
+
     global_scope := new_module_scope(&get_ctx().base_mod)
 
     for id in ast.items {
@@ -585,7 +605,11 @@ resolve_module_ast :: proc(ast: ^AST) -> ModuleScope {
     for id in ast.items {
         resolve_item(&global_scope, id)
     }
-    return global_scope;
-    // no need to  free, allocated via ctx allocator
-    // free_module_scope(&global_scope)
+    // assign module
+    get_ctx().mods[mid] = Module {
+        declarations=global_scope,
+        ast=ast^,
+        path=path,
+    }
+    return mid;
 }

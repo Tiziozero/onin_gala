@@ -7,11 +7,13 @@ import "core:os"
 import "core:strings"
 
 
-ExprId :: distinct u32
-StmtId :: distinct u32
-ItemId :: distinct u32
-TypeId :: distinct u32
-ObjId  :: distinct u32
+ExprId  :: distinct u32
+StmtId  :: distinct u32
+ItemId  :: distinct u32
+TypeId  :: distinct u32
+ObjId   :: distinct u32
+ModId   :: distinct u32
+
 Context :: struct {
     program_name:       string,
     arena:              virtual.Arena,
@@ -21,6 +23,7 @@ Context :: struct {
     exprs:              [dynamic]Expr,
     stmts:              [dynamic]Stmt,
     items:              [dynamic]Item,
+    mods:               [dynamic]Module,
     types:              [dynamic]Type,
     objs :              [dynamic]Object,
     // strings
@@ -36,6 +39,9 @@ Context :: struct {
     stmt_objects:       map[StmtId]ObjId,
     stmt_types:         map[StmtId]TypeId,
     break_lables:       map[StmtId]StmtId, // includes continue
+
+    obj_modules:        map[ObjId]ModId,
+    ty_modules:         map[TypeId]ModId,
 
     // for other stuff that need to know things only available
     // at resolution phase
@@ -53,9 +59,17 @@ Context :: struct {
         // includes item decs + regular vardecs since both use ObjId
         objs_decs: map[ObjId]struct{file_name: string, span: Span},
     },
-    files:      map[string]string,
-    o_files:    [dynamic]string,
-    modules:    map[string]struct{declarations: ModuleScope, ast: AST},
+    files:                                  map[string]string,
+    parsing:                                map[string]string,
+    o_files:                                [dynamic]string,
+    modules:                                map[string]ModId,
+
+    llvm_ty:                                map[TypeId]string,
+    cg_item_names:                          map[ItemId]string,
+    cg_ty_names:                            map[TypeId]string,
+    cg_module_prefix:                       map[ModId]string,
+    current_module_id:                      ModId,
+    entry_file:                             string,
 }
 
 FileLine :: struct {
