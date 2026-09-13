@@ -1,0 +1,53 @@
+extern fn printf(fmt: ^byte, ..i32);
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn add(a: i32, b: i32): i32 {
+    return a + b;
+}
+
+// exercises: while + break + continue, comparisons, mutation via assignment
+fn sum_to(n: i32): i32 {
+    total : i32 = 0;
+    i : i32 = 0;
+    while i < n {
+        i = i + 1;
+        if i == 3 {
+            continue;
+        }
+        if i > 100 {
+            break;
+        }
+        total = total + i;
+    }
+    return total;
+}
+
+// exercises: struct literal, field access, field mutation via pointer
+fn make_point(x: i32, y: i32): Point {
+    p := Point{x= x, y= y};
+    return p;
+}
+
+fn move_point(p: ^Point, dx: i32, dy: i32) {
+    p^.x = p^.x + dx;
+    p^.y = p^.y + dy;
+    return;
+}
+
+// exercises: casts between widths, int<->float
+fn widen_and_float(a: i32): f64 {
+    b: i64 = cast(i64)a;
+    f: f64 = cast(f64)b;
+    return f;
+}
+
+// exercises: string + printf variadic
+fn greet(name: string) {
+    s := "hello from lib, arg len is %d\n\0";
+    printf(&s[0], len(name));
+    return;
+}

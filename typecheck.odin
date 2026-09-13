@@ -236,7 +236,10 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         tc_expr(tc, e.target);
         target_tid := expr_ty(e.target);
         target_ty := get_type(target_tid);
-        assert(target_ty.kind == .Struct);
+        if target_ty.kind != .Struct {
+            highlight_lines(get_span(id).span);
+            gala_panic("can't access field of object of type:", tts(target_tid))
+        }
         fields := target_ty.structure.fields;
         for f in fields {
             if f.name == e.field {
@@ -331,8 +334,9 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
         ty, ok, s := compare_and_reduce_types(left_ty, right_ty);
         if !ok {
+            
             highlight_lines(get_span(id).span)
-            gala_panic(s)
+            gala_panic(s, tts(left_ty), "vs", tts(right_ty))
         }
         /*if is_untyped(ty) {
             ty = get_untyped_default(ty);

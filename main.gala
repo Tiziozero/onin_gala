@@ -1,10 +1,24 @@
-import "src/gala.gala";
+import "src/lib.gala";
 
-fn main() {
-    if false == false {
-        main2(1);
-    } otherwise {
-        main2(2);
+fn main(): i32 {
+    x := 7;
+    if x < 5 {
+        y := add(1, 1);
+    } else {
+        y := add(3, 3);
     }
-    return;
+
+    total := sum_to(10);
+
+    p := make_point(1, 2);
+    move_point(&p, 5, 5);
+
+    f := widen_and_float(total);
+
+    greet("gala");
+
+    fmt := "total=%d px=%d py=%d\n\0";
+    printf(&fmt[0], total, p.x, p.y);
+
+    return 0;
 }
