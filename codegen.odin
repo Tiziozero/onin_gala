@@ -1,7 +1,6 @@
 // codegen.odin
 package main
 
-import "core:debug/trace"
 import "core:os"
 import "core:io"
 import "core:fmt"
@@ -1615,7 +1614,7 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
         case StructDec: {
             item := i;
             c := ctx;
-            name := mod_item_name(c, id);
+            name := mod_item_type_name(c, id);
             cwritef(c, "%%%s = ", name);
             cwrite(c, "type {")
             ty :=get_type(get_ctx().item_types[id])
@@ -1631,7 +1630,7 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
             cwriteln(c, "}")
         }
         case FnDec: { 
-            name := mod_item_name(ctx, id);
+            name := mod_item_obj_name(ctx, id);
             debugln("ITEM FN:", i.name, aprintf(ctx, "@%s", name));
             // declare first;
             // it's a function , so use "@main" instead of "%main"
@@ -1785,12 +1784,13 @@ path_to_file_prefix :: proc(c: ^CGCtx, path: string) -> string {
     return out
 }
 
-mod_type_name :: proc(c: ^CGCtx, tid: TypeId) -> string {
+mod_item_type_name :: proc(c: ^CGCtx, id: ItemId) -> string {
+    tid := get_ctx().item_types[id]
     name, ok := get_ctx().cg_ty_names[tid];
     if !ok {
         mid, mid_ok := get_ctx().ty_modules[tid]
         if !mid_ok {
-            debugln("MODULE:", tid)
+            debugln("MODULE:", id)
             panic("type has no module associated with it.");
         }
         mod_prefix, mok := get_ctx().cg_module_prefix[mid];
@@ -1801,10 +1801,11 @@ mod_type_name :: proc(c: ^CGCtx, tid: TypeId) -> string {
         }
         name = aprintf(c, "%s.%s", mod_prefix, get(tid).name);
         get_ctx().cg_ty_names[tid] = name
+        get_ctx().llvm_ty[tid] = aprintf(c, "%%%s", name); // set llvm ty as well
     }
     return name
 }
-mod_item_name :: proc(c: ^CGCtx, id: ItemId) -> string {
+mod_item_obj_name :: proc(c: ^CGCtx, id: ItemId) -> string {
     oid := get_ctx().item_objects[id]
     name, ok := get_ctx().cg_item_names[id];
     if !ok {

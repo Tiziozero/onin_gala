@@ -508,9 +508,10 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     // foreward
     switch i in item {
     case Import:        {
-        modid, ok := get_ctx().modules[i.fname];
+        resolved := resolve_import_path(get_ctx().current_file, i.fname)
+        modid, ok := get_ctx().modules[resolved];
         if !ok {
-            fmt.panicf("File import \"%s\" doesn't have a module id associated with it.\n", i.fname);
+            fmt.panicf("File import \"%s\" doesn't have a module id associated with it.\n", resolved);
         }
         decs:= get_ctx().mods[modid];
 

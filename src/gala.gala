@@ -1,4 +1,4 @@
-extern fn printf(fmt:^byte, ..any);
+import "../test.gala";
 fn fn_in_gala(i: i32) {
     s := "v from gala.gala: %d\n\0";
     printf(&s[0], i);
@@ -6,5 +6,6 @@ fn fn_in_gala(i: i32) {
 }
 fn main2(i:i32) {
     fn_in_gala(i);
+    fn_in_gala(f_int(i));
     return;
 }

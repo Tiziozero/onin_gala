@@ -699,8 +699,3 @@ fn test_calls(): i64 {
 
     return sink;
 }
-
-
-fn main(): i64 {
-    return test_calls();
-}
