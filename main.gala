@@ -1,24 +1,14 @@
-import "src/lib.gala";
+extern fn printf(fmt: ^byte, data:..any);
 
-fn main(): i32 {
-    x := 7;
-    if x < 5 {
-        y := add(1, 1);
-    } else {
-        y := add(3, 3);
+fn print_i32(fmt: string, data: ..i32) {
+    i := 0;
+    while i < len(data) {
+        printf(&fmt[0], data[i]);
     }
+    return;
+}
 
-    total := sum_to(10);
-
-    p := make_point(1, 2);
-    move_point(&p, 5, 5);
-
-    f := widen_and_float(total);
-
-    greet("gala");
-
-    fmt := "total=%d px=%d py=%d\n\0";
-    printf(&fmt[0], total, p.x, p.y);
-
-    return 0;
+fn main() {
+    print_i32("Hello, %d.\n", 1, 2, 3, 4, 5);
+    return;
 }

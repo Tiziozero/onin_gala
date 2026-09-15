@@ -57,6 +57,14 @@ compare_and_reduce_numerics :: proc(l, r: TypeId) -> (TypeId, bool, string) {
 }
 compare_and_reduce_types :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     if l == r do return l, true, ""
+    lk := get_type(l).kind
+    rk := get_type(r).kind
+    if lk == .Any {
+        return r, true, ""
+    }
+    if rk == .Any {
+        return l, true, ""
+    }
     if is_numeric(l) && is_numeric(r) {
         return compare_and_reduce_numerics(l, r);
     }
@@ -101,6 +109,21 @@ can_equal :: proc(id: TypeId) -> bool {
 can_order :: proc(id: TypeId) -> bool {
     return is_integer(id) || is_float(id) || is_byte_like(id)
 }
+mark_arg :: proc(arg: ^FnCallArg, param_ty: TypeId, r: TypeId) {
+    earg := arg.expr;
+    if get(param_ty).kind == .Any {
+        // if it's untyped (because target is "any" or other valid untyped targets)
+        if is_untyped(expr_ty(earg)) {
+            get_ctx().expr_types[earg] = get_untyped_default(expr_ty(earg))
+        }
+        arg.needs_boxing = true;
+        arg.box_type = expr_ty(earg);
+    } else {
+        assert(r == param_ty); // should always match
+        propagate_type(r, earg);
+    }
+}
+
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     switch e in get_expr(id) {
     case UnNegative: {
@@ -438,29 +461,33 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             }
         }
         for a in e.args {
-            tc_expr(tc, a);
-            /* if is_untyped(expr_ty(a)) {
-                get_ctx().expr_types[a] = get_untyped_default(expr_ty(a))
-            } */
+            tc_expr(tc, a.expr);
         }
+
         for i in 0..<len(fargs) {
-            earg := e.args[i];
+            earg := e.args[i].expr;
             farg := fargs[i];
+            if ty.fn.is_variadic && i == len(fargs) - 1 {
+                break // skip to variadic check
+            }
             r, ok, s := compare_and_reduce_types(farg.type, expr_ty(earg));
             if !ok {
                 highlight_lines(get_span(earg).span);
                 gala_panicf("Type Mismatch: %s (expected %s, got %s)",
                     s, tts(farg.type), tts(expr_ty(earg)));
             }
-            assert(r == farg.type); // should always match
-            propagate_type(r, earg);
+            mark_arg(&e.args[i], farg.type, r);
         }
-        // default for rest
-        for i in len(fargs)..<len(e.args) {
-            a := e.args[i]
-            if is_untyped(expr_ty(a)) {
-                get_ctx().expr_types[a] = get_untyped_default(expr_ty(a))
+        // default for rest (variadic tail)
+        if ty.fn.is_variadic do for i in len(fargs)..<len(e.args) {
+            earg := e.args[i].expr;
+            r, ok, err := compare_and_reduce_types(ty.fn.variadic_ty, expr_ty(earg));
+            if !ok {
+                highlight_lines(get_span(earg).span);
+                gala_panicf("Type Mismatch: %s (expected %s, got %s)",
+                    err, tts(ty.fn.variadic_ty), tts(expr_ty(earg)));
             }
+            mark_arg(&e.args[i], ty.fn.variadic_ty, r);
         }
         get_ctx().expr_types[id] = ty.fn.ret_ty
     }
@@ -500,15 +527,15 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
         tc_expr(tc, stmt.base_con);
         // make it numeric
         if get_type(expr_ty(stmt.base_con)).kind != .Bool {
-            debugln(get_type(expr_ty(stmt.base_con)))
-            gala_panic("not a bool?");
+            highlight_lines(get_span(stmt.base_con).span)
+            gala_panic("not a bool.");
         }
         tc_block(tc, stmt.base_block);
         for a in stmt.alt {
             tc_expr(tc, a.cond);
             // make it numeric
             if get_type(expr_ty(a.cond)).kind != .Bool {
-                debugln(get_type(expr_ty(a.cond)))
+                highlight_lines(get_span(stmt.base_con).span)
                 gala_panic("not a bool?");
             }
             tc_block(tc, a.block);
@@ -607,13 +634,9 @@ tc_item :: proc(tc: ^TcContext, id: ItemId) {
         // ok ig?
     }
     case FnDec: {
-        debugln("TC FN:", i.name);
         fn, ok := get_ctx().item_objects[id]; assert(ok);
         type := get_type(get_obj(fn).type.(TypeId));
         assert(type.kind == .Function);
-        for arg in type.fn.args {
-            debugln("ARG:", arg.name);
-        }
         new_tc := tc^;
         new_tc.in_function = true;
         new_tc.fn_ret_ty = type.fn.ret_ty;

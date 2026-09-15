@@ -1,4 +1,12 @@
-extern fn printf(fmt: ^byte, ..i32);
+extern fn printf(fmt: ^byte, data:..any);
+
+fn print_i32(fmt: string, data: ..i32) {
+    i := 0;
+    while i < len(data) {
+        printf(&fmt[0], data[i]);
+    }
+    return;
+}
 
 struct Point {
     x: i32,

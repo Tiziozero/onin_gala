@@ -43,7 +43,15 @@ Type :: struct {
     name: string,
     kind: TypeKind,
     ptr: TypeId,
-    fn: struct { args: []Arg, ret_ty: TypeId, is_variadic: bool, variadic_ty: TypeId, is_external: bool},
+    fn: struct {
+        args: []Arg,
+        ret_ty: TypeId,
+        is_variadic: bool,
+        variadic_ty: TypeId,
+        is_external: bool,
+        // for variadics/any
+        versions: [dynamic]struct{llvm_fn_name: string, args:[]Arg},
+    },
     structure: struct {fields: []Field},
     fixed_size_array: struct { type: TypeId, size: int },
     slice: struct{type: TypeId},
@@ -131,6 +139,7 @@ type_size :: proc(id: TypeId) -> int {
     case .Pointer, .Function:
         return 8
 
+    case .Any: return 16; // { ptr + type_id }
     case:
         return type_kind_size(t.kind)
     }

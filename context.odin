@@ -7,12 +7,12 @@ import "core:os"
 import "core:strings"
 
 
-ExprId  :: distinct u32
-StmtId  :: distinct u32
-ItemId  :: distinct u32
-TypeId  :: distinct u32
-ObjId   :: distinct u32
-ModId   :: distinct u32
+ExprId  :: distinct u64
+StmtId  :: distinct u64
+ItemId  :: distinct u64
+TypeId  :: distinct u64
+ObjId   :: distinct u64
+ModId   :: distinct u64
 
 Context :: struct {
     program_name:       string,

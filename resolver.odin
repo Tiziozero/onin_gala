@@ -10,6 +10,7 @@ Arg :: struct {
     name: string,
     type: TypeId,
     span: Span,
+    is_variadic: bool,
 }
 ObjectKind :: enum {
     Invalid,
@@ -57,7 +58,6 @@ new_object :: proc(s: ^Scope, o: Object) -> ObjId {
     append(&ctx.objs, o);
     id := ObjId(len(ctx.objs)-1);
     s.objects[o.name] = id
-    debugln("SETTING OBJ MOD ID:", id, get_ctx().current_module_id);
     ctx.obj_modules[id] = get_ctx().current_module_id;
     return id
 }
@@ -215,7 +215,7 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     case FnCall: {
         resolve_expr(s, e.target);
         for a in e.args {
-            resolve_expr(s, a);
+            resolve_expr(s, a.expr);
         }
     }
 
@@ -419,7 +419,9 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     get_ctx().item_types[id] = tid;
 }
 
-resolve_fn_dec_signature :: proc(s: ^ModuleScope, fndec: FnDecSignature) -> (Type, Scope) {
+resolve_fn_dec_signature :: proc(s: ^ModuleScope, fndec: FnDecSignature, extern := false) -> (Type, Scope) {
+    is_variadic := false
+    variadic_type := TypeId(0)
     // create fn type
     fnty := Type{}
     fnty.kind = .Function;
@@ -429,30 +431,36 @@ resolve_fn_dec_signature :: proc(s: ^ModuleScope, fndec: FnDecSignature) -> (Typ
     } else {
         fnty.fn.ret_ty = void_type();
     }
-    debugln("RESOLVING FN:", fndec.name);
     // new scope for args
     // args
     new_scope := new_scope(s);
     args := make([]Arg, len(fndec.args), allocator=get_ctx().allocator)
     declared := make(map[string]Arg)
-    is_variadic := false;
     variadic_ty: TypeId
     for a, i in fndec.args {
-        debugln("RESOLVING FN ARG:", a.name);
         t := resolve_type_specifier(&new_scope, a.t)
         if da, ok := declared[a.name]; ok {
             // print declared arf
             print_lines(get_file_lines(get_ctx().current_file, da.span), da.span)
             gala_panic("Duplicate argument. Arg already declared here.")
         }
-        args[i] = Arg{a.name, t, a.span}
-        declared[a.name] = Arg{a.name, t, a.span}
-        new_object(&new_scope, Object{.Argument, a.name, t});
-    }
-    if fndec.is_variadic {
-        t := resolve_type_specifier(s, fndec.variadic_ty);
-        variadic_ty = t
-        is_variadic = true
+        arg_t := t;
+        if a.is_variadic && !extern { // would be last arg ig.
+            if i != len(fndec.args) - 1 {
+                highlight_lines(a.span);
+                gala_panic("Variadic argument must be last argument.");
+            }
+            // declare type for internal gala stuff
+            type := Type{kind=.Slice, slice={type=t}};
+            arg_t = intern_type(type);
+
+            is_variadic = true
+            variadic_ty = t
+        }
+        arg := Arg{a.name, arg_t, a.span, false}
+        args[i] = arg
+        declared[a.name] = arg
+        new_object(&new_scope, Object{.Argument, a.name, arg_t});
     }
     fnty.fn.args = args
     fnty.fn.is_variadic = is_variadic
@@ -519,7 +527,7 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
             _, exists := s.items[item];
             if exists {
                 debugln(item, v);
-                gala_panic("duplicate name.");
+                gala_panicf("duplicate name.");
             }
             s.items[item] = v
         }

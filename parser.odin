@@ -105,9 +105,13 @@ FieldAccess :: struct {
 }
 FnCall :: struct {
     target: ExprId,
-    args: [dynamic]ExprId,
+    args: [dynamic]FnCallArg,
 }
-
+FnCallArg :: struct{
+    expr: ExprId,
+    needs_boxing: bool,
+    box_type: TypeId,
+};
 op_kind :: proc(t: Token) -> (kind: BinopKind, ok: bool) {
     switch t.text {
     case "+":  return .Addition,     true
@@ -619,11 +623,11 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
     for {
         if is_symbol(current_token(p), "(") {
             start := consume_token(p); // "("
-            args := make([dynamic]ExprId, allocator=get_ctx().allocator);
+            args := make([dynamic]FnCallArg, allocator=get_ctx().allocator);
             // "until it meets a ")"
             for !is_symbol(current_token(p), ")") {
                 e := parse_expr(p);
-                append(&args, e)
+                append(&args, FnCallArg{expr=e})
                 if is_symbol(current_token(p), ",") {
                     consume_token(p); // ","
                 } else do break
@@ -763,13 +767,11 @@ parse_block :: proc(p: ^Parser) -> Block{
     return Block{stmts=stmts[:]}
 }
 
-FnDecArg :: struct{name: string, t: TypeSpecifier, span: Span}
+FnDecArg :: struct{name: string, t: TypeSpecifier, span: Span, is_variadic: bool}
 FnDecSignature :: struct {
     name: string,
     args: []FnDecArg, 
     ret_ty: Maybe(TypeSpecifier),
-    is_variadic: bool,
-    variadic_ty: TypeSpecifier,
 }
 FnDec :: struct {
     using signature: FnDecSignature,
@@ -864,23 +866,20 @@ parse_fn_signature :: proc(p: ^Parser) -> FnDec {
     f := FnDec{};
     name := expect_ident(p);
     f.name = name.text;
-    debugln("FNDEC  NAME:", name.text)
     // args
     args := make([dynamic]FnDecArg)
     expect_symbol(p, "(");
     for !is_symbol(current_token(p), ")") {
+        name := expect_ident(p);
+        expect_symbol(p, ":")
         if is_symbol(current_token(p), ".") &&
             is_symbol(next_token(p), ".") {
             token := consume_token(p); // "."
             consume_token(p); // "."
             t := parse_type(p);
-            f.is_variadic = true;
-            f.variadic_ty = t;
+            append(&args, FnDecArg{name=name.text, t=t, span=name.span, is_variadic=true})
             break;
         }
-        name := expect_ident(p);
-        debugln("FNDEC ARG NAME:", name)
-        expect_symbol(p, ":")
         ty := parse_type(p);
         append(&args, FnDecArg{name=name.text, t=ty, span=name.span})
         if is_symbol(current_token(p), ",") {

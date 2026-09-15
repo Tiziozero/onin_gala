@@ -76,7 +76,9 @@ type_align_of :: proc(type_id: TypeId) -> int {
         return 2
     case .UInt_8, .Int_8, .Flt_8, .Byte, .Rune, .Bool:
         return 1
-    case .Slice, .String:
+    case .Slice, .String, .Any:
+        // `any` is boxed as { ptr, i64 } — identical header shape to a
+        // slice/string, so it carries the same 8-byte alignment.
         return 8
     case .FixedSizeArray:
         return type_align_of(ty.fixed_size_array.type)
@@ -130,9 +132,16 @@ classify_into_eightbytes :: proc(type_id: TypeId, base_offset: int, eb: ^[2]AbiE
             classify_into_eightbytes(ty.fixed_size_array.type, base_offset + i * elem_size, eb)
         }
     }
-    case .Slice, .String: {
+    case .Slice, .String, .Any: {
         // { ptr, i64 } — two INTEGER eightbytes. Always eightbyte-aligned
-        // within the parent since its own alignment is 8.
+        // within the parent since its own alignment is 8. `any`'s second
+        // field is a runtime typeid tag rather than a length, but that's
+        // irrelevant to classification: both fields are still 8-byte
+        // Integer-class words, so it merges exactly like a slice header.
+        // Without this case an `any` nested inside a larger struct/array
+        // would fall through to the scalar default below and get
+        // misclassified as a single 8-byte field, silently dropping its
+        // second word.
         idx0 := base_offset / 8
         eb[idx0].class = merge_abi_class(eb[idx0].class, .Integer)
         eb[idx0 + 1].class = merge_abi_class(eb[idx0 + 1].class, .Integer)
@@ -268,8 +277,16 @@ lower_abi_value :: proc(type_id: TypeId) -> (bool, string, bool, int) {
          .Bool, .Byte, .Rune, .Pointer, .Function:
         // plain scalar, passed as-is, never coerced
         return false, scalar_llvm_str(type_id), false, type_align_of(type_id)
-    case .Slice, .String:
-        // already the correct 2-eightbyte { ptr, i64 } layout
+    case .Slice, .String, .Any:
+        // already the correct 2-eightbyte { ptr, i64 } layout — `any` is
+        // boxed at the call site (see cg_box_any in codegen.odin) into
+        // exactly this shape before it ever reaches ABI lowering, so a
+        // function declared/defined/called with an `any` parameter or
+        // return type needs no different treatment here than a
+        // slice/string header would. This is the one place that has to
+        // know about it for fn definitions, extern declarations, AND
+        // call sites to all agree — they all funnel through
+        // cg_abi_lower_signature below.
         return false, "{ ptr, i64 }", false, 8
     case .Struct, .FixedSizeArray:
         c := classify_type(type_id)
@@ -282,6 +299,7 @@ lower_abi_value :: proc(type_id: TypeId) -> (bool, string, bool, int) {
         coerced := fmt.tprintf("{{ %s, %s }}", c.eightbytes[0].llvm_type, c.eightbytes[1].llvm_type)
         return false, coerced, true, c.align
     case:
+        debugln(get(type_id))
         gala_panic("lower_abi_value: unhandled kind")
     }
     return false, "", false, 0

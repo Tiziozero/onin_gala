@@ -110,14 +110,12 @@ handle_file :: proc(ctx: ^Context, file_name: string) -> string {
         // dependency) — nothing more to do.
         return resolved
     }
-    debugln("resolved:", resolved)
 
     data, err := os.read_entire_file(resolved, ctx.allocator)
     if err != io.Error.None {
         gala_panic("Failed to read file:", resolved)
     }
 
-    debugln("file size:", len(data));
     ctx.files[resolved] = string(data)
     ctx.parsing[resolved] = string(data)
 
@@ -132,13 +130,9 @@ handle_file :: proc(ctx: ^Context, file_name: string) -> string {
     tokens := lex_file(data)
     defer delete(tokens)
 
-    debugln("PARSING FILE");
     ast := parse_tokens(resolved, tokens[:])
-    debugln("RESOLVINF SYMBOLS");
     mid := resolve_module_ast(&ast, resolved)
-    debugln("TYPECHECKING");
     typecheck_module(&ast)
-    debugln("CODE GEN");
     cg_module(mid)
     ctx.modules[resolved] = mid
     delete_key(&ctx.parsing, resolved)
