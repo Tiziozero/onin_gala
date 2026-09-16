@@ -419,9 +419,8 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     get_ctx().item_types[id] = tid;
 }
 
+// for gala functions, add an aditional arg to function body of type slice of var arg type
 resolve_fn_dec_signature :: proc(s: ^ModuleScope, fndec: FnDecSignature, extern := false) -> (Type, Scope) {
-    is_variadic := false
-    variadic_type := TypeId(0)
     // create fn type
     fnty := Type{}
     fnty.kind = .Function;
@@ -440,31 +439,39 @@ resolve_fn_dec_signature :: proc(s: ^ModuleScope, fndec: FnDecSignature, extern 
     for a, i in fndec.args {
         t := resolve_type_specifier(&new_scope, a.t)
         if da, ok := declared[a.name]; ok {
-            // print declared arf
+            // print declared arg
             print_lines(get_file_lines(get_ctx().current_file, da.span), da.span)
             gala_panic("Duplicate argument. Arg already declared here.")
         }
         arg_t := t;
-        if a.is_variadic && !extern { // would be last arg ig.
-            if i != len(fndec.args) - 1 {
-                highlight_lines(a.span);
-                gala_panic("Variadic argument must be last argument.");
-            }
-            // declare type for internal gala stuff
-            type := Type{kind=.Slice, slice={type=t}};
-            arg_t = intern_type(type);
-
-            is_variadic = true
-            variadic_ty = t
-        }
         arg := Arg{a.name, arg_t, a.span, false}
         args[i] = arg
         declared[a.name] = arg
         new_object(&new_scope, Object{.Argument, a.name, arg_t});
     }
     fnty.fn.args = args
-    fnty.fn.is_variadic = is_variadic
-    fnty.fn.variadic_ty = variadic_ty
+
+    if fndec.is_variadic {
+        variadic_ty := resolve_type_specifier(&new_scope, fndec.variadic_ty)
+        name := fndec.variadic_arg_name
+        if da, ok := declared[name]; ok {
+            // print declared arg
+            print_lines(get_file_lines(get_ctx().current_file, da.span), da.span)
+            gala_panic("Duplicate argument. Arg already declared here.")
+        }
+        // type is slice of type
+        new_ty := Type{kind=.Slice, slice={type=variadic_ty}}
+        new_ty_id := intern_type(new_ty)
+        fnty.fn.gala_abi_ty = new_ty_id;
+
+        // don't apend to args, as it's not an argument in the function ig
+        // but declare object for fn body
+        // it's fine because extern fn doesn't make use of it either way
+        new_object(&new_scope, Object{.Argument, name, new_ty_id});
+        fnty.fn.is_variadic = true
+        fnty.fn.variadic_ty = variadic_ty
+        fnty.fn.variadic_name = name
+    }
     // free args scope
     return fnty, new_scope
 }

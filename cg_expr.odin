@@ -184,6 +184,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         if get(expr_ty(e.start)).kind != .UInt64 {
             op, ok := ty_to_llvm_cast_op(expr_ty(e.start), integer_type());
             if !ok {
+                op = "bitcast"
                 // nothing?
             }
             t := new_tmp(c);
@@ -194,6 +195,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         if get(expr_ty(e.end)).kind != .UInt64 {
             op, ok := ty_to_llvm_cast_op(expr_ty(e.end), integer_type());
             if !ok {
+                op = "bitcast"
                 // nothing?
             }
             t := new_tmp(c);
@@ -409,217 +411,222 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         panic("impl");
     }
     case FnCall: {
-        // Every call — internal Gala function or extern C function alike —
-        // goes through cg_abi_lower_signature. See abi_sysv.odin.
-        t := cg_fn_call_target(c, e.target);
-        fn_type_id := expr_ty(e.target)
-        fn_ty := get_type(fn_type_id);
-        sig := cg_abi_lower_signature(c, fn_type_id, .SysV)
+        return cg_fn_call(c, id, e)
+    }
+    case: panic("impl");
+    }
+}
 
-        call_args := make([dynamic]string, allocator=get_ctx().allocator)
 
-        // sret slot, if the return value is passed indirectly, comes first
-        sret_slot := ""
-        if sig.ret.mode == .Indirect {
-            sret_slot = new_tmp(c)
-            cwritefln(c, "\t%s = alloca %s", sret_slot, ty_to_llvm_str(c, sig.ret.orig_type))
-            append(&call_args, aprintf(c, "ptr sret(%s) align %d %s",
-                ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align, sret_slot))
+cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall) -> CGExprRes {
+    // Every call — internal Gala function or extern C function alike —
+    // goes through cg_abi_lower_signature. See abi_sysv.odin.
+    t := cg_fn_call_target(c, e.target);
+    fn_type_id := expr_ty(e.target)
+    fn_ty := get_type(fn_type_id);
+    sig := cg_abi_lower_signature(c, fn_type_id, .SysV)
+
+    call_args := make([dynamic]string, allocator=get_ctx().allocator)
+
+    // sret slot, if the return value is passed indirectly, comes first
+    sret_slot := ""
+    if sig.ret.mode == .Indirect {
+        sret_slot = new_tmp(c)
+        cwritefln(c, "\t%s = alloca %s", sret_slot, ty_to_llvm_str(c, sig.ret.orig_type))
+        append(&call_args, aprintf(c, "ptr sret(%s) align %d %s",
+            ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align, sret_slot))
+    }
+
+    // A gala (non-extern) variadic function's trailing parameter is a
+    // real, single Slice(elem_type) parameter, not C-style "...". The
+    // caller still writes individual trailing expressions though (e.g.
+    // `print_i32(fmt, 1, 2, 3)`), so those need collecting into an
+    // actual runtime slice value — handled in the block below, after
+    // this loop only walks the real fixed params.
+    is_gala_variadic :=
+        !fn_ty.fn.is_variadic &&
+        len(fn_ty.fn.args) > 0 &&
+        fn_ty.fn.args[len(fn_ty.fn.args)-1].is_variadic
+
+    // The count of TRUE fixed parameters — i.e. excluding the trailing
+    // declared slot that stands in for "the rest": for an extern C
+    // variadic that's the `any`-typed placeholder param
+    // (fn_ty.fn.is_variadic), for a gala variadic it's the
+    // Slice(elem_type) param (is_gala_variadic). sig.args still has an
+    // ABI-lowered entry for that placeholder slot too (lowered as if it
+    // were a real `any`/slice parameter, giving `{ ptr, i64 }`) — that
+    // entry must never be consulted for what the caller actually passes
+    // past this point, only for fixed params before it.
+    fixed_arg_count := len(e.args)
+    if fn_ty.fn.is_variadic || is_gala_variadic {
+        fixed_arg_count = len(fn_ty.fn.args) - 1
+    }
+
+    for k in 0 ..< len(e.args) {
+        if is_gala_variadic && k >= fixed_arg_count {
+            break // handled by the slice-packing block below instead
         }
 
-        // A gala (non-extern) variadic function's trailing parameter is a
-        // real, single Slice(elem_type) parameter, not C-style "...". The
-        // caller still writes individual trailing expressions though (e.g.
-        // `print_i32(fmt, 1, 2, 3)`), so those need collecting into an
-        // actual runtime slice value — handled in the block below, after
-        // this loop only walks the real fixed params.
-        is_gala_variadic :=
-            !fn_ty.fn.is_variadic &&
-            len(fn_ty.fn.args) > 0 &&
-            fn_ty.fn.args[len(fn_ty.fn.args)-1].is_variadic
+        a := e.args[k]
+        r, returns := reduce_expr_to_single_value(c, cg_expr(c, a.expr));
+        assert(returns);
 
-        // The count of TRUE fixed parameters — i.e. excluding the trailing
-        // declared slot that stands in for "the rest": for an extern C
-        // variadic that's the `any`-typed placeholder param
-        // (fn_ty.fn.is_variadic), for a gala variadic it's the
-        // Slice(elem_type) param (is_gala_variadic). sig.args still has an
-        // ABI-lowered entry for that placeholder slot too (lowered as if it
-        // were a real `any`/slice parameter, giving `{ ptr, i64 }`) — that
-        // entry must never be consulted for what the caller actually passes
-        // past this point, only for fixed params before it.
-        fixed_arg_count := len(e.args)
-        if fn_ty.fn.is_variadic || is_gala_variadic {
-            fixed_arg_count = len(fn_ty.fn.args) - 1
+        // default: the value/type computed normally, straight from the
+        // expression itself — this is also what a trailing extern C
+        // variadic argument uses (see below), since sig.args has no
+        // meaningful entry for "the Nth trailing vararg", only for the
+        // one placeholder slot standing in for all of them.
+        arg_val := r
+        arg_ty_str := ty_to_llvm_str(c, expr_ty(a.expr))
+
+        // target param slot is `any` — box {data ptr, typeid} instead
+        // of passing the raw concrete value. box_type/needs_boxing
+        // were set by the typechecker's FnCall case.
+        if a.needs_boxing {
+            arg_val, arg_ty_str = cg_box_any(c, r, a.box_type)
         }
 
-        for k in 0 ..< len(e.args) {
-            if is_gala_variadic && k >= fixed_arg_count {
-                break // handled by the slice-packing block below instead
-            }
+        if k >= fixed_arg_count {
+            // Trailing extern C variadic argument: pass using the
+            // expression's own type — NOT sig.args[k]'s lowering, which
+            // (past the fixed params) only describes the trailing `any`
+            // placeholder parameter's shape, not what's actually here.
+            append(&call_args, aprintf(c, "%s %s", arg_ty_str, arg_val))
+            continue
+        }
 
-            a := e.args[k]
-            r, returns := reduce_expr_to_single_value(c, cg_expr(c, a.expr));
-            assert(returns);
-
-            // default: the value/type computed normally, straight from the
-            // expression itself — this is also what a trailing extern C
-            // variadic argument uses (see below), since sig.args has no
-            // meaningful entry for "the Nth trailing vararg", only for the
-            // one placeholder slot standing in for all of them.
-            arg_val := r
-            arg_ty_str := ty_to_llvm_str(c, expr_ty(a.expr))
-
-            // target param slot is `any` — box {data ptr, typeid} instead
-            // of passing the raw concrete value. box_type/needs_boxing
-            // were set by the typechecker's FnCall case.
-            if a.needs_boxing {
-                arg_val, arg_ty_str = cg_box_any(c, r, a.box_type)
-            }
-
-            if k >= fixed_arg_count {
-                // Trailing extern C variadic argument: pass using the
-                // expression's own type — NOT sig.args[k]'s lowering, which
-                // (past the fixed params) only describes the trailing `any`
-                // placeholder parameter's shape, not what's actually here.
-                append(&call_args, aprintf(c, "%s %s", arg_ty_str, arg_val))
-                continue
-            }
-
-            al := sig.args[k]
-            switch al.mode {
-            case .ByVal: {
+        al := sig.args[k]
+        switch al.mode {
+        case .ByVal: {
+            arg_ty_str := ty_to_llvm_str(c, al.orig_type)
+            slot := new_tmp(c)
+            cwritefln(c, "\t%s = alloca %s", slot, arg_ty_str)
+            cwritefln(c, "\tstore %s %s, ptr %s", arg_ty_str, arg_val, slot)
+            append(&call_args, aprintf(c, "ptr byval(%s) align %d %s", arg_ty_str, al.byval_align, slot))
+        }
+        case .Direct: {
+            if al.needs_coercion {
                 arg_ty_str := ty_to_llvm_str(c, al.orig_type)
                 slot := new_tmp(c)
                 cwritefln(c, "\t%s = alloca %s", slot, arg_ty_str)
                 cwritefln(c, "\tstore %s %s, ptr %s", arg_ty_str, arg_val, slot)
-                append(&call_args, aprintf(c, "ptr byval(%s) align %d %s", arg_ty_str, al.byval_align, slot))
-            }
-            case .Direct: {
-                if al.needs_coercion {
-                    arg_ty_str := ty_to_llvm_str(c, al.orig_type)
-                    slot := new_tmp(c)
-                    cwritefln(c, "\t%s = alloca %s", slot, arg_ty_str)
-                    cwritefln(c, "\tstore %s %s, ptr %s", arg_ty_str, arg_val, slot)
-                    coerced := new_tmp(c)
-                    cwritefln(c, "\t%s = load %s, ptr %s", coerced, al.coerced_type, slot)
-                    append(&call_args, aprintf(c, "%s %s", al.coerced_type, coerced))
-                } else {
-                    append(&call_args, aprintf(c, "%s %s", al.coerced_type, arg_val))
-                }
-            }
+                coerced := new_tmp(c)
+                cwritefln(c, "\t%s = load %s, ptr %s", coerced, al.coerced_type, slot)
+                append(&call_args, aprintf(c, "%s %s", al.coerced_type, coerced))
+            } else {
+                append(&call_args, aprintf(c, "%s %s", al.coerced_type, arg_val))
             }
         }
-
-        // Pack the trailing call-site expressions into the real
-        // Slice(elem_type) value the gala callee actually expects.
-        if is_gala_variadic {
-            elem_ty := get_type(fn_ty.fn.args[len(fn_ty.fn.args)-1].type).slice.type
-            elem_ty_str := ty_to_llvm_str(c, elem_ty)
-            n := len(e.args) - fixed_arg_count
-
-            data_ptr := "null"
-            if n > 0 {
-                arr_ty_str := aprintf(c, "[%d x %s]", n, elem_ty_str)
-                arr_slot := new_tmp(c)
-                cwritefln(c, "\t%s = alloca %s", arr_slot, arr_ty_str)
-
-                for k in 0 ..< n {
-                    a := e.args[fixed_arg_count + k]
-                    v, returns := reduce_expr_to_single_value(c, cg_expr(c, a.expr))
-                    assert(returns)
-                    elem_ptr := new_tmp(c)
-                    cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i64 0, i64 %d",
-                        elem_ptr, arr_ty_str, arr_slot, k)
-                    cwritefln(c, "\tstore %s %s, ptr %s", elem_ty_str, v, elem_ptr)
-                }
-
-                decayed := new_tmp(c)
-                cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i64 0, i64 0",
-                    decayed, arr_ty_str, arr_slot)
-                data_ptr = decayed
-            }
-
-            v1 := new_tmp(c)
-            v2 := new_tmp(c)
-            cwritefln(c, "\t%s = insertvalue {{ ptr, i64 }} undef, ptr %s, 0", v1, data_ptr)
-            cwritefln(c, "\t%s = insertvalue {{ ptr, i64 }} %s, i64 %d, 1", v2, v1, n)
-
-            append(&call_args, aprintf(c, "{ ptr, i64 } %s", v2))
-        }
-
-        // For variadic calls, LLVM needs the full parameter TYPE list
-        // (fixed args, ABI-lowered) between the callee's return type and
-        // the "..." before the actual argument list. Only the TRUE fixed
-        // prefix goes here — sig.args[fixed_arg_count:] is the placeholder
-        // slot's own lowering and must never appear in this list, or LLVM
-        // sees a phantom fixed `{ ptr, i64 }` parameter that was never
-        // actually declared.
-        variadic_prefix := ""
-        if fn_ty.fn.is_variadic {
-            vb: strings.Builder
-            strings.builder_init(&vb, get_ctx().allocator)
-            strings.write_string(&vb, "(")
-            if sig.ret.mode == .Indirect {
-                strings.write_string(&vb, aprintf(c, "ptr sret(%s), ", ty_to_llvm_str(c, sig.ret.orig_type)))
-            }
-            for al in sig.args[:fixed_arg_count] {
-                if al.mode == .ByVal {
-                    strings.write_string(&vb, aprintf(c, "ptr byval(%s) align %d",
-                        ty_to_llvm_str(c, al.orig_type), al.byval_align))
-                } else {
-                    strings.write_string(&vb, al.coerced_type)
-                }
-                strings.write_string(&vb, ", ")
-            }
-            strings.write_string(&vb, "...)")
-            variadic_prefix = strings.to_string(vb)
-        }
-
-        write_call_args := proc(c: ^CGCtx, call_args: [dynamic]string) {
-            cwrite(c, "(")
-            for a, i in call_args {
-                cwritef(c, "%s", a)
-                if i < len(call_args) - 1 {
-                    cwritef(c, ", ")
-                }
-            }
-            cwriteln(c, ")")
-        }
-
-        if sig.ret.mode == .Indirect {
-            cwritef(c, "\tcall void ")
-            if fn_ty.fn.is_variadic { cwritef(c, "%s", variadic_prefix) }
-            cwritef(c, "%s", t)
-            write_call_args(c, call_args)
-
-            loaded := new_tmp(c)
-            cwritefln(c, "\t%s = load %s, ptr %s", loaded, ty_to_llvm_str(c, sig.ret.orig_type), sret_slot)
-            return {kind=.Value, v=loaded, id=id}
-        } else if sig.ret.coerced_type == "void" {
-            cwritef(c, "\tcall void ")
-            if fn_ty.fn.is_variadic { cwritef(c, "%s", variadic_prefix) }
-            cwritef(c, "%s", t)
-            write_call_args(c, call_args)
-            return {kind=.None, id=id}
-        } else {
-            new_t := new_tmp(c)
-            cwritef(c, "\t%s = call %s ", new_t, sig.ret.coerced_type)
-            if fn_ty.fn.is_variadic { cwritef(c, "%s", variadic_prefix) }
-            cwritef(c, "%s", t)
-            write_call_args(c, call_args)
-
-            if sig.ret.needs_coercion {
-                real_ty_str := ty_to_llvm_str(c, sig.ret.orig_type)
-                slot := new_tmp(c)
-                cwritefln(c, "\t%s = alloca %s", slot, real_ty_str)
-                cwritefln(c, "\tstore %s %s, ptr %s", sig.ret.coerced_type, new_t, slot)
-                loaded := new_tmp(c)
-                cwritefln(c, "\t%s = load %s, ptr %s", loaded, real_ty_str, slot)
-                return {kind=.Value, v=loaded, id=id}
-            }
-            return {kind=.Value, v=new_t, id=id};
         }
     }
-    case: panic("impl");
+
+    // Pack the trailing call-site expressions into the real
+    // Slice(elem_type) value the gala callee actually expects.
+    if is_gala_variadic {
+        elem_ty := get_type(fn_ty.fn.args[len(fn_ty.fn.args)-1].type).slice.type
+        elem_ty_str := ty_to_llvm_str(c, elem_ty)
+        n := len(e.args) - fixed_arg_count
+
+        data_ptr := "null"
+        if n > 0 {
+            arr_ty_str := aprintf(c, "[%d x %s]", n, elem_ty_str)
+            arr_slot := new_tmp(c)
+            cwritefln(c, "\t%s = alloca %s", arr_slot, arr_ty_str)
+
+            for k in 0 ..< n {
+                a := e.args[fixed_arg_count + k]
+                v, returns := reduce_expr_to_single_value(c, cg_expr(c, a.expr))
+                assert(returns)
+                elem_ptr := new_tmp(c)
+                cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i64 0, i64 %d",
+                    elem_ptr, arr_ty_str, arr_slot, k)
+                cwritefln(c, "\tstore %s %s, ptr %s", elem_ty_str, v, elem_ptr)
+            }
+
+            decayed := new_tmp(c)
+            cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i64 0, i64 0",
+                decayed, arr_ty_str, arr_slot)
+            data_ptr = decayed
+        }
+
+        v1 := new_tmp(c)
+        v2 := new_tmp(c)
+        cwritefln(c, "\t%s = insertvalue {{ ptr, i64 }} undef, ptr %s, 0", v1, data_ptr)
+        cwritefln(c, "\t%s = insertvalue {{ ptr, i64 }} %s, i64 %d, 1", v2, v1, n)
+
+        append(&call_args, aprintf(c, "{ ptr, i64 } %s", v2))
+    }
+
+    // For variadic calls, LLVM needs the full parameter TYPE list
+    // (fixed args, ABI-lowered) between the callee's return type and
+    // the "..." before the actual argument list. Only the TRUE fixed
+    // prefix goes here — sig.args[fixed_arg_count:] is the placeholder
+    // slot's own lowering and must never appear in this list, or LLVM
+    // sees a phantom fixed `{ ptr, i64 }` parameter that was never
+    // actually declared.
+    variadic_prefix := ""
+    if fn_ty.fn.is_variadic {
+        vb: strings.Builder
+        strings.builder_init(&vb, get_ctx().allocator)
+        strings.write_string(&vb, "(")
+        if sig.ret.mode == .Indirect {
+            strings.write_string(&vb, aprintf(c, "ptr sret(%s), ", ty_to_llvm_str(c, sig.ret.orig_type)))
+        }
+        for al in sig.args[:fixed_arg_count] {
+            if al.mode == .ByVal {
+                strings.write_string(&vb, aprintf(c, "ptr byval(%s) align %d",
+                    ty_to_llvm_str(c, al.orig_type), al.byval_align))
+            } else {
+                strings.write_string(&vb, al.coerced_type)
+            }
+            strings.write_string(&vb, ", ")
+        }
+        strings.write_string(&vb, "...)")
+        variadic_prefix = strings.to_string(vb)
+    }
+
+    write_call_args := proc(c: ^CGCtx, call_args: [dynamic]string) {
+        cwrite(c, "(")
+        for a, i in call_args {
+            cwritef(c, "%s", a)
+            if i < len(call_args) - 1 {
+                cwritef(c, ", ")
+            }
+        }
+        cwriteln(c, ")")
+    }
+
+    if sig.ret.mode == .Indirect {
+        cwritef(c, "\tcall void ")
+        if fn_ty.fn.is_variadic { cwritef(c, "%s", variadic_prefix) }
+        cwritef(c, "%s", t)
+        write_call_args(c, call_args)
+
+        loaded := new_tmp(c)
+        cwritefln(c, "\t%s = load %s, ptr %s", loaded, ty_to_llvm_str(c, sig.ret.orig_type), sret_slot)
+        return {kind=.Value, v=loaded, id=id}
+    } else if sig.ret.coerced_type == "void" {
+        cwritef(c, "\tcall void ")
+        if fn_ty.fn.is_variadic { cwritef(c, "%s", variadic_prefix) }
+        cwritef(c, "%s", t)
+        write_call_args(c, call_args)
+        return {kind=.None, id=id}
+    } else {
+        new_t := new_tmp(c)
+        cwritef(c, "\t%s = call %s ", new_t, sig.ret.coerced_type)
+        if fn_ty.fn.is_variadic { cwritef(c, "%s", variadic_prefix) }
+        cwritef(c, "%s", t)
+        write_call_args(c, call_args)
+
+        if sig.ret.needs_coercion {
+            real_ty_str := ty_to_llvm_str(c, sig.ret.orig_type)
+            slot := new_tmp(c)
+            cwritefln(c, "\t%s = alloca %s", slot, real_ty_str)
+            cwritefln(c, "\tstore %s %s, ptr %s", sig.ret.coerced_type, new_t, slot)
+            loaded := new_tmp(c)
+            cwritefln(c, "\t%s = load %s, ptr %s", loaded, real_ty_str, slot)
+            return {kind=.Value, v=loaded, id=id}
+        }
+        return {kind=.Value, v=new_t, id=id};
     }
 }

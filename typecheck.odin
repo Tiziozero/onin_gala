@@ -202,11 +202,13 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             }
         }
 
-        if !can_be_index(s_ty) {
-            gala_panic("can't use type:", get_type(s_ty), "to index an array")
+        if !is_valid_index_type(s_ty) {
+            highlight_lines(get_span(id).span)
+            gala_panic("can't use type:", tts(e_ty), "to index an array")
         }
         if !is_valid_index_type(e_ty) {
-            gala_panic("can't use type:", get_type(e_ty), "to index an array")
+            highlight_lines(get_span(id).span)
+            gala_panic("can't use type:", tts(e_ty), "to index an array")
         }
 
         ty, ok := get_array_base_type(target_ty)
@@ -239,7 +241,8 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         }
 
         if !is_valid_index_type(i_ty) {
-            gala_panic("can't use type:", get_type(i_ty), "to index an array")
+            highlight_lines(get_span(id).span)
+            gala_panic("can't use type:", tts(i_ty), "to index an array")
         }
 
         ty, ok := get_array_base_type(target_ty)
@@ -467,9 +470,6 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         for i in 0..<len(fargs) {
             earg := e.args[i].expr;
             farg := fargs[i];
-            if ty.fn.is_variadic && i == len(fargs) - 1 {
-                break // skip to variadic check
-            }
             r, ok, s := compare_and_reduce_types(farg.type, expr_ty(earg));
             if !ok {
                 highlight_lines(get_span(earg).span);
@@ -489,6 +489,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             }
             mark_arg(&e.args[i], ty.fn.variadic_ty, r);
         }
+
         get_ctx().expr_types[id] = ty.fn.ret_ty
     }
     case: gala_panic("impl tc expr")

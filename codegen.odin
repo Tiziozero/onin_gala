@@ -810,10 +810,6 @@ cg_fn_declaration :: proc(c: ^CGCtx, i: Item, id: ItemId, is_extern := false, de
     for a, k in fn_ty.fn.args {
         if wrote_any { cwritef(c, ", ") }
         wrote_any = true
-        if is_extern && fn_ty.fn.is_variadic && k == len(fn_ty.fn.args) - 1 {
-            cwrite(c, "...")
-            break
-        }
 
         al := sig.args[k]
         switch al.mode {
@@ -848,6 +844,19 @@ cg_fn_declaration :: proc(c: ^CGCtx, i: Item, id: ItemId, is_extern := false, de
             }
         }
     }
+    if fn_ty.fn.is_variadic {
+        if wrote_any { cwritef(c, ", ") }
+        if is_extern { // extern just use "..."
+            cwrite(c, "...")
+        } else { // gala functions write arg name as "[]ty"
+            ty := fn_ty.fn.gala_abi_ty;
+            name := fn_ty.fn.variadic_name;
+            sty := ty_to_llvm_str(c, ty)
+            pname := aprintf(c, "%%%s.gala_variadic", name)
+            c.scope.vars[name] = {kind=.Argument, name=pname}
+            cwritef(c, "%s %s", sty, pname)
+        }
+    }
 
     if define {
         cwrite(c, ") ")
@@ -866,7 +875,7 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
     }
     case FnDec: {
         // double check type is a function
-        assert(check_fn(i))
+        // assert(check_fn(i))
 
         old_scope := c.scope
         c.scope = new_gcscope(&old_scope)
@@ -897,10 +906,35 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
             }
         }
 
+        block_ends := false
+
         for statement, index in i.block.stmts {
             cg_stmt(c, statement)
-            if stmt_ends_block(statement) && index != len(i.block.stmts) - 1 {
-                gala_panic("nothing past will be executed")
+
+            if stmt_ends_block(statement) {
+                block_ends = true
+
+                if index != len(i.block.stmts) - 1 {
+                    gala_panic("nothing past will be executed")
+                }
+
+                break
+            }
+        }
+
+        if !block_ends {
+            switch sig.ret.mode {
+            case .Direct:
+                if sig.ret.coerced_type == "void" {
+                    cwriteln(c, "\tret void")
+                } else {
+                    gala_panic("Function does not return a value")
+                }
+
+            case .Indirect:
+                // sret functions have an ABI return of void, so reaching
+                // the end still needs `ret void`.
+                cwriteln(c, "\tret void")
             }
         }
         cwriteln(c, "}")

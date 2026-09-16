@@ -48,7 +48,9 @@ Type :: struct {
         ret_ty: TypeId,
         is_variadic: bool,
         variadic_ty: TypeId,
+        variadic_name: string,
         is_external: bool,
+        gala_abi_ty: TypeId,
         // for variadics/any
         versions: [dynamic]struct{llvm_fn_name: string, args:[]Arg},
     },

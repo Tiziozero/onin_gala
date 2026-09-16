@@ -767,11 +767,14 @@ parse_block :: proc(p: ^Parser) -> Block{
     return Block{stmts=stmts[:]}
 }
 
-FnDecArg :: struct{name: string, t: TypeSpecifier, span: Span, is_variadic: bool}
+FnDecArg :: struct{name: string, t: TypeSpecifier, span: Span}
 FnDecSignature :: struct {
     name: string,
     args: []FnDecArg, 
     ret_ty: Maybe(TypeSpecifier),
+    is_variadic: bool,
+    variadic_ty: TypeSpecifier,
+    variadic_arg_name: string,
 }
 FnDec :: struct {
     using signature: FnDecSignature,
@@ -877,7 +880,9 @@ parse_fn_signature :: proc(p: ^Parser) -> FnDec {
             token := consume_token(p); // "."
             consume_token(p); // "."
             t := parse_type(p);
-            append(&args, FnDecArg{name=name.text, t=t, span=name.span, is_variadic=true})
+            f.is_variadic = true;
+            f.variadic_ty = t;
+            f.variadic_arg_name = name.text;
             break;
         }
         ty := parse_type(p);
