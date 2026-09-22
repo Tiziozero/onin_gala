@@ -410,8 +410,8 @@ cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall) -> CGExprRes {
     // C-variadic placeholder slot in fn_ty.fn.args (and its corresponding
     // sig.args entry) is never a real argument to lower here.
     fixed_arg_count := len(e.args)
-    if fn_ty.fn.is_variadic {
-        fixed_arg_count = len(fn_ty.fn.args) - 1
+    if fn_ty.fn.is_variadic { // get fixed args from fn signature
+        fixed_arg_count = len(fn_ty.fn.args)
     }
 
     // ---- fixed params ----
@@ -450,7 +450,7 @@ cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall) -> CGExprRes {
     // c_variadic_promote), never the boxing or slice-packing that a Gala
     // `..T` tail would need — there is no such tail here, only extern
     // `...`.
-    if fn_ty.fn.is_variadic {
+    if fn_ty.fn.is_variadic && fn_ty.fn.is_external { // and is external
         for k in fixed_arg_count ..< len(e.args) {
             a := e.args[k]
             v, returns := reduce_expr_to_single_value(c, cg_expr(c, a.expr))
