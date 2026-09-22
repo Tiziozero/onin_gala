@@ -1,13 +1,13 @@
 extern fn printf(fmt: ^byte, data:..any);
 
 fn print_i32(fmt: string, data: []i32): i32 {
-    i := 0;
+    i := 1;
     max := len(data);
-    return cast(i32)max;
-    /* printf(&fmt[0], len(data));
     while i < len(data) {
-        printf(&fmt[0], len(data));
-    } */
+        printf(&fmt[0], data[i],cast(f32)(data[i - 1]));
+        i += 1;
+    }
+    return cast(i32)max;
 }
 
 fn main(): i32 {
@@ -22,5 +22,5 @@ fn main(): i32 {
     a[7] = 7;
     a[8] = 8;
     a[9] = 9;
-    return print_i32("len %d.\n", a[0:9]);
+    return print_i32("len %d and  %f.\n", a[4:9]);
 }

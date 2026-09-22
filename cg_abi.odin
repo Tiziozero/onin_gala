@@ -381,3 +381,40 @@ cg_abi_lower_signature :: proc(c: ^CGCtx, fn_type_id: TypeId, kind: AbiKind) -> 
     sig.args = args[:]
     return sig
 }
+// C "default argument promotions" (C11 §6.5.2.2p7), applied to every
+// argument landing in a true C-variadic `...` slot — never to a fixed
+// parameter, and never to a Gala `..T` slice-packed tail (which has a
+// real declared element type the callee expects exactly).
+//
+// This is pure C-language semantics, decided before SysV classification
+// ever runs: `float` becomes `double`, and any integer type narrower
+// than `int` gets widened to `int`, *before* the value is considered
+// "in" the variadic slot at all. SysV then classifies the promoted type
+// exactly as it would any other `double`/`i32` — it has no separate rule
+// for "a float that arrived via variadic," because by that point there
+// isn't one anymore.
+AbiVariadicPromotion :: enum {
+    None,
+    FloatToDouble,   // fpext
+    ZeroExtendToInt, // zext  (unsigned sub-int types, and bool)
+    SignExtendToInt, // sext  (signed sub-int types)
+}
+
+// Returns the promotion (if any) required for `type_id` in a C-variadic
+// slot, plus the resulting LLVM type string after promotion (identical
+// to scalar_llvm_str(type_id) when no promotion applies).
+c_variadic_promote :: proc(type_id: TypeId) -> (AbiVariadicPromotion, string) {
+    ty := get_type(type_id)
+    #partial switch ty.kind {
+    case .Flt32, .Flt16, .Flt_8:
+        return .FloatToDouble, "double"
+    case .Bool, .Byte, .UInt_8, .UInt16:
+        return .ZeroExtendToInt, "i32"
+    case .Int_8, .Int16:
+        return .SignExtendToInt, "i32"
+    case:
+        // Int32/UInt32 and wider, Flt64, Rune (already i32-sized),
+        // Pointer, Function: already >= variadic minimum width.
+        return .None, scalar_llvm_str(type_id)
+    }
+}
