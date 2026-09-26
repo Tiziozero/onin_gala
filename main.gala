@@ -215,10 +215,10 @@ fn main() {
     doubles := calloc(4, 8);
     values := cast(^f64)doubles;
 
-    (values)^ = 1.0;
-    (values + 1 * sizeof(f64))^ = 2.0;
-    (values + 2 * sizeof(f64))^ = 3.0;
-    (values + 3 * sizeof(f64))^ = 4.0;
+    values[0] = 1.0;
+    values[1] = 2.0;
+    values[2] = 3.0;
+    values[3] = 4.0;
 
     printf(&("avg:        %f\n")[0],
         tl_avg(values, 4));
@@ -238,11 +238,11 @@ fn main() {
     ints_mem := calloc(5, 4);
     ints := cast(^i32)ints_mem;
 
-    (ints)^ = 1;
-    (ints + 1 * sizeof(i32))^ = 2;
-    (ints + 2 * sizeof(i32))^ = 3;
-    (ints + 3 * sizeof(i32))^ = 4;
-    (ints + 4 * sizeof(i32))^ = 5;
+    ints[0] = 1;
+    ints[1] = 2;
+    ints[2] = 3;
+    ints[3] = 4;
+    ints[4] = 5;
 
     printf(&("sum:        %d\n")[0],
         tl_sum_ints(ints, 5));
@@ -250,20 +250,20 @@ fn main() {
     tl_increment_ints(ints, 5);
 
     printf(&("after inc:  %d %d %d %d %d\n")[0],
-        (ints)^,
-        (ints + 1 * sizeof(i32))^,
-        (ints + 2 * sizeof(i32))^,
-        (ints + 3 * sizeof(i32))^,
-        (ints + 4 * sizeof(i32))^);
+        ints[0],
+        ints[1],
+        ints[2],
+        ints[3],
+        ints[4]);
 
     tl_fill_ints(ints, 5, 42);
 
     printf(&("after fill: %d %d %d %d %d\n")[0],
-        (ints)^,
-        (ints + 1 * sizeof(i32))^,
-        (ints + 2 * sizeof(i32))^,
-        (ints + 3 * sizeof(i32))^,
-        (ints + 4 * sizeof(i32))^);
+        ints[0],
+        ints[1],
+        ints[2],
+        ints[3],
+        ints[4]);
 
     free(ints_mem);
 
@@ -359,6 +359,8 @@ fn main() {
     printf(&("\n=== mixed struct ===\n")[0]);
 
     record_mem := calloc(32, 1);
+    record_mem += 1;
+    record_mem -= 1;
 
     record := tl_record_make(
         123,
@@ -391,9 +393,9 @@ fn main() {
     stat_mem := calloc(3, 4);
     stat_values := cast(^i32)stat_mem;
 
-    (stat_values + 0 * sizeof(i32))^ = 10;
-    (stat_values + 1 * sizeof(i32))^ = 20;
-    (stat_values + 2 * sizeof(i32))^ = 30;
+    stat_values[0] = 10;
+    stat_values[1] = 20;
+    stat_values[2] = 30;
 
     stats := tl_stats_compute(stat_values, 3);
 

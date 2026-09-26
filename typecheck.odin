@@ -67,12 +67,12 @@ compare_and_reduce_pointers :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     // Pointer <-> Pointer
     if is_pointer(l) && is_pointer(r) {
         // void* (rawptr) unifies with any concrete pointer type, like C.
-        if is_void_pointer(l) {
+        /* if is_void_pointer(l) {
             return r, true, ""
         }
         if is_void_pointer(r) {
             return l, true, ""
-        }
+        } */
 
         lt := get_type(l)
         rt := get_type(r)
@@ -137,12 +137,12 @@ get_array_base_type :: proc(t: TypeId) -> (TypeId, bool) {
         return ty.slice.type, true
     }
     case .String: return byte_type(), true
-    /* case .Pointer: {
+    case .Pointer: {
         if get_type(ty.ptr).kind == .Any {
             return TypeId(0), false
         }
         return ty.ptr, true
-    } */ // nah nvm
+    }
     }
     return TypeId(0), false
 }
@@ -154,7 +154,7 @@ can_reference :: proc(id: ExprId) -> bool {
     }
     return false;
 }
-can_equal :: proc(id: TypeId) -> bool {
+can_equal :: proc(id: TypeId, op: BinopKind) -> bool {
     t := get_type(id)
 
     if is_integer(id)   do return true
@@ -166,6 +166,10 @@ can_equal :: proc(id: TypeId) -> bool {
         return true
     }
 
+    if is_pointer(id) && (op == .Addition ||
+        op==.Subtraction || op == .NotEqual || op == .Equal) {
+        return true;
+    }
     return false
 }
 can_order :: proc(id: TypeId) -> bool {
@@ -181,6 +185,7 @@ mark_arg :: proc(arg: ^FnCallArg, param_ty: TypeId, r: TypeId) {
         arg.needs_boxing = true;
         arg.box_type = expr_ty(earg);
     } else {
+        debugln(tts(r), tts(param_ty));
         assert(r == param_ty); // should always match
         propagate_type(r, earg);
     }
@@ -440,10 +445,11 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
         switch e.kind {
         case .Addition, .Subtraction, .Multiply, .Divide, .Modulo: {
-            if !can_binop(ty) {
+            if !can_binop(ty, e.kind) {
                 highlight_lines(get_span(id).span);
                 gala_panicf("can't perform a binop on these two expressions. (%s)", tts(ty));
             }
+            debugln("can binop:", get(ty).kind, e.kind)
             if e.kind == .Modulo {
                 if !is_int_kind(get(ty).kind) {
                     highlight_lines(get_span(id).span)
@@ -453,6 +459,19 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
             propagate_type(ty, e.left);
             propagate_type(ty, e.right);
+            check_binop_post :: proc(id: ExprId, ty: TypeId, op: BinopKind) -> bool {
+                #partial switch e in get(id) {
+                case Binop:
+                    return can_binop(ty, e.kind) &&
+                        check_binop_post(e.left, ty, e.kind) &&
+                        check_binop_post(e.right, ty, e.kind)
+                }
+                return true
+            }
+            if !check_binop_post(id, ty, e.kind) { // check post
+                highlight_lines(get_span(id).span)
+                gala_panic("can't binop expr types.");
+            }
 
             get_ctx().expr_types[id] = ty;
         }
@@ -464,9 +483,22 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             propagate_type(ty, e.left);
             propagate_type(ty, e.right);
 
-            if !can_equal(ty) {
+            if !can_equal(ty, e.kind) {
                 highlight_lines(get_span(id).span);
                 gala_panic("can't compare these two expressions");
+            }
+            check_binop_post :: proc(id: ExprId, ty: TypeId, op: BinopKind) -> bool {
+                #partial switch e in get(id) {
+                case Binop:
+                    return can_equal(ty, e.kind) &&
+                        check_binop_post(e.left, ty, e.kind) &&
+                        check_binop_post(e.right, ty, e.kind)
+                }
+                return true
+            }
+            if !check_binop_post(id, ty, e.kind) { // check post
+                highlight_lines(get_span(id).span)
+                gala_panic("can't binop expr types.");
             }
 
 
@@ -483,6 +515,19 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             if !can_order(ty) {
                 highlight_lines(get_span(id).span);
                 gala_panic("can't compare these two expressions");
+            }
+            check_binop_post :: proc(id: ExprId, ty: TypeId, op: BinopKind) -> bool {
+                #partial switch e in get(id) {
+                case Binop:
+                    return can_order(ty) &&
+                        check_binop_post(e.left, ty, e.kind) &&
+                        check_binop_post(e.right, ty, e.kind)
+                }
+                return true
+            }
+            if !check_binop_post(id, ty, e.kind) { // check post
+                highlight_lines(get_span(id).span)
+                gala_panic("can't binop expr types.");
             }
 
             bool_ty := ty_from_name("bool");
@@ -560,7 +605,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
         get_ctx().expr_types[id] = ty.fn.ret_ty
     }
-    case: gala_panic("impl tc expr")
+    case: panic("impl tc expr")
     }
 }
 
@@ -679,6 +724,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
         t, ok, err := compare_and_reduce_types(expr_ty(stmt.target), expr_ty(stmt.value))
         if !ok {
             highlight_lines(get_span(s).span);
+            debugln(tts(expr_ty(stmt.target)), tts(expr_ty(stmt.value)));
             gala_panic(err);
         }
         propagate_type(t, stmt.value);

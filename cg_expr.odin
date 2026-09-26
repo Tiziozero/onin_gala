@@ -293,12 +293,80 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         return {kind=.Number, v=aprintf(c, "%d", n)}
     }
     case Binop: {
+        left_ty := expr_ty(e.left)
+        right_ty := expr_ty(e.right)
+
+        left_is_ptr := is_pointer(left_ty)
+        right_is_ptr := is_pointer(right_ty)
+
+        // ---- pointer arithmetic / pointer comparison ----
+        // Operands are always the same type in a Binop, so if either side is
+        // a pointer, both are.
+        if left_is_ptr || right_is_ptr {
+            assert(left_is_ptr && right_is_ptr, "pointer binop requires both operands to be pointers")
+
+            l_res := cg_expr(c, e.left)
+            r_res := cg_expr(c, e.right)
+
+            // A side may be a raw integer literal (e.g. the `1` in `ptr - 1`,
+            // or `0` for a null check) that the type checker coerced onto a
+            // pointer-typed operand without ever materializing an actual
+            // pointer value. Number literals never went through cg_addr or a
+            // load — .v is just plain decimal text — so `ptrtoint ptr %v` on
+            // it is invalid IR (LLVM has no bare-integer ptr constant except
+            // `null`). Feed those straight into the i64 math instead;
+            // only reduce+ptrtoint values that are real pointers.
+            to_i64 :: proc(c: ^CGCtx, res: CGExprRes) -> string {
+                if res.kind == .Number {
+                    return res.v
+                }
+                v, returns := reduce_expr_to_single_value(c, res)
+                assert(returns)
+                t := new_tmp(c)
+                cwritefln(c, "\t%s = ptrtoint ptr %s to i64", t, v)
+                return t
+            }
+
+            li := to_i64(c, l_res)
+            ri := to_i64(c, r_res)
+
+            #partial switch e.kind {
+            case .Addition: {
+                sum := new_tmp(c)
+                cwritefln(c, "\t%s = add i64 %s, %s", sum, li, ri)
+                t := new_tmp(c)
+                cwritefln(c, "\t%s = inttoptr i64 %s to ptr", t, sum)
+                return {kind=.Value, v=t}
+            }
+            case .Subtraction: {
+                diff := new_tmp(c)
+                cwritefln(c, "\t%s = sub i64 %s, %s", diff, li, ri)
+                t := new_tmp(c)
+                cwritefln(c, "\t%s = inttoptr i64 %s to ptr", t, diff)
+                return {kind=.Value, v=t}
+            }
+            case .Equal, .NotEqual, .LessEqual, .GreaterEqual, .Less, .Greater: {
+                op := ""
+                #partial switch e.kind {
+                case .Equal:        op = "icmp eq"
+                case .NotEqual:     op = "icmp ne"
+                case .LessEqual:    op = "icmp ule"
+                case .GreaterEqual: op = "icmp uge"
+                case .Less:         op = "icmp ult"
+                case .Greater:      op = "icmp ugt"
+                }
+                return {kind=.Binop, v=aprintf(c, "%s i64 %s, %s", op, li, ri)}
+            }
+            case: gala_panic("unsupported pointer binary operation")
+            }
+        }
+
         l_v, returns_l := reduce_expr_to_single_value(c, cg_expr(c, e.left))
         assert(returns_l);
         r_v, returns_r := reduce_expr_to_single_value(c, cg_expr(c, e.right))
         assert(returns_r);
 
-        operand_ty := expr_ty(e.left)
+        operand_ty := left_ty
         op := ""
         if is_integer_signed(operand_ty) {
             #partial switch e.kind {
@@ -318,7 +386,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .BitOr:        op = "or"
             case: panic("impl")
             }
-        } else if is_integer_unsigned(operand_ty) || is_pointer(operand_ty) {
+        } else if is_integer_unsigned(operand_ty) {
             #partial switch e.kind {
             case .Addition:     op = "add"
             case .Subtraction:  op = "sub"

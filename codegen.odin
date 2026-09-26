@@ -1241,7 +1241,7 @@ mod_item_type_name :: proc(c: ^CGCtx, id: ItemId) -> string {
         mod_prefix, mok := get_ctx().cg_module_prefix[mid];
         if !mok {
             module := get_ctx().mods[mid];
-            mod_prefix = mod_prefix_from_path(module.path, prefix="gala.");
+            mod_prefix = mod_prefix_from_path(module.path, prefix="gala.mod");
             get_ctx().cg_module_prefix[mid] = mod_prefix
         }
         name = aprintf(c, "%s.%s", mod_prefix, get(tid).name);

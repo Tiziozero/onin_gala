@@ -221,8 +221,13 @@ type_cmp_by_id :: proc(lid, rid: TypeId, strict := false) -> bool {
 is_untyped :: proc(ty: TypeId) -> bool {
     return is_numeric_untyped(ty) || get_type(ty).kind == .ZeroInit
 }
-can_binop :: proc(ty: TypeId) -> bool {
-    return is_numeric(ty) || is_pointer(ty)
+can_binop :: proc(ty: TypeId, op: BinopKind) -> bool {
+    if is_numeric(ty) do return true;
+    if is_pointer(ty) && (op == .Addition ||
+        op==.Subtraction || op == .NotEqual || op == .Equal) {
+        return true;
+    }
+    return false;
 }
 can_transmute_to :: proc(target_id, to_id: TypeId) -> bool {
     return type_size(target_id) == type_size(to_id)
