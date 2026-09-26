@@ -222,7 +222,7 @@ is_untyped :: proc(ty: TypeId) -> bool {
     return is_numeric_untyped(ty) || get_type(ty).kind == .ZeroInit
 }
 can_binop :: proc(ty: TypeId) -> bool {
-    return is_numeric(ty)
+    return is_numeric(ty) || is_pointer(ty)
 }
 can_transmute_to :: proc(target_id, to_id: TypeId) -> bool {
     return type_size(target_id) == type_size(to_id)
@@ -290,4 +290,14 @@ can_be_index :: proc(t: TypeId) -> bool {
 }
 is_valid_index_type :: proc(t: TypeId) -> bool {
     return is_integer(t) || is_byte_like(t)
+}
+is_pointer :: proc(id: TypeId) -> bool {
+    return get_type(id).kind == .Pointer
+}
+
+// A `rawptr` is Pointer{ptr=void_type()} — treat it like C's `void*`: it's
+// compatible with any other pointer type in either direction.
+is_void_pointer :: proc(id: TypeId) -> bool {
+    t := get_type(id)
+    return t.kind == .Pointer && get_type(t.ptr).kind == .Void
 }

@@ -55,6 +55,59 @@ compare_and_reduce_numerics :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     // Both typed, different IDs
     return TypeId(0), false, "type mismatch (different types)"
 }
+
+// Handles:
+//   pointer <-> pointer   (rawptr/void* is compatible with any pointer type)
+//   pointer <-> integer   (pointer arithmetic / indexing offsets, either order)
+// Assumes at least one of l/r is a Pointer — callers should route here only
+// in that case (see compare_and_reduce_types).
+compare_and_reduce_pointers :: proc(l, r: TypeId) -> (TypeId, bool, string) {
+    if l == r do return l, true, ""
+
+    // Pointer <-> Pointer
+    if is_pointer(l) && is_pointer(r) {
+        // void* (rawptr) unifies with any concrete pointer type, like C.
+        if is_void_pointer(l) {
+            return r, true, ""
+        }
+        if is_void_pointer(r) {
+            return l, true, ""
+        }
+
+        lt := get_type(l)
+        rt := get_type(r)
+        if type_cmp_by_id(lt.ptr, rt.ptr) {
+            return l, true, ""
+        }
+
+        return TypeId(0), false, "type mismatch: incompatible pointer types"
+    }
+
+    // Pointer <-> integer/untyped-integer (offset math): result stays a
+    // pointer of the pointer operand's type. Reject float offsets outright.
+    if is_pointer(l) {
+        if is_float(r) || get_type(r).kind == .UntypedFloat {
+            return TypeId(0), false, "type mismatch: float offset into pointer"
+        }
+        if is_integer(r) || is_numeric_untyped(r) {
+            return l, true, ""
+        }
+        return TypeId(0), false, "type mismatch: pointer with non-integer operand"
+    }
+
+    if is_pointer(r) {
+        if is_float(l) || get_type(l).kind == .UntypedFloat {
+            return TypeId(0), false, "type mismatch: float offset into pointer"
+        }
+        if is_integer(l) || is_numeric_untyped(l) {
+            return r, true, ""
+        }
+        return TypeId(0), false, "type mismatch: pointer with non-integer operand"
+    }
+
+    return TypeId(0), false, "type mismatch (pointer)"
+}
+
 compare_and_reduce_types :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     if l == r do return l, true, ""
     lk := get_type(l).kind
@@ -64,6 +117,9 @@ compare_and_reduce_types :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     }
     if rk == .Any {
         return l, true, ""
+    }
+    if is_pointer(l) || is_pointer(r) {
+        return compare_and_reduce_pointers(l, r)
     }
     if is_numeric(l) && is_numeric(r) {
         return compare_and_reduce_numerics(l, r);
@@ -81,8 +137,14 @@ get_array_base_type :: proc(t: TypeId) -> (TypeId, bool) {
         return ty.slice.type, true
     }
     case .String: return byte_type(), true
+    /* case .Pointer: {
+        if get_type(ty.ptr).kind == .Any {
+            return TypeId(0), false
+        }
+        return ty.ptr, true
+    } */ // nah nvm
     }
-    panic("can't index")
+    return TypeId(0), false
 }
 can_reference :: proc(id: ExprId) -> bool {
     #partial switch e in get_expr(id) {
@@ -107,7 +169,7 @@ can_equal :: proc(id: TypeId) -> bool {
     return false
 }
 can_order :: proc(id: TypeId) -> bool {
-    return is_integer(id) || is_float(id) || is_byte_like(id)
+    return is_integer(id) || is_float(id) || is_byte_like(id) || is_pointer(id)
 }
 mark_arg :: proc(arg: ^FnCallArg, param_ty: TypeId, r: TypeId) {
     earg := arg.expr;
@@ -212,7 +274,10 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         }
 
         ty, ok := get_array_base_type(target_ty)
-        assert(ok)
+        if !ok {
+            highlight_lines(get_span(e.target).span);
+            gala_panic("Can't get index:", tts(target_ty))
+        }
         slice_t := Type {
             kind=.Slice,
             slice={type=ty},
@@ -246,7 +311,10 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         }
 
         ty, ok := get_array_base_type(target_ty)
-        assert(ok)
+        if !ok {
+            highlight_lines(get_span(e.target).span);
+            gala_panic("Can't get index:", tts(target_ty))
+        }
 
         get_ctx().expr_types[id] = ty
     }
@@ -374,7 +442,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         case .Addition, .Subtraction, .Multiply, .Divide, .Modulo: {
             if !can_binop(ty) {
                 highlight_lines(get_span(id).span);
-                gala_panic("can't perform a binop on these two expressions");
+                gala_panicf("can't perform a binop on these two expressions. (%s)", tts(ty));
             }
             if e.kind == .Modulo {
                 if !is_int_kind(get(ty).kind) {

@@ -1,9 +1,569 @@
 extern fn printf(fmt: ^byte, data:..any);
 
-fn var(s: string, data:..i32): i32 {
-    printf(&s[0], 2, cast(f32)1.2, cast(f64)3.14);
-    return 2;
+extern fn calloc(n: i64, size: i64): rawptr;
+extern fn free(ptr: rawptr);
+extern fn memcpy(dest: rawptr, src: rawptr, n: i64): rawptr;
+
+// ───────────── basic arithmetic ─────────────
+
+extern fn tl_add(a: i32, b: i32): i32;
+extern fn tl_sub(a: i32, b: i32): i32;
+extern fn tl_mul(a: i32, b: i32): i32;
+extern fn tl_div(a: i32, b: i32): i32;
+extern fn tl_mod(a: i32, b: i32): i32;
+
+extern fn tl_factorial(n: i32): i64;
+extern fn tl_is_prime(n: i32): i32;
+
+// ───────────── floating point ─────────────
+
+extern fn tl_add_double(a: f64, b: f64): f64;
+extern fn tl_mul_double(a: f64, b: f64): f64;
+extern fn tl_add_float(a: f32, b: f32): f32;
+
+extern fn tl_avg(values: ^f64, count: u64): f64;
+extern fn tl_dot(a: ^f64, b: ^f64, count: u64): f64;
+
+// ───────────── pointers / memory ─────────────
+
+extern fn tl_fill_ints(values: ^i32, count: u64, value: i32);
+extern fn tl_increment_ints(values: ^i32, count: u64);
+extern fn tl_sum_ints(values: ^i32, count: u64): i32;
+
+extern fn tl_mem_alloc(size: u64): rawptr;
+extern fn tl_mem_free(ptr: rawptr);
+
+extern fn tl_mem_set(ptr: rawptr, value: i32, size: u64);
+extern fn tl_mem_copy(dest: rawptr, src: rawptr, size: u64);
+
+// ───────────── strings ─────────────
+
+extern fn tl_str_len(s: ^byte): u64;
+extern fn tl_str_reverse(s: ^byte);
+extern fn tl_str_is_palindrome(s: ^byte): i32;
+extern fn tl_str_equal(a: ^byte, b: ^byte): i32;
+extern fn tl_version(): ^byte;
+
+// ───────────── global state ─────────────
+
+extern fn tl_counter_reset();
+extern fn tl_counter_next(): i32;
+extern fn tl_counter_get(): i32;
+
+// ───────────── structs ─────────────
+
+struct Point {
+    x: i32,
+    y: i32,
 }
-fn main(): i32 { 
-    return var("Hello, World! %d %f %lf\n");
+
+struct Stats {
+    sum: i32,
+    count: i32,
+    mean: f64,
+}
+
+struct Record {
+    id: i32,
+    flags: i32,
+    value: f64,
+    ptr: rawptr,
+}
+
+extern fn tl_point_make(x: i32, y: i32): Point;
+extern fn tl_point_add(a: Point, b: Point): Point;
+extern fn tl_point_distance_squared(p: Point): i32;
+
+extern fn tl_stats_compute(values: ^i32, count: u64): Stats;
+
+extern fn tl_record_make(
+    id: i32,
+    flags: i32,
+    value: f64,
+    ptr: rawptr,
+): Record;
+
+// ───────────── callbacks ─────────────
+
+// These are declarations only for now.
+// Callback tests can be added once Gala function-pointer
+// declarations/casts are wired up.
+
+extern fn tl_call_int(f: rawptr, value: i32): i32;
+extern fn tl_call_double(f: rawptr, value: f64): f64;
+
+extern fn tl_map_ints(
+    values: ^i32,
+    count: u64,
+    f: rawptr,
+);
+
+extern fn tl_reduce_double(
+    values: ^f64,
+    count: u64,
+    f: rawptr,
+): f64;
+
+// ───────────── C variadics ─────────────
+
+extern fn tl_sum_variadic(count: i32, data:..any): i32;
+extern fn tl_sum_variadic_double(count: i32, data:..any): f64;
+
+extern fn tl_printf(fmt: ^byte, data:..any);
+
+// ───────────── libc / OS ─────────────
+
+extern fn tl_getpid(): i32;
+extern fn tl_getppid(): i32;
+
+extern fn tl_sys_getpid(): i64;
+extern fn tl_sys_write(
+    fd: i64,
+    buf: rawptr,
+    count: u64,
+): i64;
+
+extern fn tl_errno_test(): i32;
+
+// ───────────── Linux syscalls ─────────────
+
+extern fn tl_syscall0(number: i64): i64;
+extern fn tl_syscall1(number: i64, a1: i64): i64;
+extern fn tl_syscall2(number: i64, a1: i64, a2: i64): i64;
+extern fn tl_syscall3(number: i64, a1: i64, a2: i64, a3: i64): i64;
+
+// ───────────── time ─────────────
+
+extern fn tl_unix_time(): u64;
+
+// ───────────── bit operations ─────────────
+
+extern fn tl_popcount32(x: u32): u32;
+extern fn tl_popcount64(x: u64): u64;
+
+extern fn tl_rotate_left32(x: u32, n: i32): u32;
+extern fn tl_rotate_left64(x: u64, n: i32): u64;
+
+// ───────────── integer edge cases ─────────────
+
+extern fn tl_u32_max(): u32;
+extern fn tl_u64_max(): u64;
+
+extern fn tl_i64_min(): i64;
+extern fn tl_i64_max(): i64;
+
+// ───────────── bytes ─────────────
+
+extern fn tl_byte_xor(a: u8, b: u8): u8;
+extern fn tl_byte_signed(x: i8): i8;
+
+
+fn main() {
+    // ═══════════════════════════════════════════════
+    // BASIC ARITHMETIC
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== arithmetic ===\n")[0]);
+
+    printf(&("add:        %d\n")[0],
+        tl_add(10, 20));
+
+    printf(&("sub:        %d\n")[0],
+        tl_sub(10, 20));
+
+    printf(&("mul:        %d\n")[0],
+        tl_mul(10, 20));
+
+    printf(&("div:        %d\n")[0],
+        tl_div(100, 7));
+
+    printf(&("mod:        %d\n")[0],
+        tl_mod(100, 7));
+
+    printf(&("factorial:  %d\n")[0],
+        tl_factorial(10));
+
+    printf(&("prime 97:   %d\n")[0],
+        tl_is_prime(97));
+
+    printf(&("prime 100:  %d\n")[0],
+        tl_is_prime(100));
+
+
+    // ═══════════════════════════════════════════════
+    // FLOATING POINT
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== floating point ===\n")[0]);
+
+    printf(&("double add: %f\n")[0],
+        tl_add_double(1.25, 2.75));
+
+    printf(&("double mul: %f\n")[0],
+        tl_mul_double(2.5, 4.0));
+
+    printf(&("float add:  %f\n")[0],
+        tl_add_float(1.5, 2.5));
+
+
+    // ═══════════════════════════════════════════════
+    // DOUBLE ARRAYS
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== double arrays ===\n")[0]);
+
+    doubles := calloc(4, 8);
+    values := cast(^f64)doubles;
+
+    (values)^ = 1.0;
+    (values + 1 * sizeof(f64))^ = 2.0;
+    (values + 2 * sizeof(f64))^ = 3.0;
+    (values + 3 * sizeof(f64))^ = 4.0;
+
+    printf(&("avg:        %f\n")[0],
+        tl_avg(values, 4));
+
+    printf(&("dot:        %f\n")[0],
+        tl_dot(values, values, 4));
+
+    free(doubles);
+
+
+    // ═══════════════════════════════════════════════
+    // INTEGER ARRAYS
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== integer arrays ===\n")[0]);
+
+    ints_mem := calloc(5, 4);
+    ints := cast(^i32)ints_mem;
+
+    (ints)^ = 1;
+    (ints + 1 * sizeof(i32))^ = 2;
+    (ints + 2 * sizeof(i32))^ = 3;
+    (ints + 3 * sizeof(i32))^ = 4;
+    (ints + 4 * sizeof(i32))^ = 5;
+
+    printf(&("sum:        %d\n")[0],
+        tl_sum_ints(ints, 5));
+
+    tl_increment_ints(ints, 5);
+
+    printf(&("after inc:  %d %d %d %d %d\n")[0],
+        (ints)^,
+        (ints + 1 * sizeof(i32))^,
+        (ints + 2 * sizeof(i32))^,
+        (ints + 3 * sizeof(i32))^,
+        (ints + 4 * sizeof(i32))^);
+
+    tl_fill_ints(ints, 5, 42);
+
+    printf(&("after fill: %d %d %d %d %d\n")[0],
+        (ints)^,
+        (ints + 1 * sizeof(i32))^,
+        (ints + 2 * sizeof(i32))^,
+        (ints + 3 * sizeof(i32))^,
+        (ints + 4 * sizeof(i32))^);
+
+    free(ints_mem);
+
+
+    // ═══════════════════════════════════════════════
+    // STRING / MUTABLE MEMORY
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== strings ===\n")[0]);
+
+    str := "hello world";
+
+    str_mem := calloc(len(str) + 1, 1);
+
+    memcpy(
+        str_mem,
+        cast(rawptr)&str[0],
+        len(str),
+    );
+
+    printf(&("string:     %s\n")[0], str_mem);
+
+    printf(&("length:     %d\n")[0],
+        tl_str_len(cast(^byte)str_mem));
+
+    printf(&("palindrome: %d\n")[0],
+        tl_str_is_palindrome(cast(^byte)str_mem));
+
+    tl_str_reverse(cast(^byte)str_mem);
+
+    printf(&("reversed:   %s\n")[0], str_mem);
+
+    free(str_mem);
+
+
+    // ═══════════════════════════════════════════════
+    // GLOBAL STATE
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== global state ===\n")[0]);
+
+    tl_counter_reset();
+
+    printf(&("counter:    %d\n")[0],
+        tl_counter_next());
+
+    printf(&("counter:    %d\n")[0],
+        tl_counter_next());
+
+    printf(&("counter:    %d\n")[0],
+        tl_counter_next());
+
+    printf(&("get:        %d\n")[0],
+        tl_counter_get());
+
+    tl_counter_reset();
+
+    printf(&("reset:      %d\n")[0],
+        tl_counter_get());
+
+
+    // ═══════════════════════════════════════════════
+    // STRUCT RETURN / PASS-BY-VALUE
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== structs ===\n")[0]);
+
+    a := tl_point_make(10, 20);
+    b := tl_point_make(30, 40);
+
+    printf(&("point A:    %d %d\n")[0],
+        a.x,
+        a.y);
+
+    printf(&("point B:    %d %d\n")[0],
+        b.x,
+        b.y);
+
+    c := tl_point_add(a, b);
+
+    printf(&("A + B:      %d %d\n")[0],
+        c.x,
+        c.y);
+
+    printf(&("distance²:  %d\n")[0],
+        tl_point_distance_squared(c));
+
+
+    // ═══════════════════════════════════════════════
+    // STRUCT CONTAINING FLOAT + POINTER
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== mixed struct ===\n")[0]);
+
+    record_mem := calloc(32, 1);
+
+    record := tl_record_make(
+        123,
+        0x55,
+        12.5,
+        record_mem,
+    );
+
+    printf(&("id:         %d\n")[0],
+        record.id);
+
+    printf(&("flags:      %d\n")[0],
+        record.flags);
+
+    printf(&("value:      %f\n")[0],
+        record.value);
+
+    printf(&("ptr valid:  %d\n")[0],
+        record.ptr != 0);
+
+    free(record_mem);
+
+
+    // ═══════════════════════════════════════════════
+    // STRUCT RETURN
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== stats struct ===\n")[0]);
+
+    stat_mem := calloc(3, 4);
+    stat_values := cast(^i32)stat_mem;
+
+    (stat_values + 0 * sizeof(i32))^ = 10;
+    (stat_values + 1 * sizeof(i32))^ = 20;
+    (stat_values + 2 * sizeof(i32))^ = 30;
+
+    stats := tl_stats_compute(stat_values, 3);
+
+    printf(&("sum:        %d\n")[0],
+        stats.sum);
+
+    printf(&("count:      %d\n")[0],
+        stats.count);
+
+    printf(&("mean:       %f\n")[0],
+        stats.mean);
+
+    free(stat_mem);
+
+
+    // ═══════════════════════════════════════════════
+    // EXTERNAL VARIADICS
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== C variadics ===\n")[0]);
+
+    result := tl_sum_variadic(
+        5,
+        10,
+        20,
+        30,
+        40,
+        50,
+    );
+
+    printf(&("int sum:    %d\n")[0], result);
+
+    float_result := tl_sum_variadic_double(
+        4,
+        1.5,
+        2.5,
+        3.5,
+        4.5,
+    );
+
+    printf(&("double sum: %f\n")[0],
+        float_result);
+
+    tl_printf(
+        &("tl_printf: %d %d %d\n")[0],
+        100,
+        200,
+        300,
+    );
+
+    tl_printf(
+        &("tl_printf: %f %f\n")[0],
+        1.25,
+        2.75,
+    );
+
+
+    // ═══════════════════════════════════════════════
+    // LIBC / PROCESS
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== process ===\n")[0]);
+
+    pid := tl_getpid();
+    ppid := tl_getppid();
+
+    printf(&("getpid:     %d\n")[0], pid);
+    printf(&("getppid:    %d\n")[0], ppid);
+
+    printf(&("sys_getpid: %d\n")[0],
+        tl_sys_getpid());
+
+    printf(&("errno:      %d\n")[0],
+        tl_errno_test());
+
+
+    // ═══════════════════════════════════════════════
+    // DIRECT SYSCALL
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== syscall ===\n")[0]);
+
+    // Linux x86-64:
+    // SYS_getpid = 39
+
+    syscall_pid := tl_syscall0(39);
+
+    printf(&("syscall pid: %d\n")[0],
+        syscall_pid);
+
+
+    // ═══════════════════════════════════════════════
+    // syscall write
+    // ═══════════════════════════════════════════════
+
+    syscall_msg := "hello directly from syscall\n";
+
+    tl_sys_write(
+        1,
+        cast(rawptr)&syscall_msg[0],
+        cast(u64)len(syscall_msg),
+    );
+
+
+    // ═══════════════════════════════════════════════
+    // TIME
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== time ===\n")[0]);
+
+    printf(&("unix time:  %d\n")[0],
+        tl_unix_time());
+
+
+    // ═══════════════════════════════════════════════
+    // BIT OPERATIONS
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== bits ===\n")[0]);
+
+    printf(&("popcount32: %d\n")[0],
+        tl_popcount32(0xF0F0));
+
+    printf(&("popcount64: %d\n")[0],
+        tl_popcount64(0xFFFFFFFF));
+
+    printf(&("rol32:      %d\n")[0],
+        tl_rotate_left32(1, 8));
+
+    printf(&("rol64:      %d\n")[0],
+        tl_rotate_left64(1, 16));
+
+
+    // ═══════════════════════════════════════════════
+    // INTEGER LIMITS
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== integer limits ===\n")[0]);
+
+    printf(&("u32 max:    %u\n")[0],
+        tl_u32_max());
+
+    printf(&("u64 max:    %llu\n")[0],
+        tl_u64_max());
+
+    printf(&("i64 min:    %lld\n")[0],
+        tl_i64_min());
+
+    printf(&("i64 max:    %lld\n")[0],
+        tl_i64_max());
+
+
+    // ═══════════════════════════════════════════════
+    // SMALL INTEGER TYPES
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== small integers ===\n")[0]);
+
+    printf(&("xor:        %u\n")[0],
+        tl_byte_xor(0xAA, 0x55));
+
+    printf(&("signed:     %d\n")[0],
+        tl_byte_signed(-42));
+
+
+    // ═══════════════════════════════════════════════
+    // VERSION
+    // ═══════════════════════════════════════════════
+
+    printf(&("\n=== version ===\n")[0]);
+
+    printf(&("%s\n")[0], tl_version());
 }

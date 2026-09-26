@@ -103,7 +103,16 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         return {kind=.Value, v=t2}
     }
     case Deref: {
-        ptr_val := cg_addr(c, e.expr);
+        // NOTE: this must mirror cg_addr's Deref case in how it computes
+        // the pointer's VALUE (cg_expr + reduce — NOT cg_addr, which would
+        // ask for the address of e.expr, and e.expr is very often not an
+        // addressable lvalue at all — e.g. `(ints + 0 * sizeof(i32))^`
+        // has a Binop as e.expr, which has no address to take). Once we
+        // have that pointer value, cg_expr additionally loads through it
+        // (unlike cg_addr's Deref, which just returns the pointer value
+        // itself as "the address").
+        ptr_val, returns := reduce_expr_to_single_value(c, cg_expr(c, e.expr))
+        assert(returns)
         ptr_ty := get_type(expr_ty(e.expr))
 
         if ptr_ty.kind != .Pointer {
@@ -309,7 +318,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .BitOr:        op = "or"
             case: panic("impl")
             }
-        } else if is_integer_unsigned(operand_ty) {
+        } else if is_integer_unsigned(operand_ty) || is_pointer(operand_ty) {
             #partial switch e.kind {
             case .Addition:     op = "add"
             case .Subtraction:  op = "sub"
@@ -389,6 +398,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     case: panic("impl");
     }
 }
+
 
 cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall) -> CGExprRes {
     t := cg_fn_call_target(c, e.target)

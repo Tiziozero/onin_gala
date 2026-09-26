@@ -7,7 +7,7 @@ import "core:mem"
 import "core:os"
 import "core:io"
 
-init_context :: proc() -> ^Context {
+init_context :: proc(debug := false) -> ^Context {
     ctx := new(Context)
     ctx.program_name = "main"; // overwrite eventually
     // NOTE: no context.user_ptr assignment here — it wouldn't survive return
@@ -17,7 +17,7 @@ init_context :: proc() -> ^Context {
     ctx.allocator = virtual.arena_allocator(&ctx.arena)
 
     al := ctx.allocator
-    ctx.debug = true
+    ctx.debug = debug
     ctx.items = make([dynamic]Item, allocator = al)
     ctx.exprs = make([dynamic]Expr, allocator = al)
     ctx.stmts = make([dynamic]Stmt, allocator = al)
@@ -139,12 +139,192 @@ handle_file :: proc(ctx: ^Context, file_name: string) -> string {
 
     return resolved
 }
+
 destroy_context :: proc(ctx: ^Context) {
     virtual.arena_destroy(&ctx.arena)
     free(ctx)
 }
+
+// ---------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------
+
+Cli_Args :: struct {
+    entry_file:   string,
+    program_name: string,
+    debug:        bool,
+    extra_libs:   [dynamic]string, // paths passed via -l/--link, e.g. "-l libfoo.so"
+}
+
+// Program names are restricted to something `ld -o` and the shell will
+// both be happy with: letters, digits (not leading), underscore, and
+// dash (not leading).
+is_legal_program_name :: proc(n: string) -> bool {
+    if len(n) == 0 {
+        return false
+    }
+    for c, i in n {
+        switch {
+        case c >= 'a' && c <= 'z':
+        case c >= 'A' && c <= 'Z':
+        case c == '_':
+        case c == '-' && i > 0: // allow dash, but not as first char
+        case c >= '0' && c <= '9' && i > 0: // digits ok, just not first char
+        case:
+            return false
+        }
+    }
+    return true
+}
+
+print_usage :: proc() {
+    gala_info("usage: galac <file.gala> [-o <name>] [-l <path-to-lib.so>]...")
+}
+
+// Parses CLI args in the clang/gcc style: `galac main.gala -o main`.
+// Exactly one ".gala" file is allowed (the entry point); anything else
+// unrecognized is a hard error rather than being silently ignored.
+parse_cli_args :: proc(args: []string) -> Cli_Args {
+    result := Cli_Args{program_name = "main", debug = false}
+    result.extra_libs = make([dynamic]string)
+    entry_file_set := false
+
+    i := 0
+    for i < len(args) {
+        arg := args[i]
+
+        switch {
+        case arg == "-o":
+            i += 1
+            if i >= len(args) {
+                gala_panic("expected program name after \"-o\".")
+            }
+            name := args[i]
+            if !is_legal_program_name(name) {
+                gala_panic("illegal program name:", name)
+            }
+            result.program_name = name
+
+        case arg == "-l" || arg == "--link":
+            // Link an extra shared library (.so) at the given path, e.g.
+            // "-l ./libfoo.so" or "--link /usr/lib/libbar.so". Passed
+            // straight through to `ld` alongside our own .o files.
+            i += 1
+            if i >= len(args) {
+                gala_panic("expected a path to a .so file after \"-l\".")
+            }
+            lib_path := args[i]
+            if !strings.has_suffix(lib_path, ".so") {
+                gala_panic("expected a \".so\" file after \"-l\", got:", lib_path)
+            }
+            if !os.exists(lib_path) {
+                gala_panic("cannot find library to link:", lib_path)
+            }
+            append(&result.extra_libs, lib_path)
+
+        case arg == "-h" || arg == "--help":
+            print_usage()
+            os.exit(0)
+
+        case arg == "-d" || arg == "--debug":
+            result.debug = true
+        case strings.has_suffix(arg, ".gala") && len(arg) > len(".gala"): // "not just \".gala\""
+            if entry_file_set {
+                gala_panic("must specify exactly one \".gala\" file, got an extra one:", arg)
+            }
+            result.entry_file = arg
+            entry_file_set = true
+
+        case:
+            gala_panic("unrecognized argument:", arg)
+        }
+
+        i += 1
+    }
+
+    if !entry_file_set {
+        print_usage()
+        gala_panic("must specify exactly one \".gala\" file.")
+    }
+
+    return result
+}
+
+// Links the object files gathered during compilation (ctx.o_files),
+// plus any extra shared libraries passed via -l/--link, into a final
+// executable at ctx.program_name, shelling out to `ld` the same way
+// clang would under the hood.
+link_executable :: proc(ctx: ^Context, extra_libs: []string) {
+    // link ld a.o -o a.out
+    /* ld \
+    /usr/lib/crt1.o \
+    /usr/lib/crti.o \
+    -lc \
+    a.o \
+    /usr/lib/crtn.o
+    -o name*/
+    command := make([dynamic]string, allocator = ctx.allocator)
+    append(&command, "ld")
+    append(&command, "-dynamic-linker")
+    append(&command, "/lib64/ld-linux-x86-64.so.2")
+
+    if os.exists("/usr/lib/crt1.o") {
+        // Arch and similar
+        append(&command, "/usr/lib/crt1.o")
+        append(&command, "/usr/lib/crti.o")
+        append(&command, "-L/usr/lib")
+    } else {
+        // Ubuntu/Debian
+        append(&command, "/usr/lib/x86_64-linux-gnu/crt1.o")
+        append(&command, "/usr/lib/x86_64-linux-gnu/crti.o")
+        append(&command, "-L/usr/lib/x86_64-linux-gnu")
+    }
+
+    append(&command, "-lc")
+    append(&command, "-lm")
+
+    for f in ctx.o_files {
+        append(&command, f)
+    }
+
+    // Extra shared libraries requested via -l/--link on the CLI.
+    for lib in extra_libs {
+        append(&command, lib)
+    }
+
+    if os.exists("/usr/lib/crtn.o") {
+        append(&command, "/usr/lib/crtn.o")
+    } else {
+        append(&command, "/usr/lib/x86_64-linux-gnu/crtn.o")
+    }
+
+    append(&command, "-o")
+    append(&command, ctx.program_name)
+
+    debug("Link command: ")
+    for a in command {
+        debugf("%s ", a)
+    }
+    debugfln("")
+
+    p, err := os.process_start({command = command[:]})
+    if err != .NONE {
+        gala_panic("Failed to start link (ld) process:", err)
+    }
+
+    p_state, werr := os.process_wait(p)
+    if werr != .NONE {
+        gala_panic("Failed to wait for link (ld) process:", werr)
+    }
+    if p_state.exit_code != 0 {
+        gala_panic("Failed to link machine code. exit code:", p_state.exit_code)
+    }
+}
+
 main :: proc() { // odins context is passed down, not up, or some shi
-    ctx := init_context()
+    cli := parse_cli_args(os.args[1:]) // skip program name itself
+
+    ctx := init_context(debug=cli.debug)
     context.user_ptr = ctx   // <-- set it here, so it's live for the rest of main's scope
 
     // integer types
@@ -169,132 +349,14 @@ main :: proc() { // odins context is passed down, not up, or some shi
     new_type(&ctx.base_mod, Type{name="rawptr", kind=.Pointer, ptr=void_type()});
     new_type(&ctx.base_mod, Type{name="string", kind=.String});
 
-    is_legal_program_name :: proc(n: string) -> bool {
-        if len(n) == 0 {
-            return false
-        }
-        for c, i in n {
-            switch {
-            case c >= 'a' && c <= 'z':
-            case c >= 'A' && c <= 'Z':
-            case c == '_':
-            case c == '-' && i > 0: // allow dash, but not as first char
-            case c >= '0' && c <= '9' && i > 0: // digits ok, just not first char
-            case:
-                return false
-            }
-        }
-        return true
-    }
+    ctx.program_name = cli.program_name
 
-    next_arg :: proc(args: []string) -> ([]string, string, bool) {
-        if len(args) > 0 {
-            t := args[0]
-            return args[1:], t, true
-        }
-        return args, "", false
-    }
+    get_ctx().entry_file = cli.entry_file
+    handle_file(ctx, cli.entry_file)
 
-    entry_file: string
-    entry_file_set := false
+    link_executable(ctx, cli.extra_libs[:])
 
-    args := os.args[1:] // skip program name itself
-    for {
-        arg: string
-        ok: bool
-        args, arg, ok = next_arg(args) // note: `=`, reassigns outer args
-        if !ok {
-            break
-        }
-        if arg == "-o" {
-            name: string
-            name_ok: bool
-            args, name, name_ok = next_arg(args)
-            if !name_ok {
-                gala_panic("expected name after \"-o\".")
-            }
-            if !is_legal_program_name(name) {
-                gala_panic("illegal program name:", name)
-            }
-            ctx.program_name = name
-        } else if strings.has_suffix(arg, ".gala") && len(arg) > 5 { // "not ".gala"
-            if entry_file_set {
-                gala_panic("Must specify exactly one \".gala\" file, got an extra one:", arg);
-            }
-            entry_file = arg
-            entry_file_set = true
-        }
-    }
-    if !entry_file_set {
-        gala_panic("Must specify exactly one \".gala\" file.");
-    }
-
-    get_ctx().entry_file = entry_file
-    handle_file(ctx, entry_file);
-    {
-        // link ld a.o -o a.out
-        /* ld \
-        /usr/lib/crt1.o \
-        /usr/lib/crti.o \
-        -lc \
-        a.o \
-        /usr/lib/crtn.o
-        -o name*/
-        command := make([dynamic]string, allocator=get_ctx().allocator)
-        append(&command, "ld")
-        append(&command, "-dynamic-linker")
-        append(&command, "/lib64/ld-linux-x86-64.so.2")
-        if os.exists("/usr/lib/crt1.o") {
-            // Arch and similar
-            append(&command, "/usr/lib/crt1.o")
-            append(&command, "/usr/lib/crti.o")
-            append(&command, "-L/usr/lib")
-        } else {
-            // Ubuntu/Debian
-            append(&command, "/usr/lib/x86_64-linux-gnu/crt1.o")
-            append(&command, "/usr/lib/x86_64-linux-gnu/crti.o")
-            append(&command, "-L/usr/lib/x86_64-linux-gnu")
-        }
-
-        append(&command, "-lc")
-        append(&command, "-lm")
-
-        for f in get_ctx().o_files {
-            append(&command, f)
-        }
-
-        if os.exists("/usr/lib/crtn.o") {
-            append(&command, "/usr/lib/crtn.o")
-        } else {
-            append(&command, "/usr/lib/x86_64-linux-gnu/crtn.o")
-        }
-
-        append(&command, "-o")
-        append(&command, get_ctx().program_name)
-
-        debug("Link command: ");
-        for a in command {
-            debugf("%s ", a);
-        }
-        debugfln("")
-
-        p, err := os.process_start({command=command[:]});
-        if err != .NONE {
-            gala_panic("Failed to start link (ld) process:", err);
-        }
-        p_state, werr := os.process_wait(p)
-        if werr != .NONE {
-            gala_panic("Failed to wait for link (ld) process:", werr);
-        }
-        if p_state.exit_code != 0 {
-            gala_panic("Failed to link machine code. exit code:", p_state.exit_code);
-        }
-        if p_state.exit_code != 0 {
-            gala_panic("clang exit code:", p_state.exit_code);
-        }
-    }
     destroy_context(ctx);
     free_all(context.temp_allocator);
-
-    gala_info("Finished parsing");
+    // gala_info("Finished parsing");
 }

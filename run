@@ -2,5 +2,5 @@
 set -x
 set -e
 
-odin build . -out=galac && ./galac main.gala -o main
+odin build . -out=galac && ./galac main.gala -o main -d
 export LD_LIBRARY_PATH=./ && ./main

@@ -1019,7 +1019,10 @@ parse_tokens :: proc(file_name: string, tokens: []Token) -> AST {
         case .Keyword: {
             append(&items,parse_module_kw(p));
         }
-        case: panic("impl");
+        case:
+            debugln(current_token(p));
+            highlight_lines(current_token(p).span);
+            panic("impl");
         }
     }
     return AST{items=items[:]}

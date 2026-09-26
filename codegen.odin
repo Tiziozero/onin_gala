@@ -169,6 +169,26 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
         get_ctx().llvm_ty[id]="i16";
         return get_ctx().llvm_ty[id]
     }
+    case .Int_8: {
+        get_ctx().llvm_ty[id] = "i8";
+        return get_ctx().llvm_ty[id]
+    }
+    case .UInt64: {
+        get_ctx().llvm_ty[id] = "i64";
+        return get_ctx().llvm_ty[id]
+    }
+    case .UInt32: {
+        get_ctx().llvm_ty[id] = "i32";
+        return get_ctx().llvm_ty[id]
+    }
+    case .UInt16: {
+        get_ctx().llvm_ty[id] = "i16";
+        return get_ctx().llvm_ty[id]
+    }
+    case .UInt_8: {
+        get_ctx().llvm_ty[id] = "i8";
+        return get_ctx().llvm_ty[id]
+    }
     case .Void: {
         get_ctx().llvm_ty[id]="void";
         return get_ctx().llvm_ty[id]
@@ -727,6 +747,7 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
         return cg_elem_ptr(c, e.target, e.index)
     }
     case Deref: {
+        debugln("deref inner:", get(e.expr));
         // generate expression, as that would already be a pointer, otherwise
         // dereferencing wouldn't make sense
         ptr_val, returns := reduce_expr_to_single_value(c, cg_expr(c, e.expr));
@@ -750,6 +771,7 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
     }
     case:
         debugln(get(id))
+        highlight_lines(get_span(id).span);
         panic("not an lvalue")
     }
 }
