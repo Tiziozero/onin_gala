@@ -445,7 +445,10 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     case Symbol: {
         v := cgscope_get(&c.scope, e.name);
         switch v.kind {
-        case .Variable, .Symbol: {
+        case .Symbol: {
+            return {kind=.Address, v=v.name}
+        }
+        case .Variable: {
             t := new_tmp(c)
             cwritefln(c, "\t%s = load %s, ptr %s",
                 t, ty_to_llvm_str(c, expr_ty(id)), v.name);

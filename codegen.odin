@@ -235,13 +235,20 @@ aprintf :: proc(c: ^CGCtx, format: string, data: ..any) -> string {
 }
 // returns value
 cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
-    #partial switch e in get(id) {
-        case Symbol: {
-            v := cgscope_get(&c.scope, e.name);
-            return v.name;
-        }
+    v, ok := reduce_expr_to_single_value(c, cg_expr(c,id));
+    if !ok {
+        highlight_lines(get_span(id).span);
+        gala_panic("Expression can't be void/must return.");
+    } else {
+        return v;
     }
-    panic("no");
+    /* v, ok := reduce_expr_to_single_value(c, cg_expr(c,id));
+    if !ok {
+        highlight_lines(get_span(id).span);
+        gala_panic("Expression can't be void/must return.");
+    }
+    debugln("this:", get(id));
+    panic("no"); */
 }
 
 // Stable per-TypeId integer used as the runtime tag inside a boxed `any`
@@ -1162,10 +1169,27 @@ cg_module :: proc(m: ModId) {
         name := get_ctx().cg_item_names[main_id];
         entry := aprintf(&cgctx, "@%s", name)
 
-        fmt.sbprintfln(cgctx.b,` define i32 @main(i32 %%argc, ptr %%argv) {{
+        // The C `main` wrapper has to match gala main's real return type.
+        // Calling a `void` gala main as `i32` leaves the process exit status
+        // as whatever happened to be in eax (this used to exit with the last
+        // computed value). void -> exit 0; i32 -> pass it through.
+        main_obj := get_ctx().objs[get_ctx().item_objects[main_id]]
+        main_fn := get_type(main_obj.type.(TypeId))
+        main_ret_kind := get_type(main_fn.fn.ret_ty).kind
+        #partial switch main_ret_kind {
+        case .Void:
+            fmt.sbprintfln(cgctx.b,` define i32 @main(i32 %%argc, ptr %%argv) {{
+            call void %s()
+            ret i32 0
+        }`,  entry);
+        case .Int32:
+            fmt.sbprintfln(cgctx.b,` define i32 @main(i32 %%argc, ptr %%argv) {{
             %%result = call i32 %s()
             ret i32 %%result
         }`,  entry);
+        case:
+            gala_panic("`main` must return void or i32")
+        }
     }
     // write
     dir_err := os.make_directory(".gala_build")

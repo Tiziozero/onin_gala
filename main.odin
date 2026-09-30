@@ -351,7 +351,13 @@ main :: proc() { // odins context is passed down, not up, or some shi
 
     ctx.program_name = cli.program_name
 
-    get_ctx().entry_file = cli.entry_file
+    // entry_file is compared against module.path in cg_module to decide
+    // whether to emit the C `main` wrapper. module.path is the *resolved*
+    // path (see handle_file), so the entry file has to go through the exact
+    // same resolution, otherwise `galac /tmp/x.gala` never matches and no
+    // entry point is emitted. ctx.current_file is "" here, same as it will
+    // be when handle_file resolves it below.
+    get_ctx().entry_file = resolve_import_path("", cli.entry_file)
     handle_file(ctx, cli.entry_file)
 
     link_executable(ctx, cli.extra_libs[:])

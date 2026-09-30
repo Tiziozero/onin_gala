@@ -57,11 +57,11 @@ compare_and_reduce_numerics :: proc(l, r: TypeId) -> (TypeId, bool, string) {
 }
 
 // Handles:
-//   pointer <-> pointer   (rawptr/void* is compatible with any pointer type)
+//   pointer <-> pointer   (delegates to type_cmp, so fn/any/etc. rules stay in one place)
 //   pointer <-> integer   (pointer arithmetic / indexing offsets, either order)
 // Assumes at least one of l/r is a Pointer — callers should route here only
 // in that case (see compare_and_reduce_types).
-compare_and_reduce_pointers :: proc(l, r: TypeId) -> (TypeId, bool, string) {
+compare_and_reduce_pointers :: proc(l, r: TypeId, strict := false) -> (TypeId, bool, string) {
     if l == r do return l, true, ""
 
     // Pointer <-> Pointer
@@ -74,9 +74,7 @@ compare_and_reduce_pointers :: proc(l, r: TypeId) -> (TypeId, bool, string) {
             return l, true, ""
         } */
 
-        lt := get_type(l)
-        rt := get_type(r)
-        if type_cmp_by_id(lt.ptr, rt.ptr) {
+        if type_cmp_by_id(l, r, strict) {
             return l, true, ""
         }
 
@@ -108,24 +106,48 @@ compare_and_reduce_pointers :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     return TypeId(0), false, "type mismatch (pointer)"
 }
 
-compare_and_reduce_types :: proc(l, r: TypeId) -> (TypeId, bool, string) {
+// Single entry point for "can these two types be unified, and into what?".
+//
+//   1. identical ids                 -> trivially ok
+//   2. any (unless strict)           -> the other side wins
+//   3. pointer involved              -> compare_and_reduce_pointers
+//   4. both numeric                  -> compare_and_reduce_numerics (untyped reduction)
+//   5. everything else               -> structural equality via type_cmp
+//                                       (fn, struct, slice, array, string, bool, ...)
+//
+// Only 2-4 *reduce* anything; 5 is pure equality, so type_cmp stays the one
+// source of truth for what "same type" means. On success from 5 we return l
+// (the left/expected type).
+compare_and_reduce_types :: proc(l, r: TypeId, strict := false) -> (TypeId, bool, string) {
     if l == r do return l, true, ""
+
     lk := get_type(l).kind
     rk := get_type(r).kind
-    if lk == .Any {
-        return r, true, ""
+
+    if !strict {
+        if lk == .Any do return r, true, ""
+        if rk == .Any do return l, true, ""
     }
-    if rk == .Any {
+
+    if is_pointer(l) || is_pointer(r) {
+        return compare_and_reduce_pointers(l, r, strict)
+    }
+
+    if is_numeric(l) && is_numeric(r) {
+        return compare_and_reduce_numerics(l, r)
+    }
+
+    // structural fallthrough: functions (incl. variadics), structs, slices,
+    // fixed arrays, strings, bools, ...
+    if type_cmp_by_id(l, r, strict) {
         return l, true, ""
     }
-    if is_pointer(l) || is_pointer(r) {
-        return compare_and_reduce_pointers(l, r)
+
+    if lk == .Function && rk == .Function {
+        return TypeId(0), false, "function types don't match"
     }
-    if is_numeric(l) && is_numeric(r) {
-        return compare_and_reduce_numerics(l, r);
-    }
-    //dump_context(get_ctx());
-    return 0, false, "types don't match"
+
+    return TypeId(0), false, "types don't match"
 }
 get_array_base_type :: proc(t: TypeId) -> (TypeId, bool) {
     ty := get_type(t)
@@ -433,7 +455,6 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
         ty, ok, s := compare_and_reduce_types(left_ty, right_ty);
         if !ok {
-            
             highlight_lines(get_span(id).span)
             gala_panic(s, tts(left_ty), "vs", tts(right_ty))
         }
@@ -684,7 +705,8 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
                 propagate_type(t, stmt.value)
             } else {
                 highlight_lines(get_span(sid).span)
-                gala_panic("types don't match");
+                gala_panic("types don't match (%s vs %s)",
+                    tts(expected_type),expr_ty(stmt.value));
             }
         }
     }
@@ -702,7 +724,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             ty, ok, s := compare_and_reduce_types(expr_ty(e), tc.fn_ret_ty.(TypeId));
             if !ok {
                 highlight_lines(get_span(e).span);
-                gala_panic(s);
+                gala_panic(s, tts(expr_ty(e)), "vs", tts(tc.fn_ret_ty.(TypeId)));
             }
             propagate_type(ty, e);
         // otherwise make sure function doesn't expect a value

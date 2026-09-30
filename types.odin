@@ -162,11 +162,21 @@ type_cmp :: proc(l, r: Type, strict := false) -> bool {
         return true
 
     case .Function:
-        if l.fn.ret_ty != r.fn.ret_ty { return false }
+        // fn types aren't interned (see new_fn_type), so two identical
+        // signatures have different TypeIds. Compare structurally, and always
+        // strictly: fn(any) must not match fn(i64).
+        if l.fn.is_variadic != r.fn.is_variadic { return false }
+        if l.fn.is_variadic &&
+           !type_cmp_by_id(l.fn.variadic_ty, r.fn.variadic_ty, true) {
+            return false
+        }
+
+        if !type_cmp_by_id(l.fn.ret_ty, r.fn.ret_ty, true) { return false }
         if len(l.fn.args) != len(r.fn.args) { return false }
 
+        // arg names are deliberately ignored
         for i in 0..<len(l.fn.args) {
-            if l.fn.args[i].type != r.fn.args[i].type {
+            if !type_cmp_by_id(l.fn.args[i].type, r.fn.args[i].type, true) {
                 return false
             }
         }
@@ -176,6 +186,9 @@ type_cmp :: proc(l, r: Type, strict := false) -> bool {
         return type_cmp_by_id(l.ptr, r.ptr, strict)
 
     case .Struct:
+        // structs are nominal: same fields under a different name is a
+        // different type
+        if l.name != r.name { return false }
         if len(l.structure.fields) != len(r.structure.fields) {
             return false
         }
@@ -190,11 +203,14 @@ type_cmp :: proc(l, r: Type, strict := false) -> bool {
         return true
 
     case .Slice:
-        return l.slice.type == r.slice.type
+        // element types go through type_cmp_by_id (strict), not raw id
+        // equality: a slice of fn types would otherwise never match, since
+        // each fn spec gets its own TypeId.
+        return type_cmp_by_id(l.slice.type, r.slice.type, true)
 
     case .FixedSizeArray:
         return l.fixed_size_array.size == r.fixed_size_array.size &&
-               l.fixed_size_array.type == r.fixed_size_array.type
+               type_cmp_by_id(l.fixed_size_array.type, r.fixed_size_array.type, true)
 
     case .UInt64, .UInt32, .UInt16, .UInt_8,
          .Int64, .Int32, .Int16, .Int_8,
@@ -213,6 +229,7 @@ type_cmp :: proc(l, r: Type, strict := false) -> bool {
     return false
 }
 type_cmp_by_id :: proc(lid, rid: TypeId, strict := false) -> bool {
+    if lid == rid { return true }
     l := get_type(lid)
     r := get_type(rid)
 
@@ -306,3 +323,4 @@ is_void_pointer :: proc(id: TypeId) -> bool {
     t := get_type(id)
     return t.kind == .Pointer && get_type(t.ptr).kind == .Void
 }
+

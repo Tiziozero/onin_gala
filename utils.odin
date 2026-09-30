@@ -78,8 +78,8 @@ tts :: proc(t: TypeId) -> string {
         return strings.to_string(sb)
 
     case .Function:
-        sb := strings.builder_make()
-        strings.write_string(&sb, "proc(")
+        sb := strings.builder_make(allocator=get_ctx().allocator)
+        strings.write_string(&sb, "fn(")
         for arg, i in ty.fn.args {
             if i > 0 do strings.write_string(&sb, ", ")
             strings.write_string(&sb, tts(arg.type))

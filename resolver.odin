@@ -52,7 +52,7 @@ new_object :: proc(s: ^Scope, o: Object) -> ObjId {
 
     // make sure they're not already declared
     if name_exists(s, o.name) {
-        gala_panicf("object %s already exists.", get(s.objects[o.name]).name);
+        gala_panicf("object %s already exists.", o.name);
     }
 
     append(&ctx.objs, o);
@@ -206,7 +206,6 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     case Symbol: {
         obj, ok := scope_get_object(s, e.name);
         if !ok {
-            debugln("objects:", s.items);
             highlight_lines(get_span(id).span);
             gala_panic("Couldn't find", e.name, "in scope.");
         }
@@ -299,6 +298,16 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
         id := resolve_type_specifier(s, k.base^)
         return intern_type({kind=.FixedSizeArray,
             fixed_size_array={type=id, size=k.size}})
+    }
+    case FnSpecifier: {
+        // resolve the signature (ret type, args, variadic) into a Function type.
+        // the returned scope only exists so a fn body could be resolved in it;
+        // a bare specifier has no body, so just free it.
+        fnty, fnscope := resolve_fn_dec_signature(s, k.signature^)
+        free_scope(&fnscope)
+        // not interned: function types are nominal here (see new_fn_type), so
+        // the type checker must compare two fn specifier types structurally.
+        return new_fn_type(fnty)
     }
     case: panic("impl");
     }
@@ -420,7 +429,8 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 }
 
 // for gala functions, add an aditional arg to function body of type slice of var arg type
-resolve_fn_dec_signature :: proc(s: ^ModuleScope, fndec: FnDecSignature, extern := false) -> (Type, Scope) {
+// takes ^Scope (not ^ModuleScope) so fn type specifiers can be resolved from any scope
+resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := false) -> (Type, Scope) {
     // create fn type
     fnty := Type{}
     fnty.kind = .Function;

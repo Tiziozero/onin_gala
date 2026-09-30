@@ -344,12 +344,14 @@ PointerType :: struct {ptr:^TypeSpecifier, span: Span };
 FixedArreySpecifier :: struct { size: int, base: ^TypeSpecifier, span: Span };
 SliceSpecifier :: struct {base : ^TypeSpecifier, span: Span }
 AnySpecifier :: struct { span: Span }
+FnSpecifier :: struct { span: Span, using signature: ^FnDecSignature }
 TypeSpecifier :: union {
     BaseType,
     PointerType,
     FixedArreySpecifier,
     SliceSpecifier,
     AnySpecifier,
+    FnSpecifier,
 }
 VarDec :: struct {
     name: string,
@@ -808,6 +810,7 @@ base_span :: proc(t: ^TypeSpecifier) -> Span {
     case SliceSpecifier: return t.span;
     case FixedArreySpecifier: return t.span;
     case AnySpecifier: return t.span;
+    case FnSpecifier: return t.span;
     }
     panic("impl")
 }
@@ -815,6 +818,14 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
     if current_token(p).kind == .Ident {
         token := consume_token(p)
         return TypeSpecifier(BaseType({token.text, token.span}));
+    }
+    if is_kw(current_token(p), .Fn) {
+        token:=consume_token(p); // "fn"
+
+        spec := new(FnDecSignature, get_ctx().allocator);
+        spec^ = parse_args_dec(p);
+        return FnSpecifier{ span = token.span, signature = spec };
+
     }
     if is_symbol(current_token(p), "[") {
         token := consume_token(p); // "["
@@ -863,13 +874,11 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
     gala_panic("Invalid token in type specifier.");
 }
 
-parse_fn_signature :: proc(p: ^Parser) -> FnDec {
-    kw := consume_token(p); // "fn"
-    assert(kw.kind == .Keyword && kw.kw == .Fn);
-    f := FnDec{};
-    name := expect_ident(p);
-    f.name = name.text;
-    // args
+ArgSpecs :: struct {
+}
+
+parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
+    f := FnDecSignature{};
     args := make([dynamic]FnDecArg)
     expect_symbol(p, "(");
     for !is_symbol(current_token(p), ")") {
@@ -895,13 +904,24 @@ parse_fn_signature :: proc(p: ^Parser) -> FnDec {
     }
     end := expect_symbol(p, ")");
     f.args = args[:]
-
     if is_symbol(current_token(p), ":") {
         consume_token(p); // ":"
         f.ret_ty = parse_type(p);
     }
+    return f;
+}
+
+parse_fn_signature :: proc(p: ^Parser) -> FnDec {
+    kw := consume_token(p); // "fn"
+    assert(kw.kind == .Keyword && kw.kw == .Fn);
+    name := expect_ident(p);
+          // args
+    f := FnDec{};
+    f.signature = parse_args_dec(p);
+    f.name = name.text;
+
     f.span.start = kw.span.start
-    f.span.end = end.span.end
+    f.span.end = current_token(p).span.end;
     return f;
 }
 parse_module_kw :: proc(p: ^Parser) -> ItemId {
