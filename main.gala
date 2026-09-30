@@ -1,8 +1,7 @@
 extern fn call_i32(f: fn(l: i32, r: i32): i32, x: i32, y: i32): i32;
 extern fn printf(fmt: ^byte, data: ..any);
-fn a(l: i32, b: i32): i32 { return 3*l + b; }
 fn main() {
-    b := call_i32(a, 1, 2);
+    b := call_i32(fn(a: i32, b: i32): i32 => a  + b, 1, 2);
     printf(&("s %d\n")[0], b);
     return;
 }

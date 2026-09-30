@@ -52,6 +52,16 @@ BoolLitFalse :: distinct struct {}
 UnNegative :: struct {
     expr: ExprId,
 }
+// Anonymous function expression. Both surface forms produce this node:
+//   fn(i: i32, j: i32): i32 { return i + j }
+//   fn(i: i32, j: i32): i32 => i + j
+// The `=>` form is desugared by the parser into a block containing a single
+// `return <expr>;`, so later passes only ever see one shape (a block body).
+FnLit :: struct {
+    using signature: FnDecSignature,
+    span: Span,
+    block: Block,
+}
 Expr :: union {
     StructLit,
     Binop,
@@ -74,6 +84,7 @@ Expr :: union {
     ZeroInit,
     BoolLitTrue,
     BoolLitFalse,
+    FnLit,
 }
 BoolLit :: struct { text: string }
 String :: struct {
@@ -416,6 +427,13 @@ next_token :: proc(p: ^Parser) -> Token {
         return Token{kind=.EOF}
     }
 }
+// span of the most recently consumed token (used to find the end of a block)
+prev_token_span :: proc(p: ^Parser) -> Span {
+    if p.i > 0 && p.i - 1 < len(p.tokens) {
+        return p.tokens[p.i - 1].span
+    }
+    return Span{}
+}
 Block :: struct {
     stmts: []StmtId,
 }
@@ -620,6 +638,67 @@ is_kw :: proc(t: Token, k: Keyword) -> bool {
     return false
 }
 
+// "=>" may be lexed as a single symbol, or as "=" followed by ">" depending on
+// the lexer; accept both so the parser doesn't care.
+is_fat_arrow :: proc(p: ^Parser) -> bool {
+    if is_symbol(current_token(p), "=>") do return true
+    return is_symbol(current_token(p), "=") && is_symbol(next_token(p), ">")
+}
+consume_fat_arrow :: proc(p: ^Parser) {
+    if is_symbol(current_token(p), "=>") {
+        consume_token(p) // "=>"
+    } else {
+        consume_token(p) // "="
+        consume_token(p) // ">"
+    }
+}
+
+// fn(args): ret { ... }      block body
+// fn(args): ret => expr      expression body (desugared to `{ return expr; }`)
+parse_fn_lit :: proc(p: ^Parser) -> ExprId {
+    kw := consume_token(p) // "fn"
+
+    lit := FnLit{}
+    lit.signature = parse_args_dec(p)
+
+    // the body is a fresh context: a struct literal is fine in here even if
+    // the lambda itself sits inside an `if`/`while` condition.
+    prev_ignore_struct_lit := p.ignore_struct_lit
+    p.ignore_struct_lit = false
+    defer p.ignore_struct_lit = prev_ignore_struct_lit
+
+    end_pos: int
+    if is_fat_arrow(p) {
+        consume_fat_arrow(p)
+        e := parse_expr(p)
+        end_pos = get_span(e).span.end
+
+        ret_id := new_stmt(Stmt(Return{expr=e}))
+        get_ctx().spans.stmts[ret_id] = {
+            file_name=get_ctx().current_file,
+            span=get_span(e).span,
+        }
+        stmts := make([dynamic]StmtId, allocator=get_ctx().allocator)
+        append(&stmts, ret_id)
+        lit.block = Block{stmts=stmts[:]}
+    } else if is_symbol(current_token(p), "{") {
+        lit.block = parse_block(p)
+        end_pos = prev_token_span(p).end // the closing "}"
+    } else {
+        highlight_lines(current_token(p).span)
+        gala_panic("Expected '{' or '=>' after function literal signature.")
+    }
+
+    lit.span = {start=kw.span.start, end=end_pos}
+
+    id := new_expr(Expr(lit))
+    get_ctx().spans.exprs[id] = {
+        file_name=get_ctx().current_file,
+        span=lit.span,
+    }
+    return id
+}
+
 parse_postfix :: proc(p: ^Parser) -> ExprId {
     t := parse_primary(p);
     for {
@@ -688,7 +767,9 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
     return t;
 }
 parse_primary :: proc(p: ^Parser) -> ExprId {
-    if current_token(p).kind == .Ident {
+    if is_kw(current_token(p), .Fn) {
+        return parse_fn_lit(p)
+    } else if current_token(p).kind == .Ident {
         token := consume_token(p)
         e :=  Expr(Symbol{token.text});
         id := new_expr(e)

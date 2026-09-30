@@ -55,6 +55,11 @@ CGCtx :: struct {
     // itself as pointing at the same targets — see cg_stmt's IfElse case.
     cur_break_label: string,
     cur_continue_label: string,
+    // Finished `define` texts for function literals. A lambda is generated
+    // into its own builder (you can't nest a `define` inside another
+    // function's body) and parked here; cg_module writes them out after the
+    // regular items. See cg_fn_lit.
+    lambdas: [dynamic]string,
 }
 CGObjectKind :: enum {
     Invalid,
@@ -798,25 +803,25 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
 //     names to bind and reference in the body, and binds them into
 //     c.scope) or just declaring a prototype (types only, no names,
 //     nothing bound into scope).
+//   - internal: `define internal` linkage, used for function literals so
+//     their generated names only need to be unique within one module.
+//
+// Works from a function TypeId + a bare name (no `@`) rather than an item,
+// so named functions and function literals share all of it.
 //
 // Returns the lowered signature and, when define==true, the raw
 // (pre-coercion) SSA names of each parameter as they appear on the
 // `define` line — the caller needs both to emit the prologue and set
 // `c.cur_fn_ret` before generating the body.
-cg_fn_declaration :: proc(c: ^CGCtx, i: Item, id: ItemId, is_extern := false, define := false) -> (sig: AbiSignature, param_raw_names: [dynamic]string) {
-    objid := get_ctx().item_objects[id]
-    obj := get_ctx().objs[objid]
-    fn_type_id := obj.type.(TypeId)
+cg_fn_header :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string,
+        is_extern := false, define := false, internal := false) -> (sig: AbiSignature, param_raw_names: [dynamic]string) {
     fn_ty := get_type(fn_type_id)
 
     sig = cg_abi_lower_signature(c, fn_type_id, .SysV)
 
     cwrite(c, define ? "define " : "declare ")
-    name: string
-    if is_extern {
-        name = obj.name
-    } else {
-        name = get_ctx().cg_item_names[id] // use compilers cg item name
+    if internal {
+        cwrite(c, "internal ")
     }
     cwritef(c, "%s ", sig.ret.mode == .Indirect ? "void" : sig.ret.coerced_type)
     cwritef(c, "@%s ", name)
@@ -878,11 +883,11 @@ cg_fn_declaration :: proc(c: ^CGCtx, i: Item, id: ItemId, is_extern := false, de
         if is_extern { // extern just use "..."
             cwrite(c, "...")
         } else { // gala functions write arg name as "[]ty"
-            ty := fn_ty.fn.gala_abi_ty;
-            name := fn_ty.fn.variadic_name;
-            sty := ty_to_llvm_str(c, ty)
-            pname := aprintf(c, "%%%s.gala_variadic", name)
-            c.scope.vars[name] = {kind=.Argument, name=pname}
+            vty := fn_ty.fn.gala_abi_ty;
+            vname := fn_ty.fn.variadic_name;
+            sty := ty_to_llvm_str(c, vty)
+            pname := aprintf(c, "%%%s.gala_variadic", vname)
+            c.scope.vars[vname] = {kind=.Argument, name=pname}
             cwritef(c, "%s %s", sty, pname)
         }
     }
@@ -893,6 +898,90 @@ cg_fn_declaration :: proc(c: ^CGCtx, i: Item, id: ItemId, is_extern := false, de
         cwriteln(c, ")")
     }
     return
+}
+// Item-based wrapper: declarations for extern functions and for functions
+// pulled in via imports. (Definitions of named functions go through
+// cg_fn_definition, see cg_item.)
+cg_fn_declaration :: proc(c: ^CGCtx, i: Item, id: ItemId, is_extern := false, define := false) -> (sig: AbiSignature, param_raw_names: [dynamic]string) {
+    objid := get_ctx().item_objects[id]
+    obj := get_ctx().objs[objid]
+    fn_type_id := obj.type.(TypeId)
+
+    name: string
+    if is_extern {
+        name = obj.name
+    } else {
+        name = get_ctx().cg_item_names[id] // use compilers cg item name
+    }
+    return cg_fn_header(c, fn_type_id, name, is_extern, define)
+}
+// Emits a complete function definition — header, entry block, argument
+// prologue, body statements, implicit trailing `ret void` — into the
+// current builder. Shared by named functions (cg_item's FnDec) and
+// function literals (cg_fn_lit).
+//
+// The caller owns the scope: c.scope must already be a fresh scope with
+// the right parent (parameters are bound into it by cg_fn_header).
+cg_fn_definition :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string, block: Block, internal := false) {
+    old_ret := c.cur_fn_ret
+
+    sig, param_raw_names := cg_fn_header(c, fn_type_id, name, false, true, internal)
+    c.cur_fn_ret = sig.ret
+
+    cwriteln(c, "{")
+    cwriteln(c, "entry:")
+
+    fn_ty := get_type(fn_type_id)
+
+    // prologue: unconvert any coerced-by-value struct args back into
+    // a real aggregate SSA value via a memory roundtrip
+    for a, k in fn_ty.fn.args {
+        al := sig.args[k]
+        if al.mode == .Direct && al.needs_coercion {
+            real_ty_str := ty_to_llvm_str(c, al.orig_type)
+            slot := new_tmp(c)
+            cwritefln(c, "\t%s = alloca %s", slot, real_ty_str)
+            cwritefln(c, "\tstore %s %s, ptr %s", al.coerced_type, param_raw_names[k], slot)
+            loaded := new_tmp(c)
+            cwritefln(c, "\t%s = load %s, ptr %s", loaded, real_ty_str, slot)
+            c.scope.vars[a.name] = {.Argument, loaded}
+        }
+    }
+
+    block_ends := false
+
+    for statement, index in block.stmts {
+        cg_stmt(c, statement)
+
+        if stmt_ends_block(statement) {
+            block_ends = true
+
+            if index != len(block.stmts) - 1 {
+                gala_panic("nothing past will be executed")
+            }
+
+            break
+        }
+    }
+
+    if !block_ends {
+        switch sig.ret.mode {
+        case .Direct:
+            if sig.ret.coerced_type == "void" {
+                cwriteln(c, "\tret void")
+            } else {
+                gala_panic("Function does not return a value")
+            }
+
+        case .Indirect:
+            // sret functions have an ABI return of void, so reaching
+            // the end still needs `ret void`.
+            cwriteln(c, "\tret void")
+        }
+    }
+    cwriteln(c, "}")
+
+    c.cur_fn_ret = old_ret
 }
 cg_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
@@ -909,67 +998,11 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
         old_scope := c.scope
         c.scope = new_gcscope(&old_scope)
 
-        old_ret := c.cur_fn_ret
-
-        sig, param_raw_names := cg_fn_declaration(c, i, id, is_extern = false, define = true)
-        c.cur_fn_ret = sig.ret
-
-        cwriteln(c, "{")
-        cwriteln(c, "entry:")
-
         fn_type_id := get_ctx().objs[get_ctx().item_objects[id]].type.(TypeId)
-        fn_ty := get_type(fn_type_id)
+        cg_fn_definition(c, fn_type_id, get_ctx().cg_item_names[id], i.block)
 
-        // prologue: unconvert any coerced-by-value struct args back into
-        // a real aggregate SSA value via a memory roundtrip
-        for a, k in fn_ty.fn.args {
-            al := sig.args[k]
-            if al.mode == .Direct && al.needs_coercion {
-                real_ty_str := ty_to_llvm_str(c, al.orig_type)
-                slot := new_tmp(c)
-                cwritefln(c, "\t%s = alloca %s", slot, real_ty_str)
-                cwritefln(c, "\tstore %s %s, ptr %s", al.coerced_type, param_raw_names[k], slot)
-                loaded := new_tmp(c)
-                cwritefln(c, "\t%s = load %s, ptr %s", loaded, real_ty_str, slot)
-                c.scope.vars[a.name] = {.Argument, loaded}
-            }
-        }
-
-        block_ends := false
-
-        for statement, index in i.block.stmts {
-            cg_stmt(c, statement)
-
-            if stmt_ends_block(statement) {
-                block_ends = true
-
-                if index != len(i.block.stmts) - 1 {
-                    gala_panic("nothing past will be executed")
-                }
-
-                break
-            }
-        }
-
-        if !block_ends {
-            switch sig.ret.mode {
-            case .Direct:
-                if sig.ret.coerced_type == "void" {
-                    cwriteln(c, "\tret void")
-                } else {
-                    gala_panic("Function does not return a value")
-                }
-
-            case .Indirect:
-                // sret functions have an ABI return of void, so reaching
-                // the end still needs `ret void`.
-                cwriteln(c, "\tret void")
-            }
-        }
-        cwriteln(c, "}")
-        // reset scope + return-lowering context
+        // reset scope
         c.scope = old_scope
-        c.cur_fn_ret = old_ret
     }
     case: panic("impl")
     }
@@ -1141,6 +1174,7 @@ cg_module :: proc(m: ModId) {
     cgctx.strings = make(map[string]StringGlobalResult, allocator=get_ctx().allocator);
     cgctx.break_labels = make(map[StmtId]string, allocator=get_ctx().allocator);
     cgctx.continue_labels = make(map[StmtId]string, allocator=get_ctx().allocator);
+    cgctx.lambdas = make([dynamic]string, allocator=get_ctx().allocator);
     cgctx.scope = new_gcscope(nil);
 
 
@@ -1161,6 +1195,13 @@ cg_module :: proc(m: ModId) {
     }
     // gen
     cg_ast(&cgctx, ast)
+
+    // function literals found while generating the items above were
+    // generated into their own builders (see cg_fn_lit); emit them now.
+    for lambda in cgctx.lambdas {
+        cwritefln(&cgctx, "%s", lambda)
+    }
+
     if is_entry {
         main_id, found := find_main_item(ast)
         if !found {

@@ -110,6 +110,21 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
     ctx.ty_modules[id] = ctx.current_module_id;
     return id
 }
+// Function literals don't capture: their body is resolved against the module
+// scope, not the enclosing block scopes, so referring to a local/arg of the
+// surrounding function is a resolve error instead of silently producing an
+// invalid reference in codegen.
+//
+// Module scopes are the only scopes that have their forward maps allocated
+// (see new_module_scope), which is how we find one from any nested scope.
+enclosing_module_scope :: proc(s: ^Scope) -> ^Scope {
+    sc := s
+    for sc != nil && sc.obj_foreward == nil {
+        sc = sc.parent
+    }
+    if sc == nil do return s // shouldn't happen, fall back to the given scope
+    return sc
+}
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
     case UnNegative: {
@@ -216,6 +231,19 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         for a in e.args {
             resolve_expr(s, a.expr);
         }
+    }
+    case FnLit: {
+        // same steps as resolve_fn_dec_item, minus the forward-declared object:
+        // build the fn type from the signature, resolve the body in the
+        // signature's scope, and stash the type for the type checker.
+        fnty, fnscope := resolve_fn_dec_signature(enclosing_module_scope(s), e.signature)
+
+        body := e.block
+        resolve_block(&fnscope, &body)
+        free_scope(&fnscope)
+
+        // not interned: function types are nominal (see new_fn_type)
+        get_ctx().expr_resolution_types[id] = new_fn_type(fnty)
     }
 
     case: panic("impl");

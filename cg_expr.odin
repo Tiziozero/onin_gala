@@ -31,6 +31,62 @@ cg_box_any :: proc(c: ^CGCtx, val: string, concrete_ty: TypeId) -> (string, stri
     return v2, "{ ptr, i64 }"
 }
 
+// Function literals (lambdas) are lowered to ordinary, separate LLVM
+// functions — a `define` can't be nested inside another function's body, so
+// the lambda is generated into its own string builder and parked in
+// c.lambdas; cg_module appends every parked definition after the regular
+// items. The expression itself evaluates to the lambda's address
+// (`@gala.lambda.N`), which is just a `ptr` — the same representation every
+// other function value already has, so calling it through a variable, a
+// struct field, an argument, or immediately all work unchanged.
+//
+// Lambdas don't capture (the resolver only lets the body see module-level
+// names), so the body's scope is parented to the module's root scope rather
+// than to whatever scope the lambda expression happens to sit in.
+//
+// They're emitted with `internal` linkage so the per-lambda names only have
+// to be unique inside this module (each module is compiled to its own .o).
+cg_fn_lit :: proc(c: ^CGCtx, id: ExprId, e: FnLit) -> CGExprRes {
+    fn_type_id := expr_ty(id)
+    name := aprintf(c, "gala.lambda.%d", next_tmp_index(c))
+
+    lambda_b: strings.Builder
+    strings.builder_init(&lambda_b, get_ctx().allocator)
+
+    // everything the body generation mutates, saved so the enclosing
+    // function carries on exactly where it left off
+    saved_b := c.b
+    saved_scope := c.scope
+    saved_break := c.cur_break_label
+    saved_continue := c.cur_continue_label
+
+    // find the root (module) scope and keep a stable heap copy to parent to.
+    // (maps are reference types, so the copy sees the same declarations.)
+    root := &c.scope
+    for root.parent != nil {
+        root = root.parent
+    }
+    root_copy := new(CGScope, get_ctx().allocator)
+    root_copy^ = root^
+
+    c.b = &lambda_b
+    c.scope = new_gcscope(root_copy)
+    // a break/continue can't target a loop outside the lambda
+    c.cur_break_label = ""
+    c.cur_continue_label = ""
+
+    cg_fn_definition(c, fn_type_id, name, e.block, internal = true)
+
+    c.b = saved_b
+    c.scope = saved_scope
+    c.cur_break_label = saved_break
+    c.cur_continue_label = saved_continue
+
+    append(&c.lambdas, strings.to_string(lambda_b))
+
+    return {kind=.Value, v=aprintf(c, "@%s", name), id=id}
+}
+
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     span := get_span(id).span
     data := get_file_lines(get_ctx().current_file, span)
@@ -465,6 +521,9 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     }
     case FnCall: {
         return cg_fn_call(c, id, e)
+    }
+    case FnLit: {
+        return cg_fn_lit(c, id, e)
     }
     case: panic("impl");
     }

@@ -455,6 +455,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
         ty, ok, s := compare_and_reduce_types(left_ty, right_ty);
         if !ok {
+            
             highlight_lines(get_span(id).span)
             gala_panic(s, tts(left_ty), "vs", tts(right_ty))
         }
@@ -625,6 +626,22 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         }
 
         get_ctx().expr_types[id] = ty.fn.ret_ty
+    }
+    case FnLit: {
+        // the resolver already built the fn type from the signature.
+        tid := get_ctx().expr_resolution_types[id]
+        fn_ty := get_type(tid)
+        assert(fn_ty.kind == .Function)
+
+        // body is checked like a FnDec body: fresh function context, and the
+        // enclosing loop must not be visible (no break/continue across it).
+        new_tc := tc^
+        new_tc.in_function = true
+        new_tc.fn_ret_ty = fn_ty.fn.ret_ty
+        new_tc.in_loop = nil
+        tc_block(&new_tc, e.block)
+
+        get_ctx().expr_types[id] = tid
     }
     case: panic("impl tc expr")
     }
@@ -846,6 +863,9 @@ propagate_type :: proc(ty: TypeId, expr: ExprId) {
         return
     }
     case FnCall: { // should have a fixed type
+        return
+    }
+    case FnLit: { // fixed fn type from its signature
         return
     }
     case: panic("impl");
