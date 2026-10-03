@@ -355,8 +355,15 @@ get_untyped_default :: proc(t: TypeId) -> TypeId {
     }
 }
 resolve_stmt :: proc(s: ^Scope, id: StmtId) {
-    #partial switch stmt in get(id) {
+    switch stmt in get(id) {
     case BreakStmt, ContinueStmt: {}
+    case ForLoop: {
+        resolve_expr(s, stmt.expr);
+        new_s := new_scope(s)
+        get_ctx().stmt_objects[id] = new_object(&new_s, Object{kind=.Argument, name=stmt.name})
+        b := stmt.block
+        resolve_block(&new_s, &b);
+    }
     case WhileLoop: {
         resolve_expr(s, stmt.cond);
         b := stmt.block

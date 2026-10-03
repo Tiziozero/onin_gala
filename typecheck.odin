@@ -647,8 +647,36 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     }
 }
 
+is_iterable :: proc(id: TypeId) -> bool {
+    t := get_type(id)
+    #partial switch t.kind {
+    case .Slice, .String, .FixedSizeArray: return true
+    }
+    return false
+}
+get_iterale_base_type :: proc(id: TypeId) -> TypeId {
+    t := get_type(id);
+    #partial switch t.kind {
+    case .String: return ty_from_name("byte");
+    case .FixedSizeArray: return t.fixed_size_array.type;
+    case .Slice: return t.slice.type;
+    }
+    debugln(tts(id))
+    panic("No base type.")
+}
 tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
     switch stmt in get_stmt(s) {
+    case ForLoop: {
+        oid := get_ctx().stmt_objects[s];
+        tc_expr(tc, stmt.expr);
+        if !is_iterable(expr_ty(stmt.expr)) {
+            highlight_lines(get_span(stmt.expr).span);
+            gala_panic("can't iterate over", tts(expr_ty(stmt.expr)));
+        }
+        ty := get_iterale_base_type(expr_ty(stmt.expr))
+        get_obj(oid).type = ty;
+        panic("impl");
+    }
     case BreakStmt, ContinueStmt: {
         lid /* loop id */ := tc.in_loop;
         if lid == nil {

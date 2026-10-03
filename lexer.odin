@@ -27,6 +27,8 @@ Keyword :: enum {
     Return,
     If, Else,
     While,
+    For,
+    In,
     Extern,
     Struct,
     Break,
@@ -172,6 +174,18 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                     span = Span{start, i},
                     kind = .Keyword,
                     kw   = .While,
+                })
+            }else if ident == "for" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .Keyword,
+                    kw   = .For,
+                })
+            }else if ident == "in" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .Keyword,
+                    kw   = .In,
                 })
             }else if ident == "extern" {
                 append(&tokens, Token{

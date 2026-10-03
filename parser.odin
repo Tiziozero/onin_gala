@@ -383,10 +383,12 @@ Stmt :: union {
     ExprId,
     IfElse,
     WhileLoop,
+    ForLoop,
     BreakStmt,
     ContinueStmt,
 }
 WhileLoop :: struct { cond: ExprId, block: Block }
+ForLoop :: struct { name: string, expr: ExprId, block: Block }
 AltCon :: struct{cond:ExprId, block:Block}
 IfElse :: struct {
     base_con: ExprId,
@@ -525,6 +527,23 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         cond := parse_condition(p);
         block := parse_block(p);
         id := new_stmt(WhileLoop{cond, block});
+        get_ctx().spans.stmts[id] = {
+            file_name=get_ctx().current_file,
+            span=token.span
+        }
+        return id;
+    // "for name in obj {..."
+    } else if is_kw(current_token(p), .For) {
+        token := consume_token(p); // "for"
+        ident := expect_ident(p);
+        if !is_kw(current_token(p), .In) {
+            highlight_lines(current_token(p).span);
+            gala_panic("Expected \"in\".");
+        }
+        in_kw := consume_token(p);
+        expr := parse_expr(p)
+        block := parse_block(p);
+        id := new_stmt(ForLoop{name=ident.text, expr=expr, block=block});
         get_ctx().spans.stmts[id] = {
             file_name=get_ctx().current_file,
             span=token.span
