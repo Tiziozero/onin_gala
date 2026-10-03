@@ -50,3 +50,17 @@ fn println(data: ..any) {
     }
     printf(&("\n")[0]);
 }
+
+// core.gala — file I/O
+
+// ---- C headers ----
+extern fn fopen(path: ^byte, mode: ^byte): rawptr;
+extern fn fclose(file: rawptr): i32;
+
+extern fn fputs(str: ^byte, file: rawptr): i32;
+extern fn fwrite(data: ^byte, size: u64, count: u64, file: rawptr): u64;
+extern fn fprintf(file: rawptr, fmt: ^byte, data: ..any): i32;
+extern fn fflush(file: rawptr): i32;
+
+
+extern fn snprintf(buffer: ^byte, size: u64, fmt: ^byte, data: ..any): i32;

@@ -27,4 +27,24 @@ fn main() {
     print_slice(data[0:5]);
     on_slice(data[0:5], fn(i: i32): i32 => i * 4);
     print_slice(data[0:5], 1234);
+
+
+    i := 0;
+    while i < 10 * 4 * 2 {
+        n := [1024]byte{};
+        snprintf(&n[0], 1024,  &(".gala_build/a_%d.b")[0], i + 160 * 2 + 40);
+        printf(&n[0]);
+        printf(&("\n")[0]);
+        f := fopen(&(n)[0], &("w")[0]);
+        if f != 0 {
+            j := 0;
+            while j <= 1024*128*128/8 {
+                fprintf(f, &("value = %d\n")[0], 42);
+                fprintf(f, &("pi = %f\n")[0], 3.14159);
+                j += 1;
+            }
+            fclose(f);
+        }
+        i += 1;
+    }
 }
