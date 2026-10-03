@@ -6,11 +6,14 @@ Field :: struct {
     type: TypeId,
     span: Span,
 }
+// `default` is the (already resolved) constant expression a call falls back to
+// when it omits this argument. See resolve_fn_dec_signature.
 Arg :: struct {
     name: string,
     type: TypeId,
     span: Span,
     is_variadic: bool,
+    default: Maybe(ExprId),
 }
 ObjectKind :: enum {
     Invalid,
@@ -125,8 +128,33 @@ enclosing_module_scope :: proc(s: ^Scope) -> ^Scope {
     if sc == nil do return s // shouldn't happen, fall back to the given scope
     return sc
 }
+// Default parameter values are re-emitted at every call site that omits the
+// argument, in the *caller's* scope, so they're restricted to constant
+// expressions: literals and operators/casts over literals. That rules out
+// references to other parameters or locals (not visible at the call site),
+// calls with side effects, and function literals (which would be generated
+// once per call site).
+is_const_default_expr :: proc(id: ExprId) -> bool {
+    #partial switch e in get(id) {
+    case Number, String, BoolLitTrue, BoolLitFalse, Sizeof:
+        return true
+    case UnNegative:
+        return is_const_default_expr(e.expr)
+    case UnNot:
+        return is_const_default_expr(e.expr)
+    case Cast:
+        return is_const_default_expr(e.target)
+    case Binop:
+        return is_const_default_expr(e.left) && is_const_default_expr(e.right)
+    case:
+        return false
+    }
+}
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
+    case TypeIdOf: {
+        get_ctx().expr_resolution_types[id] = resolve_type_specifier(s, e.t);
+    }
     case UnNegative: {
         resolve_expr(s, e.expr);
     }
@@ -328,6 +356,14 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
             fixed_size_array={type=id, size=k.size}})
     }
     case FnSpecifier: {
+        // a function *type* has no body to fall back from, and a default
+        // would have no meaning for calls through a pointer of that type.
+        for a in k.signature.args {
+            if a.default != nil {
+                highlight_lines(a.span)
+                gala_panic("Default values aren't allowed in function types.")
+            }
+        }
         // resolve the signature (ret type, args, variadic) into a Function type.
         // the returned scope only exists so a fn body could be resolved in it;
         // a bare specifier has no body, so just free it.
@@ -360,6 +396,7 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
     case ForLoop: {
         resolve_expr(s, stmt.expr);
         new_s := new_scope(s)
+        // create new object with no type yet, get that in typechecking
         get_ctx().stmt_objects[id] = new_object(&new_s, Object{kind=.Argument, name=stmt.name})
         b := stmt.block
         resolve_block(&new_s, &b);
@@ -489,7 +526,21 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
             gala_panic("Duplicate argument. Arg already declared here.")
         }
         arg_t := t;
-        arg := Arg{a.name, arg_t, a.span, false}
+        arg := Arg{name=a.name, type=arg_t, span=a.span}
+
+        // Default value: must be a constant expression (checked first so
+        // e.g. naming another parameter gives this message instead of a
+        // confusing "couldn't find in scope"), and is resolved against the
+        // *outer* scope `s`, not `new_scope`, so it can't see parameters.
+        if def, has_default := a.default.(ExprId); has_default {
+            if !is_const_default_expr(def) {
+                highlight_lines(get_span(def).span)
+                gala_panic("Default parameter values must be constant expressions (literals and operators on literals).")
+            }
+            resolve_expr(s, def)
+            arg.default = def
+        }
+
         args[i] = arg
         declared[a.name] = arg
         new_object(&new_scope, Object{.Argument, a.name, arg_t});

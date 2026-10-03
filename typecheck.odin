@@ -213,8 +213,36 @@ mark_arg :: proc(arg: ^FnCallArg, param_ty: TypeId, r: TypeId) {
     }
 }
 
+// Type-checks every parameter default of a function type against that
+// parameter's declared type, so a bad default is reported at the declaration
+// rather than at some far-away call site. Only validates: the concrete type of
+// an untyped default (e.g. `5` for an f32 param) is settled per call site by
+// mark_arg, same as for an argument written out by hand.
+//
+// Must run for a function BEFORE any call to it is checked — typecheck_module
+// does that for module-level fns in a first pass, and FnLit does it right
+// before checking its own body.
+tc_default_args :: proc(tc: ^TcContext, fn_type_id: TypeId) {
+    fn_ty := get_type(fn_type_id)
+    for a in fn_ty.fn.args {
+        def, has_default := a.default.(ExprId)
+        if !has_default do continue
+
+        tc_expr(tc, def)
+        _, ok, err := compare_and_reduce_types(a.type, expr_ty(def))
+        if !ok {
+            highlight_lines(get_span(def).span)
+            gala_panicf("Default value doesn't match the type of parameter \"%s\": %s (expected %s, got %s)",
+                a.name, err, tts(a.type), tts(expr_ty(def)))
+        }
+    }
+}
+
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     switch e in get_expr(id) {
+    case TypeIdOf: {
+        get_ctx().expr_types[id] = intern_type(Type{kind=.UntypedInteger})
+    }
     case UnNegative: {
         tc_expr(tc, e.expr);
         t := expr_ty(e.expr)
@@ -585,25 +613,58 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         ty := get_type(expr_ty(e.target));
         assert(ty.kind == .Function)
         fargs := ty.fn.args;
+
+        // The caller must supply every parameter before the first one that
+        // has a default (the parser guarantees defaults are a suffix).
+        required := len(fargs)
+        for fa, i in fargs {
+            if fa.default != nil {
+                required = i
+                break
+            }
+        }
+
         if ty.fn.is_variadic {
+            // defaults and variadics can't be combined (see parse_args_dec),
+            // so required == len(fargs) here
             if len(e.args) < len(fargs) {
                 highlight_lines(get_span(id).span);
                 gala_panicf("args count for function don't match (expected at least %d, got %d).",
                     len(fargs), len(e.args));
             }
         } else {
-            if len(fargs) != len(e.args) {
+            if len(e.args) < required || len(e.args) > len(fargs) {
                 highlight_lines(get_span(id).span);
-                gala_panicf("args count for function don't match (expected %d, got %d).",
-                    len(fargs), len(e.args));
+                if required == len(fargs) {
+                    gala_panicf("args count for function don't match (expected %d, got %d).",
+                        len(fargs), len(e.args));
+                } else {
+                    gala_panicf("args count for function don't match (expected %d to %d, got %d).",
+                        required, len(fargs), len(e.args));
+                }
             }
         }
         for a in e.args {
             tc_expr(tc, a.expr);
         }
 
+        // Fill in omitted trailing arguments with the parameters' default
+        // expressions, so everything downstream (including codegen) just sees
+        // an ordinary full-arity call. `e` is a copy of the union payload, so
+        // the grown arg list has to be written back into the expression table.
+        // The defaults are constants (see is_const_default_expr) whose types
+        // were already checked by tc_default_args, so sharing one ExprId
+        // between the declaration and every call site is fine.
+        call_args := e.args
+        if !ty.fn.is_variadic && len(call_args) < len(fargs) {
+            for i in len(call_args)..<len(fargs) {
+                append(&call_args, FnCallArg{expr = fargs[i].default.(ExprId)})
+            }
+            get_ctx().exprs[id] = Expr(FnCall{target=e.target, args=call_args})
+        }
+
         for i in 0..<len(fargs) {
-            earg := e.args[i].expr;
+            earg := call_args[i].expr;
             farg := fargs[i];
             r, ok, s := compare_and_reduce_types(farg.type, expr_ty(earg));
             if !ok {
@@ -611,18 +672,18 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
                 gala_panicf("Type Mismatch: %s (expected %s, got %s)",
                     s, tts(farg.type), tts(expr_ty(earg)));
             }
-            mark_arg(&e.args[i], farg.type, r);
+            mark_arg(&call_args[i], farg.type, r);
         }
         // default for rest (variadic tail)
-        if ty.fn.is_variadic do for i in len(fargs)..<len(e.args) {
-            earg := e.args[i].expr;
+        if ty.fn.is_variadic do for i in len(fargs)..<len(call_args) {
+            earg := call_args[i].expr;
             r, ok, err := compare_and_reduce_types(ty.fn.variadic_ty, expr_ty(earg));
             if !ok {
                 highlight_lines(get_span(earg).span);
                 gala_panicf("Type Mismatch: %s (expected %s, got %s)",
                     err, tts(ty.fn.variadic_ty), tts(expr_ty(earg)));
             }
-            mark_arg(&e.args[i], ty.fn.variadic_ty, r);
+            mark_arg(&call_args[i], ty.fn.variadic_ty, r);
         }
 
         get_ctx().expr_types[id] = ty.fn.ret_ty
@@ -632,6 +693,9 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         tid := get_ctx().expr_resolution_types[id]
         fn_ty := get_type(tid)
         assert(fn_ty.kind == .Function)
+
+        // validate parameter defaults before anything can call this literal
+        tc_default_args(tc, tid)
 
         // body is checked like a FnDec body: fresh function context, and the
         // enclosing loop must not be visible (no break/continue across it).
@@ -667,6 +731,8 @@ get_iterale_base_type :: proc(id: TypeId) -> TypeId {
 tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
     switch stmt in get_stmt(s) {
     case ForLoop: {
+        last_loop := tc.in_loop; // break/continue etc
+        tc.in_loop = s;
         oid := get_ctx().stmt_objects[s];
         tc_expr(tc, stmt.expr);
         if !is_iterable(expr_ty(stmt.expr)) {
@@ -674,8 +740,10 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             gala_panic("can't iterate over", tts(expr_ty(stmt.expr)));
         }
         ty := get_iterale_base_type(expr_ty(stmt.expr))
-        get_obj(oid).type = ty;
-        panic("impl");
+        o := get_obj(oid)
+        o.type = ty;
+        tc_block(tc, stmt.block);
+        tc.in_loop = last_loop;
     }
     case BreakStmt, ContinueStmt: {
         lid /* loop id */ := tc.in_loop;
@@ -830,12 +898,29 @@ tc_item :: proc(tc: ^TcContext, id: ItemId) {
 }
 typecheck_module :: proc(ast: ^AST) {
     tc := TcContext{fn_ret_ty=nil, in_function=false}
+
+    // First pass: check parameter defaults of every module-level function
+    // (extern ones included) before any body is checked. A call to a function
+    // declared further down the file is checked before that function's own
+    // item is reached, and filling in its omitted arguments needs the
+    // defaults' types to already exist.
+    for i in ast.items {
+        #partial switch _ in get_item(i) {
+        case FnDec, ExternFnDec: {
+            fn_obj, ok := get_ctx().item_objects[i]; assert(ok);
+            tc_default_args(&tc, get_obj(fn_obj).type.(TypeId))
+        }
+        }
+    }
+
     for i in ast.items {
         tc_item(&tc, i);
     }
 }
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
     switch e in get_expr(expr) {
+    case TypeIdOf: {
+    }
     case UnNegative: {
         propagate_type(ty, e.expr);
     }

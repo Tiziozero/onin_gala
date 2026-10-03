@@ -1,0 +1,52 @@
+// core.gala — println
+
+// ---- C headers ----
+extern fn printf(fmt: ^byte, data: ..any);
+
+// Mirror of the `any` ABI shape: { ptr, i64 } = { pointer to the spilled
+// value, TypeId of its concrete type }. Transmuting an `any` into this
+// gives field access to both halves with no compiler support.
+struct Any {
+    data: ^byte,
+    id: i64,
+}
+
+// Prints its arguments separated by a single space, then a newline.
+fn println(data: ..any) {
+    i := 0;
+    for v in data {
+        if i > 0 {
+            printf(&(" ")[0]);
+        }
+
+        a := transmute(Any)v;
+        id := a.id;
+
+        if id == type_id(string) {
+            s := (transmute(^string)a.data)^;
+            // %.*s: strings carry a length and aren't guaranteed NUL-terminated
+            printf(&("%.*s")[0], len(s), &s[0]);
+        } else if id == type_id(i64) {
+            printf(&("%lld")[0], (transmute(^i64)a.data)^);
+        } else if id == type_id(u64) {
+            printf(&("%llu")[0], (transmute(^u64)a.data)^);
+        } else if id == type_id(i32) {
+            printf(&("%d")[0], (transmute(^i32)a.data)^);
+        } else if id == type_id(f64) {
+            printf(&("%g")[0], (transmute(^f64)a.data)^);
+        } else if id == type_id(f32) {
+            printf(&("%g")[0], (transmute(^f32)a.data)^);   // promoted to double by the extern-variadic path
+        } else if id == type_id(bool) {
+            if (transmute(^bool)a.data)^ {
+                printf(&("true")[0]);
+            } else {
+                printf(&("false")[0]);
+            }
+        } else {
+            printf(&("<?>")[0]);
+        }
+
+        i += 1;
+    }
+    printf(&("\n")[0]);
+}

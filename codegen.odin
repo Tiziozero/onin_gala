@@ -51,8 +51,9 @@ CGCtx :: struct {
     break_labels: map[StmtId]string,    // loop (or if/else passthrough) StmtId -> label to jump to on `break`
     continue_labels: map[StmtId]string, // loop (or if/else passthrough) StmtId -> label to jump to on `continue`
     // "currently active" loop targets, saved/restored around each WhileLoop's
-    // body so that any IfElse nested inside (however deeply) can register
-    // itself as pointing at the same targets — see cg_stmt's IfElse case.
+    // (and ForLoop's) body so that any IfElse nested inside (however deeply)
+    // can register itself as pointing at the same targets — see cg_stmt's
+    // IfElse case.
     cur_break_label: string,
     cur_continue_label: string,
     // Finished `define` texts for function literals. A lambda is generated
@@ -335,6 +336,10 @@ stmt_ends_block :: proc(stmt: StmtId) -> bool {
     case WhileLoop: {
         return check_rets(s.block);
     }
+    // A for loop can run zero times, so control can always fall through
+    // to whatever follows it — it never ends the block, even if its body
+    // returns.
+    case ForLoop: return false
     case IfElse: {
         has_all_returns := s.has_else_block
         if !check_rets(s.base_block) do has_all_returns = false;
@@ -452,6 +457,105 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         c.cur_break_label = old_break
         c.cur_continue_label = old_continue
     }
+    case ForLoop: {
+        // `for name in expr { body }` lowers to:
+        //
+        //     <evaluate expr ONCE -> data ptr + length>
+        //     %idx = alloca i64 ; store 0
+        //     %name = alloca elem
+        //     br cond
+        //   cond:   %i = load idx ; br (i < len) ? body : end
+        //   body:   name = data[i] ; ...user statements...  br step
+        //   step:   idx += 1 ; br cond            <- `continue` jumps HERE
+        //   end:                                  <- `break` jumps here
+        //
+        // `continue` must target `step`, not `cond` (unlike while), or the
+        // index would never advance.
+        id_suffix := next_tmp_index(c)
+
+        cond_label := aprintf(c, "for_cond_label%d", id_suffix)
+        body_label := aprintf(c, "for_body_label%d", id_suffix)
+        step_label := aprintf(c, "for_step_label%d", id_suffix)
+        end_label  := aprintf(c, "for_end_label%d", id_suffix)
+
+        // Evaluate the iterable exactly once, before the loop, so side
+        // effects (e.g. `for x in make_list()`) don't repeat per iteration.
+        // These SSA values are defined in a block that dominates the whole
+        // loop, so using them in cond/body is fine.
+        data_ptr, len_v, elem_tid := cg_iter_parts(c, s.expr)
+        elem_ty := ty_to_llvm_str(c, elem_tid)
+
+        idx_slot := new_tmp(c, "for_idx")
+        cwritefln(c, "\t%s = alloca i64", idx_slot)
+        cwritefln(c, "\tstore i64 0, ptr %s", idx_slot)
+
+        // The loop variable: one slot, overwritten each iteration with a
+        // by-value copy of the element.
+        var_slot := aprintf(c, "%%%s.for%d", s.name, id_suffix)
+        cwritefln(c, "\t%s = alloca %s", var_slot, elem_ty)
+
+        // break/continue registration (same scheme as WhileLoop)
+        c.break_labels[id] = end_label
+        c.continue_labels[id] = step_label
+
+        old_break := c.cur_break_label
+        old_continue := c.cur_continue_label
+        c.cur_break_label = end_label
+        c.cur_continue_label = step_label
+
+        cwritefln(c, "\tbr label %%%s", cond_label)
+
+        // --- cond ---
+        cwritefln(c, "%s:", cond_label)
+        cur_i := new_tmp(c, "for_i")
+        cwritefln(c, "\t%s = load i64, ptr %s", cur_i, idx_slot)
+        in_range := new_tmp(c, "for_lt")
+        cwritefln(c, "\t%s = icmp slt i64 %s, %s", in_range, cur_i, len_v)
+        cwritefln(c, "\tbr i1 %s, label %%%s, label %%%s", in_range, body_label, end_label)
+
+        // --- body ---
+        cwritefln(c, "%s:", body_label)
+        elem_ptr := new_tmp(c, "for_elem_ptr")
+        cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i64 %s",
+            elem_ptr, elem_ty, data_ptr, cur_i)
+        elem_val := new_tmp(c, "for_elem")
+        cwritefln(c, "\t%s = load %s, ptr %s", elem_val, elem_ty, elem_ptr)
+        cwritefln(c, "\tstore %s %s, ptr %s", elem_ty, elem_val, var_slot)
+
+        old := c.scope
+        c.scope = new_gcscope(&old)
+        c.scope.vars[s.name] = {.Variable, var_slot}
+
+        for statement, i in s.block.stmts {
+            cg_stmt(c, statement)
+            if stmt_ends_block(statement) && i != len(s.block.stmts) - 1 {
+                gala_panic("nothing past will be executed")
+            }
+        }
+
+        free_cgscope(&c.scope)
+        c.scope = old
+
+        // fall into step unless the body already ended in a terminator
+        if !check_rets(s.block) {
+            cwritefln(c, "\tbr label %%%s", step_label)
+        }
+
+        // --- step --- (always emitted: `continue` targets it)
+        cwritefln(c, "%s:", step_label)
+        step_i := new_tmp(c, "for_i")
+        cwritefln(c, "\t%s = load i64, ptr %s", step_i, idx_slot)
+        next_i := new_tmp(c, "for_next")
+        cwritefln(c, "\t%s = add i64 %s, 1", next_i, step_i)
+        cwritefln(c, "\tstore i64 %s, ptr %s", next_i, idx_slot)
+        cwritefln(c, "\tbr label %%%s", cond_label)
+
+        // --- end ---
+        cwritefln(c, "%s:", end_label)
+
+        c.cur_break_label = old_break
+        c.cur_continue_label = old_continue
+    }
     case ExprId:
         reduce_expr_to_single_value(c, cg_expr(c, s));
     case IfElse: {
@@ -460,10 +564,11 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
 
         // Passthrough registration: if this IfElse sits inside an
         // enclosing loop (tracked via c.cur_break_label/cur_continue_label,
-        // set by WhileLoop around its body), register the SAME targets
-        // under this IfElse's own StmtId. This makes a break/continue
-        // resolve correctly regardless of whether the resolution phase
-        // pointed it directly at the loop or at this intermediate IfElse.
+        // set by WhileLoop/ForLoop around its body), register the SAME
+        // targets under this IfElse's own StmtId. This makes a
+        // break/continue resolve correctly regardless of whether the
+        // resolution phase pointed it directly at the loop or at this
+        // intermediate IfElse.
         // Guarded so an IfElse outside any loop doesn't insert a bogus
         // empty-string entry (which would otherwise satisfy the `ok` check
         // in BreakStmt/ContinueStmt and mask a real "break outside loop"
@@ -664,6 +769,45 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     case:panic("impl");
     }
     cwriteln(c, "");
+}
+// Evaluates an iterable expression (for `for x in <expr>`) EXACTLY ONCE and
+// returns everything the loop needs:
+//   data_ptr  - pointer to element 0
+//   len_v     - element count, an i64 operand (literal or SSA value)
+//   elem_tid  - TypeId of one element
+// Unlike cg_data_ptr this also yields the length, which for slices/strings
+// lives in the same {ptr, i64} value — so the value is evaluated once and
+// both fields extracted from it, instead of evaluating the expression twice.
+cg_iter_parts :: proc(c: ^CGCtx, id: ExprId) -> (data_ptr: string, len_v: string, elem_tid: TypeId) {
+    ty := get_type(expr_ty(id))
+    #partial switch ty.kind {
+    case .FixedSizeArray:
+        // iterates the array in place (no copy): the address is the data
+        // pointer, the length is a compile-time constant.
+        return cg_addr(c, id),
+               fmt.aprintf("%d", ty.fixed_size_array.size, allocator = get_ctx().allocator),
+               ty.fixed_size_array.type
+
+    case .Slice:
+        v, ok := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(ok)
+        p := new_tmp(c, "for_data")
+        cwritefln(c, "\t%s = extractvalue {{ ptr, i64 }} %s, 0", p, v)
+        l := new_tmp(c, "for_len")
+        cwritefln(c, "\t%s = extractvalue {{ ptr, i64 }} %s, 1", l, v)
+        return p, l, ty.slice.type
+
+    case .String:
+        v, ok := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(ok)
+        p := new_tmp(c, "for_data")
+        cwritefln(c, "\t%s = extractvalue {{ ptr, i64 }} %s, 0", p, v)
+        l := new_tmp(c, "for_len")
+        cwritefln(c, "\t%s = extractvalue {{ ptr, i64 }} %s, 1", l, v)
+        return p, l, byte_type()
+
+    case:
+        highlight_lines(get_span(id).span)
+        gala_panic("for: expression is not iterable (expected array, slice or string)")
+    }
 }
 // Resolves ANY indexable expression down to a pointer that already points at
 // element 0, plus that element's LLVM type string. This is the one place

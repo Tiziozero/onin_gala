@@ -1,5 +1,6 @@
 package main
 
+import "core:debug/trace"
 import "core:strconv"
 
 BinopKind :: enum {
@@ -38,6 +39,7 @@ Transmute :: struct {
     to: TypeSpecifier,
     target: ExprId,
 }
+TypeIdOf :: struct { t: TypeSpecifier }
 ZeroInit :: struct {}
 BreakStmt :: struct {label: string};
 ContinueStmt :: struct {label: string};
@@ -73,6 +75,7 @@ Expr :: union {
     TakeSlice,
     Cast,
     Transmute,
+    TypeIdOf,
     Reference,
     Deref,
     UnNot,
@@ -123,6 +126,61 @@ FnCallArg :: struct{
     needs_boxing: bool,
     box_type: TypeId,
 };
+BaseType :: struct { ident: string, span: Span };
+// can't have ptr to itself
+PointerType :: struct {ptr:^TypeSpecifier, span: Span };
+FixedArreySpecifier :: struct { size: int, base: ^TypeSpecifier, span: Span };
+SliceSpecifier :: struct {base : ^TypeSpecifier, span: Span }
+AnySpecifier :: struct { span: Span }
+FnSpecifier :: struct { span: Span, using signature: ^FnDecSignature }
+TypeSpecifier :: union {
+    BaseType,
+    PointerType,
+    FixedArreySpecifier,
+    SliceSpecifier,
+    AnySpecifier,
+    FnSpecifier,
+}
+VarDec :: struct {
+    name: string,
+    type: Maybe(TypeSpecifier),
+    value: ExprId,
+}
+Assignment :: struct {
+    kind: BinopKind,
+    target, value: ExprId,
+}
+Return :: struct {
+    expr: Maybe(ExprId),
+}
+Stmt :: union {
+    VarDec,
+    Assignment,
+    Return,
+    ExprId,
+    IfElse,
+    WhileLoop,
+    ForLoop,
+    BreakStmt,
+    ContinueStmt,
+}
+WhileLoop :: struct { cond: ExprId, block: Block }
+ForLoop :: struct { name: string, expr: ExprId, block: Block }
+AltCon :: struct{cond:ExprId, block:Block}
+IfElse :: struct {
+    base_con: ExprId,
+    base_block: Block,
+    alt: []AltCon,
+    has_else_block: bool,
+    else_block: Block,
+}
+Parser::struct{
+    file: string,
+    tokens: []Token,
+    i: int,
+
+    ignore_struct_lit: bool,
+}
 op_kind :: proc(t: Token) -> (kind: BinopKind, ok: bool) {
     switch t.text {
     case "+":  return .Addition,     true
@@ -255,17 +313,28 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
     return parse_binop(p, 0)
 }
 
-parse_potential_cast :: proc(p: ^Parser) -> ExprId {
+parse_compiler_op :: proc(p: ^Parser) -> ExprId {
     if current_token(p).kind == .Cast {
         token := consume_token(p); // "cast"
         expect_symbol(p, "(");
         ty := parse_type(p);
         expect_symbol(p, ")");
-        expr := parse_potential_cast(p);
+        expr := parse_compiler_op(p);
         id := new_expr(Expr(Cast{ty, expr}));
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
             span={token.span.start, get_span(expr).span.end},
+        }
+        return id
+    } else if current_token(p).kind == .TypeIdOf {
+        token := consume_token(p); // "type_id"
+        expect_symbol(p, "(");
+        ty := parse_type(p);
+        end := expect_symbol(p, ")");
+        id := new_expr(Expr(TypeIdOf{ty}));
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span={token.span.start, end.span.end},
         }
         return id
     } else if current_token(p).kind == .Transmute {
@@ -273,7 +342,7 @@ parse_potential_cast :: proc(p: ^Parser) -> ExprId {
         expect_symbol(p, "(");
         ty := parse_type(p);
         expect_symbol(p, ")");
-        expr := parse_potential_cast(p);
+        expr := parse_compiler_op(p);
         id := new_expr(Expr(Transmute{ty, expr}));
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
@@ -318,7 +387,7 @@ parse_unary :: proc(p: ^Parser) -> ExprId {
     return parse_postfix(p);
 }
 parse_binop :: proc(p: ^Parser, min_prec: int) -> ExprId {
-    lhs := parse_potential_cast(p)
+    lhs := parse_compiler_op(p)
 
     for {
         op := current_token(p)
@@ -348,61 +417,6 @@ parse_binop :: proc(p: ^Parser, min_prec: int) -> ExprId {
     }
 
     return lhs
-}
-BaseType :: struct { ident: string, span: Span };
-// can't have ptr to itself
-PointerType :: struct {ptr:^TypeSpecifier, span: Span };
-FixedArreySpecifier :: struct { size: int, base: ^TypeSpecifier, span: Span };
-SliceSpecifier :: struct {base : ^TypeSpecifier, span: Span }
-AnySpecifier :: struct { span: Span }
-FnSpecifier :: struct { span: Span, using signature: ^FnDecSignature }
-TypeSpecifier :: union {
-    BaseType,
-    PointerType,
-    FixedArreySpecifier,
-    SliceSpecifier,
-    AnySpecifier,
-    FnSpecifier,
-}
-VarDec :: struct {
-    name: string,
-    type: Maybe(TypeSpecifier),
-    value: ExprId,
-}
-Assignment :: struct {
-    kind: BinopKind,
-    target, value: ExprId,
-}
-Return :: struct {
-    expr: Maybe(ExprId),
-}
-Stmt :: union {
-    VarDec,
-    Assignment,
-    Return,
-    ExprId,
-    IfElse,
-    WhileLoop,
-    ForLoop,
-    BreakStmt,
-    ContinueStmt,
-}
-WhileLoop :: struct { cond: ExprId, block: Block }
-ForLoop :: struct { name: string, expr: ExprId, block: Block }
-AltCon :: struct{cond:ExprId, block:Block}
-IfElse :: struct {
-    base_con: ExprId,
-    base_block: Block,
-    alt: []AltCon,
-    has_else_block: bool,
-    else_block: Block,
-}
-Parser::struct{
-    file: string,
-    tokens: []Token,
-    i: int,
-
-    ignore_struct_lit: bool,
 }
 consume_token :: proc(p: ^Parser) -> Token {
     if p.i < len(p.tokens) {
@@ -534,6 +548,7 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         return id;
     // "for name in obj {..."
     } else if is_kw(current_token(p), .For) {
+        debugln("parsing for");
         token := consume_token(p); // "for"
         ident := expect_ident(p);
         if !is_kw(current_token(p), .In) {
@@ -541,8 +556,13 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
             gala_panic("Expected \"in\".");
         }
         in_kw := consume_token(p);
+
+        prev := p.ignore_struct_lit
+        p.ignore_struct_lit = true
         expr := parse_expr(p)
         block := parse_block(p);
+        p.ignore_struct_lit = prev;
+
         id := new_stmt(ForLoop{name=ident.text, expr=expr, block=block});
         get_ctx().spans.stmts[id] = {
             file_name=get_ctx().current_file,
@@ -869,7 +889,10 @@ parse_block :: proc(p: ^Parser) -> Block{
     return Block{stmts=stmts[:]}
 }
 
-FnDecArg :: struct{name: string, t: TypeSpecifier, span: Span}
+// `default` is set for `name: type = <expr>` parameters. The expression is
+// parsed here like any other; the resolver checks it's a constant expression
+// and the type checker checks it against `t`.
+FnDecArg :: struct{name: string, t: TypeSpecifier, span: Span, default: Maybe(ExprId)}
 FnDecSignature :: struct {
     name: string,
     args: []FnDecArg, 
@@ -977,9 +1000,14 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
 ArgSpecs :: struct {
 }
 
+// Parameters are positional, so once one has a default every parameter after
+// it must too (otherwise a call couldn't leave the earlier one out).
+// Defaults can't be combined with a variadic tail: the tail would have to
+// come after the defaulted params, and there'd be no way to skip them.
 parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
     f := FnDecSignature{};
     args := make([dynamic]FnDecArg)
+    seen_default := false
     expect_symbol(p, "(");
     for !is_symbol(current_token(p), ")") {
         name := expect_ident(p);
@@ -995,7 +1023,23 @@ parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
             break;
         }
         ty := parse_type(p);
-        append(&args, FnDecArg{name=name.text, t=ty, span=name.span})
+
+        default: Maybe(ExprId) = nil
+        if is_symbol(current_token(p), "=") {
+            consume_token(p); // "="
+            // inside the parens, so a struct literal is unambiguous even if
+            // this signature sits in an `if`/`while` condition
+            prev_ignore_struct_lit := p.ignore_struct_lit
+            p.ignore_struct_lit = false
+            default = parse_expr(p)
+            p.ignore_struct_lit = prev_ignore_struct_lit
+            seen_default = true
+        } else if seen_default {
+            highlight_lines(name.span)
+            gala_panic("A parameter without a default value can't come after one with a default.")
+        }
+
+        append(&args, FnDecArg{name=name.text, t=ty, span=name.span, default=default})
         if is_symbol(current_token(p), ",") {
             consume_token(p);
         } else {
@@ -1003,6 +1047,10 @@ parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
         }
     }
     end := expect_symbol(p, ")");
+    if f.is_variadic && seen_default {
+        highlight_lines(end.span)
+        gala_panic("Default parameter values can't be combined with a variadic parameter.")
+    }
     f.args = args[:]
     if is_symbol(current_token(p), ":") {
         consume_token(p); // ":"

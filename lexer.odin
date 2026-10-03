@@ -12,6 +12,7 @@ TokenKind :: enum {
     Number,
     String,
     Transmute,
+    TypeIdOf,
     Keyword,
     Cast,
     Len,
@@ -233,6 +234,12 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                 append(&tokens, Token{
                     span = Span{start, i},
                     kind = .Sizeof,
+                    kw   = .Invalid,
+                })
+            }else if ident == "type_id" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .TypeIdOf,
                     kw   = .Invalid,
                 })
             }else if ident == "any" {

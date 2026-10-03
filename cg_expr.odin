@@ -91,6 +91,11 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     span := get_span(id).span
     data := get_file_lines(get_ctx().current_file, span)
     switch e in get_expr(id) {
+    case TypeIdOf: {
+        // same resolution slot Sizeof uses for its type specifier
+        tid := get_ctx().expr_resolution_types[id]
+        return {kind=.Number, v=aprintf(c, "%d", tid)}
+    }
     case UnNegative: {
         v, returns := reduce_expr_to_single_value(c, cg_expr(c, e.expr))
         assert(returns)
@@ -529,11 +534,196 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     }
 }
 
+// Internal (Gala) variadics are lowered to an ordinary function whose last
+// parameter is the `[]T` slice (fn.gala_abi_ty, named fn.variadic_name).
+// Both the definition and every call site lower against this type, so the
+// ABI code never needs to know about `..T`.
+// Anything that isn't an internal variadic is returned unchanged.
+lower_internal_variadic :: proc(fn_type_id: TypeId) -> TypeId {
+    fn_ty := get_type(fn_type_id)
+    if fn_ty.kind != .Function || !fn_ty.fn.is_variadic || fn_ty.fn.is_external {
+        return fn_type_id
+    }
+
+    n_fixed := len(fn_ty.fn.args)
+    args := make([]Arg, n_fixed + 1, allocator=get_ctx().allocator)
+    copy(args, fn_ty.fn.args)
+    args[n_fixed] = Arg{name=fn_ty.fn.variadic_name, type=fn_ty.fn.gala_abi_ty}
+
+    lowered := Type{}
+    lowered.kind = .Function
+    lowered.fn = fn_ty.fn
+    lowered.fn.args = args
+    lowered.fn.is_variadic = false
+    return new_fn_type(lowered)
+}
+
+// `any` is passed around as { ptr, i64 }: a pointer to a spilled copy of the
+// value plus the TypeId of its concrete type (see cg_box_any).
+is_any_type :: proc(t: TypeId) -> bool {
+    return get_type(t).kind == .Any
+}
+
+// Evaluates one call argument for a parameter of type `param_ty`.
+// If the parameter is `any` and the argument isn't already an `any`, the
+// value is boxed. If the typechecker marked the arg (needs_boxing), its
+// box_type is taken as the concrete type; otherwise the concrete type is
+// the argument expression's own type.
+cg_call_arg_value :: proc(c: ^CGCtx, a: FnCallArg, param_ty: TypeId) -> string {
+    r, returns := reduce_expr_to_single_value(c, cg_expr(c, a.expr))
+    assert(returns)
+
+    concrete_ty := expr_ty(a.expr)
+    should_box := is_any_type(param_ty) && !is_any_type(concrete_ty)
+    if a.needs_boxing {
+        concrete_ty = a.box_type
+        should_box = true
+    }
+
+    if should_box {
+        boxed, _ := cg_box_any(c, r, concrete_ty)
+        return boxed
+    }
+    return r
+}
+
+// Packs the variadic tail of a call into a `{ ptr, i64 }` slice value:
+// the elements are stored into a stack array and the slice points at it.
+// With no extra arguments the slice is { null, 0 }.
+// For `..any` every element is boxed first, so the array is [n x { ptr, i64 }].
+cg_pack_variadic_slice :: proc(c: ^CGCtx, tail: []FnCallArg, elem_ty: TypeId) -> string {
+    llvm_int := ty_to_llvm_str(c, integer_type())
+    elem_str := "{ ptr, i64 }" if is_any_type(elem_ty) else ty_to_llvm_str(c, elem_ty)
+    n := len(tail)
+
+    base := "null"
+    if n > 0 {
+        arr_ty := aprintf(c, "[%d x %s]", n, elem_str)
+        base = new_tmp(c)
+        cwritefln(c, "\t%s = alloca %s", base, arr_ty)
+        for a, i in tail {
+            v := cg_call_arg_value(c, a, elem_ty)
+            p := new_tmp(c)
+            cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i64 0, i64 %d",
+                p, arr_ty, base, i)
+            cwritefln(c, "\tstore %s %s, ptr %s", elem_str, v, p)
+        }
+    }
+
+    v1 := new_tmp(c)
+    v2 := new_tmp(c)
+    cwritefln(c, "\t%s = insertvalue {{ ptr, %s }} undef, ptr %s, 0", v1, llvm_int, base)
+    cwritefln(c, "\t%s = insertvalue {{ ptr, %s }} %s, %s %d, 1", v2, llvm_int, v1, llvm_int, n)
+    return v2
+}
+
+// Call to an internal variadic: fixed args are evaluated as usual, the tail
+// is packed into a slice, and the result is a plain non-variadic call
+// against the lowered type.
+cg_fn_call_internal_variadic :: proc(c: ^CGCtx, id: ExprId, e: FnCall, target: string) -> CGExprRes {
+    fn_type_id := expr_ty(e.target)
+    fn_ty := get_type(fn_type_id)
+    lowered_id := lower_internal_variadic(fn_type_id)
+    sig := cg_abi_lower_signature(c, lowered_id, .SysV)
+
+    n_fixed := len(fn_ty.fn.args)
+    assert(len(e.args) >= n_fixed, "not enough arguments for variadic call")
+
+    // SSA values for every lowered parameter: fixed args, then the slice
+    values := make([dynamic]string, allocator=get_ctx().allocator)
+    for k in 0 ..< n_fixed {
+        append(&values, cg_call_arg_value(c, e.args[k], sig.args[k].orig_type))
+    }
+    append(&values, cg_pack_variadic_slice(c, e.args[n_fixed:], fn_ty.fn.variadic_ty))
+    assert(len(values) == len(sig.args))
+
+    call_args := make([dynamic]string, allocator=get_ctx().allocator)
+
+    sret_slot := ""
+    if sig.ret.mode == .Indirect {
+        sret_slot = new_tmp(c)
+        cwritefln(c, "\t%s = alloca %s", sret_slot, ty_to_llvm_str(c, sig.ret.orig_type))
+        append(&call_args, aprintf(c, "ptr sret(%s) align %d %s",
+            ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align, sret_slot))
+    }
+
+    for al, k in sig.args {
+        r := values[k]
+        arg_ty_str := ty_to_llvm_str(c, al.orig_type)
+
+        switch al.mode {
+        case .ByVal: {
+            slot := new_tmp(c)
+            cwritefln(c, "\t%s = alloca %s", slot, arg_ty_str)
+            cwritefln(c, "\tstore %s %s, ptr %s", arg_ty_str, r, slot)
+            append(&call_args, aprintf(c, "ptr byval(%s) align %d %s", arg_ty_str, al.byval_align, slot))
+        }
+        case .Direct: {
+            if al.needs_coercion {
+                slot := new_tmp(c)
+                cwritefln(c, "\t%s = alloca %s", slot, arg_ty_str)
+                cwritefln(c, "\tstore %s %s, ptr %s", arg_ty_str, r, slot)
+                coerced := new_tmp(c)
+                cwritefln(c, "\t%s = load %s, ptr %s", coerced, al.coerced_type, slot)
+                append(&call_args, aprintf(c, "%s %s", al.coerced_type, coerced))
+            } else {
+                append(&call_args, aprintf(c, "%s %s", al.coerced_type, r))
+            }
+        }
+        }
+    }
+
+    write_call_args := proc(c: ^CGCtx, call_args: [dynamic]string) {
+        cwrite(c, "(")
+        for a, i in call_args {
+            cwritef(c, "%s", a)
+            if i < len(call_args) - 1 {
+                cwritef(c, ", ")
+            }
+        }
+        cwriteln(c, ")")
+    }
+
+    if sig.ret.mode == .Indirect {
+        cwritef(c, "\tcall void %s", target)
+        write_call_args(c, call_args)
+
+        loaded := new_tmp(c)
+        cwritefln(c, "\t%s = load %s, ptr %s", loaded, ty_to_llvm_str(c, sig.ret.orig_type), sret_slot)
+        return {kind=.Value, v=loaded, id=id}
+    } else if sig.ret.coerced_type == "void" {
+        cwritef(c, "\tcall void %s", target)
+        write_call_args(c, call_args)
+        return {kind=.None, id=id}
+    } else {
+        new_t := new_tmp(c)
+        cwritef(c, "\t%s = call %s %s", new_t, sig.ret.coerced_type, target)
+        write_call_args(c, call_args)
+
+        if sig.ret.needs_coercion {
+            real_ty_str := ty_to_llvm_str(c, sig.ret.orig_type)
+            slot := new_tmp(c)
+            cwritefln(c, "\t%s = alloca %s", slot, real_ty_str)
+            cwritefln(c, "\tstore %s %s, ptr %s", sig.ret.coerced_type, new_t, slot)
+            loaded := new_tmp(c)
+            cwritefln(c, "\t%s = load %s, ptr %s", loaded, real_ty_str, slot)
+            return {kind=.Value, v=loaded, id=id}
+        }
+        return {kind=.Value, v=new_t, id=id}
+    }
+}
 
 cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall) -> CGExprRes {
     t := cg_fn_call_target(c, e.target)
     fn_type_id := expr_ty(e.target)
     fn_ty := get_type(fn_type_id)
+
+    // internal (Gala) variadics: pack the tail into a slice and call the
+    // lowered, non-variadic form. Extern C variadics continue below.
+    if fn_ty.fn.is_variadic && !fn_ty.fn.is_external {
+        return cg_fn_call_internal_variadic(c, id, e, t)
+    }
+
     sig := cg_abi_lower_signature(c, fn_type_id, .SysV)
 
     call_args := make([dynamic]string, allocator=get_ctx().allocator)
@@ -557,10 +747,9 @@ cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall) -> CGExprRes {
     // ---- fixed params ----
     for k in 0 ..< fixed_arg_count {
         a := e.args[k]
-        r, returns := reduce_expr_to_single_value(c, cg_expr(c, a.expr))
-        assert(returns)
-
         al := sig.args[k]
+        // boxes into `any` when the parameter is `any`
+        r := cg_call_arg_value(c, a, al.orig_type)
         arg_ty_str := ty_to_llvm_str(c, al.orig_type)
 
         switch al.mode {
