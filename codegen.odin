@@ -1337,6 +1337,7 @@ cg_module :: proc(m: ModId) {
         cwritefln(&cgctx, "%s", v.ir);
         cgctx.strings[s] = v;
     }
+
     // gen
     cg_ast(&cgctx, ast)
 
@@ -1366,16 +1367,17 @@ cg_module :: proc(m: ModId) {
             fmt.sbprintfln(cgctx.b,` define i32 @main(i32 %%argc, ptr %%argv) {{
             call void %s()
             ret i32 0
-        }`,  entry);
+        }`, entry);
         case .Int32:
             fmt.sbprintfln(cgctx.b,` define i32 @main(i32 %%argc, ptr %%argv) {{
             %%result = call i32 %s()
             ret i32 %%result
-        }`,  entry);
+        }`, entry);
         case:
             gala_panic("`main` must return void or i32")
         }
     }
+
     // write
     dir_err := os.make_directory(".gala_build")
     if dir_err != io.Error.None {
@@ -1383,32 +1385,90 @@ cg_module :: proc(m: ModId) {
             gala_panic("Failed make .gala_build directory:", dir_err);
         }
     }
+
     c := &cgctx;
     name := mod_prefix_from_path(get_ctx().current_file, "gala.mod");
-    ll_name := aprintf(c,".gala_build/%s.ll", name)
+
+    ll_name := aprintf(c, ".gala_build/%s.ll", name)
+    opt_name := aprintf(c, ".gala_build/%s.opt.ll", name)
+
     e := os.write_entire_file_from_string(ll_name, strings.to_string(sb))
     if e != io.Error.None {
         gala_panic("Failed to write to file:", e);
     }
-    
+
     {
-        o_name := aprintf(c,".gala_build/%s.o", name)
-        // compile llvm "llc -filetype=obj a.ll -o a.o"
-        p, err := os.process_start({command={"llc", "-filetype=obj", "-O2", 
-            ll_name, "-o", o_name}});
+        // mem2reg
+        p, err := os.process_start({command={
+            "opt",
+            "-passes=mem2reg",
+            ll_name,
+            "-S",
+            "-o", opt_name,
+        }});
+
         if err != .NONE {
-            debugln("llc", "-filetype=obj", "-O2", 
-            ll_name, "-o", o_name)
-            gala_panic("Failed to start clang process:", err);
+            debugln(
+                "opt",
+                "-passes=mem2reg",
+                ll_name,
+                "-S",
+                "-o", opt_name,
+            )
+            gala_panic("Failed to start LLVM opt process:", err);
         }
+
         p_state, werr := os.process_wait(p)
         if werr != .NONE {
-            gala_panic("Failed to wait for clang process:", werr);
+            gala_panic("Failed to wait for LLVM opt process:", werr);
         }
+
         if p_state.exit_code != 0 {
-            gala_panic("Failed to compile llvm ir. exit code:", p_state.exit_code);
+            gala_panic(
+                "Failed to optimise LLVM IR. exit code:",
+                p_state.exit_code,
+            );
         }
-        debugln("clang exit code:", p_state.exit_code);
+
+        debugln("opt exit code:", p_state.exit_code);
+    }
+
+    {
+        o_name := aprintf(c, ".gala_build/%s.o", name)
+
+        // compile optimised LLVM IR
+        p, err := os.process_start({command={
+            "llc",
+            "-filetype=obj",
+            "-O2",
+            opt_name,
+            "-o", o_name,
+        }});
+
+        if err != .NONE {
+            debugln(
+                "llc",
+                "-filetype=obj",
+                "-O2",
+                opt_name,
+                "-o", o_name,
+            )
+            gala_panic("Failed to start llc process:", err);
+        }
+
+        p_state, werr := os.process_wait(p)
+        if werr != .NONE {
+            gala_panic("Failed to wait for llc process:", werr);
+        }
+
+        if p_state.exit_code != 0 {
+            gala_panic(
+                "Failed to compile llvm ir. exit code:",
+                p_state.exit_code,
+            );
+        }
+
+        debugln("llc exit code:", p_state.exit_code);
         append(&get_ctx().o_files, o_name)
     }
 }
