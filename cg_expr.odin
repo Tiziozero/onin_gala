@@ -272,10 +272,26 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         return {kind=.Value, v=v}
     }
     case FixedSizeArray: {
-        assert(e.initialiser == nil);
-        ty := ty_to_llvm_str(c, expr_ty(id));
-        t := aprintf(c, "zeroinitializer");
-        return {kind=.Value, v=t}
+        // CHANGED: `{}` is all zeroes; otherwise start from zeroinitializer
+        // and insertvalue each given element, so any elements past the end
+        // of the initialiser stay zero.
+        if len(e.initialiser) == 0 {
+            return {kind=.Value, v="zeroinitializer"}
+        }
+
+        arr_ty := ty_to_llvm_str(c, expr_ty(id))
+        elem_ty := ty_to_llvm_str(c, get_type(expr_ty(id)).fixed_size_array.type)
+
+        acc := "zeroinitializer"
+        for el, i in e.initialiser {
+            v, returns := reduce_expr_to_single_value(c, cg_expr(c, el))
+            assert(returns)
+            t := new_tmp(c)
+            cwritefln(c, "\t%s = insertvalue %s %s, %s %s, %d",
+                t, arr_ty, acc, elem_ty, v, i)
+            acc = t
+        }
+        return {kind=.Value, v=acc}
     }
     case FieldAccess: {
         r, ok := reduce_expr_to_single_value(c, cg_expr(c, e.target));

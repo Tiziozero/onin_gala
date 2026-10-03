@@ -1,31 +1,18 @@
 import "./core.gala";
-/* fn on_slice(data: []i32, f: fn(i: i32): i32) {
+fn on_slice(data: []i32, f: fn(i: i32): i32) {
     i := 0;
     while i < len(data) {
         data[i] = f(data[i]);
         i+=1;
     }
 }
-fn print_slice(data: []i32, b:= 2) {
+fn print_slice(data: []i32, b: i32= 2) {
     i := 0;
     for n in data {
         printf(&("value %d is %d\n")[0], i, n); i += 1;
     }
     printf(&("b: %d\n")[0], b);
 }
-fn main() {
-    a := [5]i32{};
-    a[0]= 3;
-    a[1]= 2;
-    a[2]= 7;
-    a[3]= 9;
-    a[4]= 4;
-    print_slice(a[0:5]);
-    on_slice(a[0:5], fn(i: i32): i32 => i * 4);
-    print_slice(a[0:5]);
-    return;
-} */ 
-
 fn a(data: ..any) {
     i := 0;
     for n in data {
@@ -35,6 +22,9 @@ fn a(data: ..any) {
 fn main() {
     a("Hello", ", ", "World!");
     printf(&("len of \"Hello\": %d\n")[0], len("Hello"));
-    data := [1024]{1, 2, 3};
-    println("Hello", "World", 1, 2, 3, a);
+    data := [1024]i32{1, 2, 3};
+    println("Hello", "World", 1, 2, 3, a, data[0:2]);
+    print_slice(data[0:5]);
+    on_slice(data[0:5], fn(i: i32): i32 => i * 4);
+    print_slice(data[0:5], 1234);
 }

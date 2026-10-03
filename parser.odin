@@ -111,7 +111,7 @@ TakeSlice :: struct {
 FixedSizeArray :: struct {
     size: int,
     ty: TypeSpecifier,
-    initialiser: any,
+    initialiser: []ExprId,
 }
 FieldAccess :: struct {
     target: ExprId,
@@ -262,7 +262,8 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
         }
         return id;
     } else if is_symbol(current_token(p), "[") {
-        // eg: "v := [1024]byte{}
+        // eg: "v := [1024]byte{}"       (all zeroes)
+        //     "v := [3]i32{1, 2, 3}"    (initialised, trailing comma ok)
         open_b := consume_token(p); // "["
         n := consume_token(p); // number
         if n.kind != .Number {
@@ -274,17 +275,43 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
 
         t := parse_type(p);
 
-        // for now, only zero initialiser, so all 0s ("{}")
         expect_symbol(p, "{");
-        end := expect_symbol(p, "}");
 
-        id := new_expr(Expr(FixedSizeArray{size=size,ty=t,initialiser=nil}))
+        // The elements are full expressions, so struct literals must be
+        // allowed in here even when this literal sits inside an `if`/`for`
+        // header that has ignore_struct_lit set.
+        saved_ignore := p.ignore_struct_lit
+        p.ignore_struct_lit = false
+
+        elems := make([dynamic]ExprId, allocator=get_ctx().allocator)
+        for !is_symbol(current_token(p), "}") {
+            append(&elems, parse_expr(p))
+            if is_symbol(current_token(p), ",") {
+                consume_token(p)
+            } else {
+                break
+            }
+        }
+
+        p.ignore_struct_lit = saved_ignore
+        end := expect_symbol(p, "}")
+
+        span := Span{start=open_b.span.start, end=end.span.end}
+
+        if len(elems) > size {
+            highlight_lines(span)
+            gala_panic("too many elements in array initialiser")
+        }
+
+        init: [dynamic]ExprId // stays nil for `{}`
+        if len(elems) > 0 {
+            init = elems
+        }
+
+        id := new_expr(Expr(FixedSizeArray{size=size, ty=t, initialiser=init[:]}))
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
-            span={
-                start=open_b.span.start,
-                end=end.span.end
-            }
+            span=span,
         }
         return id
     } else if is_symbol(current_token(p), "{") {

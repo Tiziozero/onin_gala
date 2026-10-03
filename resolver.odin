@@ -189,8 +189,12 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         resolve_expr(s, e.index);
     }
     case FixedSizeArray: {
+        // CHANGED: resolve the initialiser elements too
         t := resolve_type_specifier(s, e.ty);
         get_ctx().expr_resolution_types[id] = t;
+        for el in e.initialiser {
+            resolve_expr(s, el);
+        }
     }
     case FieldAccess: {
         // check field in type checking

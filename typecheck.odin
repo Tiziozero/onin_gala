@@ -374,9 +374,22 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         get_ctx().expr_types[id] = ty
     }
     case FixedSizeArray: {
+        // CHANGED: check every initialiser element against the element type
+        elem_ty := get_ctx().expr_resolution_types[id]
+
+        for el in e.initialiser {
+            tc_expr(tc, el)
+            r, ok, err := compare_and_reduce_types(elem_ty, expr_ty(el))
+            if !ok {
+                highlight_lines(get_span(el).span)
+                gala_panic("Type error:", err)
+            }
+            propagate_type(r, el)
+        }
+
         t := Type{};
         t.kind = .FixedSizeArray
-        t.fixed_size_array.type = get_ctx().expr_resolution_types[id]
+        t.fixed_size_array.type = elem_ty
         t.fixed_size_array.size = e.size;
         tid := intern_type(t);
         get_ctx().expr_types[id] = tid;
