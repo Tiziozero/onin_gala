@@ -387,5 +387,6 @@ main :: proc() { // odins context is passed down, not up, or some shi
 
     destroy_context(ctx, heap);
     free_all(context.temp_allocator);
+    debugln("Finished compiling");
     // gala_info("Finished parsing");
 }

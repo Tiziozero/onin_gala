@@ -26,7 +26,7 @@ fn main() {
         dt := GetFrameTime();
         r : byte = i;
         b : byte = 255-i;
-        g : byte = (i*i) % 255;
+        g : byte = (i*3) % 255;
         BeginDrawing();
         ClearBackground(Color{r=0, b=0, g=0, a=255});
         ClearBackground(Color{r=r, b=b, g=g, a=255});

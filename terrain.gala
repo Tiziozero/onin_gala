@@ -1,0 +1,372 @@
+import "./core.gala";
+import "./rl.gala";
+
+// ============================================================
+// PROCEDURAL TERRAIN GENERATOR
+//
+// Purpose:
+//     Generate a procedural height map, display it as a
+//     grayscale terrain in raylib, and save it as terrain.pgm.
+//
+// This deliberately exercises:
+//
+//     - structs
+//     - fixed arrays
+//     - loops
+//     - functions
+//     - conditionals
+//     - integer/floating-point casts
+//     - f32/f64 interaction
+//     - C math functions
+//     - rand/srand
+//     - malloc/free through alloc()
+//     - C strings
+//     - snprintf
+//     - fopen/fwrite/fclose
+//     - raylib
+// ============================================================
+
+WIDTH  : i32 = 128;
+HEIGHT : i32 = 128;
+
+struct Pixel {
+    value: byte,
+}
+
+struct Terrain {
+    width: i32,
+    height: i32,
+    data: [16384]Pixel,
+}
+
+
+// ------------------------------------------------------------
+// Random float from 0 -> 1
+// ------------------------------------------------------------
+
+fn random01(): f32 {
+    return cast(f32)rand() / cast(f32)2147483647;
+}
+
+
+// ------------------------------------------------------------
+// Clamp a floating-point value
+// ------------------------------------------------------------
+
+fn clamp01(x: f32): f32 {
+    if x < 0.0 {
+        return 0.0;
+    }
+
+    if x > 1.0 {
+        return 1.0;
+    }
+
+    return x;
+}
+
+
+// ------------------------------------------------------------
+// Generate one terrain value.
+//
+// Multiple sine/cosine waves create large-scale features.
+// Random noise prevents it from looking completely regular.
+// ------------------------------------------------------------
+
+fn terrain_value(x: f32, y: f32): f32 {
+    a := sinf(x * 0.08) * 0.30;
+    b := cosf(y * 0.06) * 0.25;
+
+    c := sinf((x + y) * 0.035) * 0.20;
+    d := cosf(sqrtf(x * x + y * y) * 0.055) * 0.15;
+
+    noise := random01() * 0.15;
+
+    value := 0.5 + a + b + c + d + noise;
+
+    return clamp01(value);
+}
+
+
+// ------------------------------------------------------------
+// Generate the complete terrain
+// ------------------------------------------------------------
+
+fn generate_terrain(t: ^Terrain) {
+    y : i32= 0;
+
+    while y < t^.height {
+        x : i32= 0;
+
+        while x < t^.width {
+            index := y * t^.width + x;
+
+            value := terrain_value(
+                cast(f32)x,
+                cast(f32)y,
+            );
+
+            t^.data[index].value = cast(byte)(value * 255.0);
+
+            x += 1;
+        }
+
+        y += 1;
+    }
+}
+
+
+// ------------------------------------------------------------
+// Calculate some statistics.
+// ------------------------------------------------------------
+
+fn print_statistics(t: ^Terrain) {
+    min : byte = 255;
+    max : byte = 0;
+    total : u64 = 0;
+
+    i := 0;
+
+    while i < len(t^.data) {
+        value := t^.data[i].value;
+
+        if value < min {
+            min = value;
+        }
+
+        if value > max {
+            max = value;
+        }
+
+        total += cast(u64)value;
+
+        i += 1;
+    }
+
+    average := cast(f64)total / cast(f64)len(t^.data);
+
+    println(
+        "Terrain statistics:",
+        "min =", cast(i32)min,
+        "max =", cast(i32)max,
+        "average =", average,
+    );
+}
+
+
+// ------------------------------------------------------------
+// Save the terrain as a PGM image.
+//
+// PGM is deliberately simple:
+//
+//     P5
+//     WIDTH HEIGHT
+//     255
+//     <raw grayscale bytes>
+// ------------------------------------------------------------
+
+fn save_pgm(t: ^Terrain, filename: ^byte) {
+    file := fopen(filename, &("wb")[0]);
+
+    if file == 0 {
+        println("ERROR: could not open output file");
+        return;
+    }
+
+    header := [64]byte{};
+
+    header_len := snprintf(
+        &header[0],
+        cast(u64)len(header),
+        &("P5\n%d %d\n255\n")[0],
+        t^.width,
+        t^.height,
+    );
+
+    fwrite(
+        &header[0],
+        1,
+        cast(u64)header_len,
+        file,
+    );
+
+    // Pixel data is already exactly the format PGM wants.
+    //
+    // Pixel contains one byte, so its layout is compatible with
+    // the raw byte representation.
+
+    fwrite(
+        cast(^byte)&t^.data[0],
+        1,
+        cast(u64)len(t^.data),
+        file,
+    );
+
+    fclose(file);
+
+    println("Saved terrain to terrain.pgm");
+}
+
+
+// ------------------------------------------------------------
+// Convert a terrain value to a display colour.
+//
+// This makes the visualisation slightly more interesting than
+// simply displaying the raw grayscale value.
+// ------------------------------------------------------------
+
+fn terrain_color(value: byte): Color {
+    v := cast(i32)value;
+
+    if v < 60 {
+        return Color{
+            r = 20,
+            g = 40,
+            b = 120,
+            a = 255,
+        };
+    }
+
+    if v < 100 {
+        return Color{
+            r = 40,
+            g = 100,
+            b = 180,
+            a = 255,
+        };
+    }
+
+    if v < 140 {
+        return Color{
+            r = 50,
+            g = 150,
+            b = 70,
+            a = 255,
+        };
+    }
+
+    if v < 190 {
+        return Color{
+            r = 110,
+            g = 110,
+            b = 70,
+            a = 255,
+        };
+    }
+
+    if v < 230 {
+        return Color{
+            r = 130,
+            g = 130,
+            b = 130,
+            a = 255,
+        };
+    }
+
+    return Color{
+        r = 235,
+        g = 235,
+        b = 235,
+        a = 255,
+    };
+}
+
+
+// ============================================================
+// MAIN
+// ============================================================
+
+fn main() {
+    srand(cast(u32)time(0));
+
+    println("Gala procedural terrain generator");
+    println("Generating", WIDTH, "x", HEIGHT, "terrain...");
+
+    terrain := Terrain{
+        width = WIDTH,
+        height = HEIGHT,
+        data = [16384]Pixel{},
+    };
+    // Exercise the allocator independently of the terrain.
+    test_memory := alloc(1024);
+
+    if test_memory == 0 {
+        println("ERROR: allocator returned null");
+        return;
+    }
+
+    memset(test_memory, 0, 1024);
+
+    free(test_memory);
+
+    generate_terrain(&terrain);
+
+    print_statistics(&terrain);
+
+    save_pgm(&terrain, &("terrain.pgm")[0]);
+
+    InitWindow(
+        WIDTH,
+        HEIGHT,
+        cstr("Gala Terrain Generator"),
+    );
+
+    SetTargetFPS(60);
+
+    regenerate := false;
+
+    while !WindowShouldClose() {
+
+        // R regenerates the terrain.
+        if IsKeyPressed(KEY_R) {
+            regenerate = true;
+        }
+
+        if regenerate {
+            println("Regenerating terrain...");
+
+            generate_terrain(&terrain);
+            print_statistics(&terrain);
+            save_pgm(&terrain, &("terrain.pgm")[0]);
+
+            regenerate = false;
+        }
+
+        BeginDrawing();
+
+        ClearBackground(Color{
+            r = 0,
+            g = 0,
+            b = 0,
+            a = 255,
+        });
+
+        y : i32 = 0;
+
+        while y < terrain.height {
+            x : i32 = 0;
+
+            while x < terrain.width {
+                index := y * terrain.width + x;
+
+                color := terrain_color(
+                    terrain.data[index].value
+                );
+
+                DrawPixel(
+                    x,
+                    y,
+                    color,
+                );
+
+                x += 1;
+            }
+
+            y += 1;
+        }
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+}

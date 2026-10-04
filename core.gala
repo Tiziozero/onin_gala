@@ -81,6 +81,13 @@ extern fn srand(seed: u32);
 
 
 // ============================================================
+// C TIME
+// ============================================================
+
+extern fn time(timer: rawptr): i64;
+
+
+// ============================================================
 // C PROCESS / PROGRAM CONTROL
 // ============================================================
 
@@ -125,6 +132,31 @@ extern fn ceil(x: f64): f64;
 extern fn round(x: f64): f64;
 
 extern fn fabs(x: f64): f64;
+
+extern fn sqrtf(x: f32): f32;
+
+extern fn sinf(x: f32): f32;
+extern fn cosf(x: f32): f32;
+extern fn tanf(x: f32): f32;
+
+extern fn asinf(x: f32): f32;
+extern fn acosf(x: f32): f32;
+extern fn atanf(x: f32): f32;
+extern fn atan2f(y: f32, x: f32): f32;
+
+extern fn sinhf(x: f32): f32;
+extern fn coshf(x: f32): f32;
+extern fn tanhf(x: f32): f32;
+
+extern fn logf(x: f32): f32;
+extern fn log10f(x: f32): f32;
+extern fn expf(x: f32): f32;
+
+extern fn floorf(x: f32): f32;
+extern fn ceilf(x: f32): f32;
+extern fn roundf(x: f32): f32;
+
+extern fn fabsf(x: f32): f32;
 
 
 // ============================================================

@@ -1,0 +1,7 @@
+struct BigStruct {
+    data: [16000]byte,
+    x: u64, y: u64,
+}
+fn main() {
+    s := BigStruct{x=123,y=456, data=[16000]byte{}};
+}

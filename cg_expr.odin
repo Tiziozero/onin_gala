@@ -19,8 +19,8 @@ import "core:mem"
 cg_box_any :: proc(c: ^CGCtx, val: string, concrete_ty: TypeId) -> (string, string) {
     concrete_ty_str := ty_to_llvm_str(c, concrete_ty)
 
-    slot := new_tmp(c)
-    cwritefln(c, "\t%s = alloca %s", slot, concrete_ty_str)
+    // entry-block slot: a boxed `any` inside a loop must not grow the stack
+    slot := new_entry_alloca(c, concrete_ty_str)
     cwritefln(c, "\tstore %s %s, ptr %s", concrete_ty_str, val, slot)
 
     v1 := new_tmp(c)
@@ -55,6 +55,7 @@ cg_fn_lit :: proc(c: ^CGCtx, id: ExprId, e: FnLit) -> CGExprRes {
 
     // everything the body generation mutates, saved so the enclosing
     // function carries on exactly where it left off
+    // (c.allocas is saved/restored by cg_fn_definition itself)
     saved_b := c.b
     saved_scope := c.scope
     saved_break := c.cur_break_label
@@ -85,6 +86,144 @@ cg_fn_lit :: proc(c: ^CGCtx, id: ExprId, e: FnLit) -> CGExprRes {
     append(&c.lambdas, strings.to_string(lambda_b))
 
     return {kind=.Value, v=aprintf(c, "@%s", name), id=id}
+}
+
+// some expressions (fn calls with void returns) don't return so are invalid
+//
+// NOTE: for a *large aggregate* (see is_memory_type) this is the slow path —
+// it materialises the whole value as one SSA value (a full `load`). Code that
+// may see big structs/arrays should use cg_expr_into / cg_value_addr instead
+// and only come here for scalars and small values.
+reduce_expr_to_single_value :: proc(c: ^CGCtx, e: CGExprRes) -> (string, bool) {
+    switch e.kind {
+    case .Address: {
+        return e.v, true;
+    }
+    case .Place: {
+        // value lives in memory at e.v; load it (whole thing)
+        t := new_tmp(c)
+        cwritefln(c, "\t%s = load %s, ptr %s", t, ty_to_llvm_str(c, expr_ty(e.id)), e.v)
+        return t, true
+    }
+    case .Struct: {
+        lit := get_expr(e.id).(StructLit)
+        tid := expr_ty(e.id)
+        ty := get_type(tid);
+        ty_str := ty_to_llvm_str(c, tid)
+
+        cur := "undef"   // starting aggregate — a literal LLVM keyword, not a register
+        i := 0;
+        for field in ty.structure.fields {
+            f := lit.fields[field.name]
+            // cg_expr(StructLit) already evaluated every field and stored the
+            // reduced SSA values in struct_lit.fields (declaration order) —
+            // reuse them instead of generating each field expression a
+            // second time (which also duplicated side effects).
+            fv := e.struct_lit.fields[i]
+            next := new_tmp(c)
+            cwritefln(c, "\t%s = insertvalue %s %s, %s %s, %d",
+                next, ty_str, cur, ty_to_llvm_str(c, expr_ty(f.expr)), fv, i)
+            cur = next
+            i+=1;
+        }
+        return cur, true
+    }
+    case .Invalid: gala_panic("invalid")
+    case .None: return "", false
+    case .Value: {
+        return e.v, true
+    }
+    case .Number: {
+        return e.v, true
+    }
+    case .Binop: {
+        t := new_tmp(c)
+        cwritefln(c, "\t%s = %s", t, e.v);
+        return t, true
+    }
+    }
+    panic("impl");
+}
+
+// Evaluates expression `id` and writes its value into memory at `dest`
+// (an LLVM pointer operand, e.g. "%x.3", "%.sret", "@global").
+//
+// This is the destination-passing path for aggregates: instead of building
+// a value and copying it, literals and calls write straight into `dest`,
+// and anything that already lives in memory is `memcpy`'d. Large aggregates
+// never become SSA values on this path.
+//
+// Not safe if `dest` is also read by the expression (e.g. `t = {a = t.b}`):
+// callers that assign into an existing object evaluate into a temporary
+// first (see cg_stmt's Assignment).
+cg_expr_into :: proc(c: ^CGCtx, id: ExprId, dest: string) {
+    tid := expr_ty(id)
+    ty_str := ty_to_llvm_str(c, tid)
+
+    if is_memory_type(tid) {
+        #partial switch e in get_expr(id) {
+        case StructLit: {
+            st := get_type(tid)
+            for f, k in st.structure.fields {
+                fptr := new_tmp(c)
+                cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d",
+                    fptr, ty_str, dest, k)
+                if fl, ok := e.fields[f.name]; ok {
+                    cg_expr_into(c, fl.expr, fptr)
+                } else {
+                    // field not mentioned in the literal -> zero it
+                    cg_memset(c, fptr, 0, int(type_size(f.type)))
+                }
+            }
+            return
+        }
+        case FixedSizeArray: {
+            at := get_type(tid).fixed_size_array
+            // `{}` and short initialisers: zero everything first, then
+            // overwrite the elements that were given.
+            if len(e.initialiser) < int(at.size) {
+                cg_memset(c, dest, 0, int(type_size(tid)))
+            }
+            elem_ty := ty_to_llvm_str(c, at.type)
+            for el, i in e.initialiser {
+                p := new_tmp(c)
+                cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i64 %d",
+                    p, elem_ty, dest, i)
+                cg_expr_into(c, el, p)
+            }
+            return
+        }
+        case FnCall: {
+            // large returns are sret: hand the callee `dest` directly
+            r := cg_fn_call(c, id, e, dest)
+            if r.kind == .Place {
+                if r.v != dest {
+                    cg_memcpy(c, dest, r.v, int(type_size(tid)))
+                }
+            } else {
+                v, returns := reduce_expr_to_single_value(c, r)
+                assert(returns)
+                cwritefln(c, "\tstore %s %s, ptr %s", ty_str, v, dest)
+            }
+            return
+        }
+        case Symbol, FieldAccess, Index, Deref: {
+            if is_addressable(c, id) {
+                cg_memcpy(c, dest, cg_addr(c, id), int(type_size(tid)))
+                return
+            }
+        }
+        }
+    }
+
+    r := cg_expr(c, id)
+    if r.kind == .Place {
+        cg_memcpy(c, dest, r.v, int(type_size(tid)))
+        return
+    }
+    v, returns := reduce_expr_to_single_value(c, r)
+    assert(returns)
+    cwritefln(c, "\tstore %s %s, ptr %s", ty_str, v, dest)
 }
 
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
@@ -148,7 +287,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         return {kind=.Number, v=v}
     }
     case String: {
-        r := c.strings[e.s] // global string thingy
+        r := c.cg_strings[e.s] // global string thingy
         t := new_tmp(c);
         cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i64 0, i64 0",
             t, r.array_type, r.s);
@@ -179,6 +318,12 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         }
 
         pointee_ty := ptr_ty.ptr
+
+        // large pointee: hand back the address, don't load the whole thing
+        if is_memory_type(pointee_ty) {
+            return {kind=.Place, v=ptr_val, id=id}
+        }
+
         pointee_llvm_ty := ty_to_llvm_str(c, pointee_ty)
 
         loaded := new_tmp(c);
@@ -212,8 +357,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             return {kind=.Value, v=t}
 
         case .Memory:
-            slot := new_tmp(c)
-            cwritefln(c, "\t%s = alloca %s", slot, ty_to_llvm_str(c, from_ty))
+            slot := new_entry_alloca(c, ty_to_llvm_str(c, from_ty))
             cwritefln(c, "\tstore %s %s, ptr %s", ty_to_llvm_str(c, from_ty), reduced, slot)
             t := new_tmp(c)
             cwritefln(c, "\t%s = load %s, ptr %s", t, ty_to_llvm_str(c, to_ty), slot)
@@ -265,14 +409,21 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     }
     case Index: {
         ptr := cg_elem_ptr(c, e.target, e.index)
+        // large element: return its address, load only if someone needs the value
+        if is_memory_type(expr_ty(id)) {
+            return {kind=.Place, v=ptr, id=id}
+        }
         v := new_tmp(c)
         cwritefln(c, "\t%s = load %s, ptr %s", v, ty_to_llvm_str(c, expr_ty(id)), ptr)
         return {kind=.Value, v=v}
     }
     case FixedSizeArray: {
-        // CHANGED: `{}` is all zeroes; otherwise start from zeroinitializer
+        // `{}` is all zeroes; otherwise start from zeroinitializer
         // and insertvalue each given element, so any elements past the end
         // of the initialiser stay zero.
+        //
+        // NOTE: this builds an SSA aggregate, so it's only for small arrays.
+        // Large ones are written in place by cg_expr_into (memset + stores).
         if len(e.initialiser) == 0 {
             return {kind=.Value, v="zeroinitializer"}
         }
@@ -292,27 +443,59 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         return {kind=.Value, v=acc}
     }
     case FieldAccess: {
-        r, ok := reduce_expr_to_single_value(c, cg_expr(c, e.target));
-        assert(ok);
+        target_ty := expr_ty(e.target);
+        ty := get_type(target_ty);
 
-        target_ty := expr_ty(e.target)
-        ty := get_type(target_ty)
-
-        idx := -1
+        idx := -1;
         for f, k in ty.structure.fields {
             if f.name == e.field {
-                idx = k
-                break
+                idx = k;
+                break;
             }
         }
-        assert(idx != -1)
+        assert(idx != -1);
 
-        t := new_tmp(c)
+        field_ty := ty.structure.fields[idx].type;
+
+        // Memory-backed target (a variable / deref / index, or any large
+        // aggregate rvalue): GEP to the field and load just that field.
+        // The whole struct is never loaded. An rvalue large aggregate
+        // (e.g. `make_terrain().w`) is first written to a temporary.
+        if is_addressable(c, e.target) || is_memory_type(target_ty) {
+            base_ptr := cg_value_addr(c, e.target)
+
+            field_ptr := new_tmp(c);
+            cwritefln(c,
+                "\t%s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d",
+                field_ptr, ty_to_llvm_str(c, target_ty), base_ptr, idx);
+
+            // large field (e.g. `t.pixels`): address only
+            if is_memory_type(field_ty) {
+                return {kind=.Place, v=field_ptr, id=id}
+            }
+
+            loaded := new_tmp(c);
+            cwritefln(c, "\t%s = load %s, ptr %s",
+                loaded, ty_to_llvm_str(c, field_ty), field_ptr);
+
+            return {kind=.Value, v=loaded};
+        }
+
+        // Small rvalue target (fn call result, small struct literal, an
+        // argument passed in registers, ...): it's already an SSA value.
+        value, returns := reduce_expr_to_single_value(c, cg_expr(c, e.target));
+        assert(returns);
+
+        t := new_tmp(c);
         cwritefln(c, "\t%s = extractvalue %s %s, %d",
-            t, ty_to_llvm_str(c, target_ty), r, idx)
+            t,
+            ty_to_llvm_str(c, target_ty),
+            value,
+            idx);
 
-        return {kind=.Value, v=t}
+        return {kind=.Value, v=t};
     }
+
     case StructLit: {
         ty := get_ctx().expr_resolution_types[id]
         fields := make([]string, len(get_type(ty).structure.fields), allocator=get_ctx().allocator)
@@ -366,10 +549,12 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         n, ok := parse_integer_literal(e.text)
         assert(ok)
         if get_type(ty_id).kind == .Pointer {
-            if n == 0 {
+            /* if n == 0 {
                 return {kind=.Number, v="null"}
-            }
-            return {kind=.Number, v=aprintf(c, "inttoptr (i64 %d to ptr)", n)}
+            } */
+            t := new_tmp(c)
+            cwritefln(c, "\t%s = inttoptr i64 %d to ptr", t, n)
+            return {kind=.Number, v=t}
         }
 
         return {kind=.Number, v=aprintf(c, "%d", n)}
@@ -399,9 +584,10 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             // `null`). Feed those straight into the i64 math instead;
             // only reduce+ptrtoint values that are real pointers.
             to_i64 :: proc(c: ^CGCtx, res: CGExprRes) -> string {
-                if res.kind == .Number {
+                debugln("ptr to int for", res);
+                /* if res.kind == .Number {
                     return res.v
-                }
+                } */
                 v, returns := reduce_expr_to_single_value(c, res)
                 assert(returns)
                 t := new_tmp(c)
@@ -526,24 +712,32 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     }
     case Symbol: {
         v := cgscope_get(&c.scope, e.name);
+
         switch v.kind {
         case .Symbol: {
             return {kind=.Address, v=v.name}
         }
+
         case .Variable: {
+            // large aggregate variable: give back its address, don't load it
+            if is_memory_type(expr_ty(id)) {
+                return {kind=.Place, v=v.name, id=id}
+            }
             t := new_tmp(c)
             cwritefln(c, "\t%s = load %s, ptr %s",
                 t, ty_to_llvm_str(c, expr_ty(id)), v.name);
-            return {kind=.Value,v=t};
+            return {kind=.Value, v=t};
         }
+
         case .Argument: {
-            return {kind=.Value,v=v.name};
+            return {kind=.Value, v=v.name};
         }
+
         case .Invalid: {
             gala_panic("invalid object");
         }
         }
-        panic("impl");
+        panic("impl")
     }
     case FnCall: {
         return cg_fn_call(c, id, e)
@@ -590,6 +784,9 @@ is_any_type :: proc(t: TypeId) -> bool {
 // value is boxed. If the typechecker marked the arg (needs_boxing), its
 // box_type is taken as the concrete type; otherwise the concrete type is
 // the argument expression's own type.
+//
+// Returns an SSA value, so it's for small values only — large aggregates
+// passed `byval` go through cg_emit_call_arg, which never loads them.
 cg_call_arg_value :: proc(c: ^CGCtx, a: FnCallArg, param_ty: TypeId) -> string {
     r, returns := reduce_expr_to_single_value(c, cg_expr(c, a.expr))
     assert(returns)
@@ -608,6 +805,53 @@ cg_call_arg_value :: proc(c: ^CGCtx, a: FnCallArg, param_ty: TypeId) -> string {
     return r
 }
 
+// Turns an already-evaluated SSA value `r` for lowered parameter `k` of
+// `sig` into the text of the matching call operand and appends it to
+// `call_args` (byval slot / coerced direct value / plain direct value).
+cg_emit_abi_arg :: proc(c: ^CGCtx, sig: AbiSignature, k: int, r: string, call_args: ^[dynamic]string) {
+    al := sig.args[k]
+    arg_ty_str := ty_to_llvm_str(c, al.orig_type)
+
+    switch al.mode {
+    case .ByVal: {
+        slot := new_entry_alloca(c, arg_ty_str)
+        cwritefln(c, "\tstore %s %s, ptr %s", arg_ty_str, r, slot)
+        append(call_args, aprintf(c, "ptr byval(%s) align %d %s", arg_ty_str, al.byval_align, slot))
+    }
+    case .Direct: {
+        if al.needs_coercion {
+            slot := new_entry_alloca(c, arg_ty_str)
+            cwritefln(c, "\tstore %s %s, ptr %s", arg_ty_str, r, slot)
+            coerced := new_tmp(c)
+            cwritefln(c, "\t%s = load %s, ptr %s", coerced, al.coerced_type, slot)
+            append(call_args, aprintf(c, "%s %s", al.coerced_type, coerced))
+        } else {
+            append(call_args, aprintf(c, "%s %s", al.coerced_type, r))
+        }
+    }
+    }
+}
+
+// Evaluates call argument `a` for lowered parameter `k` and appends the call
+// operand to `call_args`.
+//
+// A large aggregate passed `byval` is never turned into an SSA value:
+// `byval(T)` means the callee gets its own copy made from the pointer at
+// the call, so we just pass the address of the source (making a temporary
+// first only if the argument isn't already in memory). LLVM does the one
+// copy into the argument area.
+cg_emit_call_arg :: proc(c: ^CGCtx, a: FnCallArg, sig: AbiSignature, k: int, call_args: ^[dynamic]string) {
+    al := sig.args[k]
+    if al.mode == .ByVal && is_memory_type(al.orig_type) && !a.needs_boxing {
+        src := cg_value_addr(c, a.expr)
+        append(call_args, aprintf(c, "ptr byval(%s) align %d %s",
+            ty_to_llvm_str(c, al.orig_type), al.byval_align, src))
+        return
+    }
+    r := cg_call_arg_value(c, a, al.orig_type)
+    cg_emit_abi_arg(c, sig, k, r, call_args)
+}
+
 // Packs the variadic tail of a call into a `{ ptr, i64 }` slice value:
 // the elements are stored into a stack array and the slice points at it.
 // With no extra arguments the slice is { null, 0 }.
@@ -620,8 +864,7 @@ cg_pack_variadic_slice :: proc(c: ^CGCtx, tail: []FnCallArg, elem_ty: TypeId) ->
     base := "null"
     if n > 0 {
         arr_ty := aprintf(c, "[%d x %s]", n, elem_str)
-        base = new_tmp(c)
-        cwritefln(c, "\t%s = alloca %s", base, arr_ty)
+        base = new_entry_alloca(c, arr_ty)
         for a, i in tail {
             v := cg_call_arg_value(c, a, elem_ty)
             p := new_tmp(c)
@@ -638,93 +881,56 @@ cg_pack_variadic_slice :: proc(c: ^CGCtx, tail: []FnCallArg, elem_ty: TypeId) ->
     return v2
 }
 
-// Call to an internal variadic: fixed args are evaluated as usual, the tail
-// is packed into a slice, and the result is a plain non-variadic call
-// against the lowered type.
-cg_fn_call_internal_variadic :: proc(c: ^CGCtx, id: ExprId, e: FnCall, target: string) -> CGExprRes {
-    fn_type_id := expr_ty(e.target)
-    fn_ty := get_type(fn_type_id)
-    lowered_id := lower_internal_variadic(fn_type_id)
-    sig := cg_abi_lower_signature(c, lowered_id, .SysV)
-
-    n_fixed := len(fn_ty.fn.args)
-    assert(len(e.args) >= n_fixed, "not enough arguments for variadic call")
-
-    // SSA values for every lowered parameter: fixed args, then the slice
-    values := make([dynamic]string, allocator=get_ctx().allocator)
-    for k in 0 ..< n_fixed {
-        append(&values, cg_call_arg_value(c, e.args[k], sig.args[k].orig_type))
+// Writes "(a, b, c)\n" for an already-built call operand list.
+cg_write_call_args :: proc(c: ^CGCtx, call_args: [dynamic]string) {
+    cwrite(c, "(")
+    for a, i in call_args {
+        cwritef(c, "%s", a)
+        if i < len(call_args) - 1 {
+            cwritef(c, ", ")
+        }
     }
-    append(&values, cg_pack_variadic_slice(c, e.args[n_fixed:], fn_ty.fn.variadic_ty))
-    assert(len(values) == len(sig.args))
+    cwriteln(c, ")")
+}
 
-    call_args := make([dynamic]string, allocator=get_ctx().allocator)
-
-    sret_slot := ""
+// Emits the `call` instruction itself and produces the call's result.
+// Shared by normal calls and internal-variadic calls.
+//
+// `sret_slot` is the memory the callee writes an indirect (sret) result
+// into. For a large aggregate result the answer is handed back as a
+// `.Place` pointing at that slot — it is NOT loaded.
+// `variadic_prefix` is the "(T, U, ...)" fixed-parameter list LLVM wants
+// before the callee of a C-variadic call ("" otherwise).
+cg_emit_call :: proc(c: ^CGCtx, id: ExprId, sig: AbiSignature, target: string,
+        call_args: [dynamic]string, variadic_prefix: string, sret_slot: string) -> CGExprRes {
     if sig.ret.mode == .Indirect {
-        sret_slot = new_tmp(c)
-        cwritefln(c, "\t%s = alloca %s", sret_slot, ty_to_llvm_str(c, sig.ret.orig_type))
-        append(&call_args, aprintf(c, "ptr sret(%s) align %d %s",
-            ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align, sret_slot))
-    }
+        cwritef(c, "\tcall void ")
+        cwritef(c, "%s", variadic_prefix)
+        cwritef(c, "%s", target)
+        cg_write_call_args(c, call_args)
 
-    for al, k in sig.args {
-        r := values[k]
-        arg_ty_str := ty_to_llvm_str(c, al.orig_type)
-
-        switch al.mode {
-        case .ByVal: {
-            slot := new_tmp(c)
-            cwritefln(c, "\t%s = alloca %s", slot, arg_ty_str)
-            cwritefln(c, "\tstore %s %s, ptr %s", arg_ty_str, r, slot)
-            append(&call_args, aprintf(c, "ptr byval(%s) align %d %s", arg_ty_str, al.byval_align, slot))
+        if is_memory_type(sig.ret.orig_type) {
+            return {kind=.Place, v=sret_slot, id=id}
         }
-        case .Direct: {
-            if al.needs_coercion {
-                slot := new_tmp(c)
-                cwritefln(c, "\t%s = alloca %s", slot, arg_ty_str)
-                cwritefln(c, "\tstore %s %s, ptr %s", arg_ty_str, r, slot)
-                coerced := new_tmp(c)
-                cwritefln(c, "\t%s = load %s, ptr %s", coerced, al.coerced_type, slot)
-                append(&call_args, aprintf(c, "%s %s", al.coerced_type, coerced))
-            } else {
-                append(&call_args, aprintf(c, "%s %s", al.coerced_type, r))
-            }
-        }
-        }
-    }
-
-    write_call_args := proc(c: ^CGCtx, call_args: [dynamic]string) {
-        cwrite(c, "(")
-        for a, i in call_args {
-            cwritef(c, "%s", a)
-            if i < len(call_args) - 1 {
-                cwritef(c, ", ")
-            }
-        }
-        cwriteln(c, ")")
-    }
-
-    if sig.ret.mode == .Indirect {
-        cwritef(c, "\tcall void %s", target)
-        write_call_args(c, call_args)
-
         loaded := new_tmp(c)
         cwritefln(c, "\t%s = load %s, ptr %s", loaded, ty_to_llvm_str(c, sig.ret.orig_type), sret_slot)
         return {kind=.Value, v=loaded, id=id}
     } else if sig.ret.coerced_type == "void" {
-        cwritef(c, "\tcall void %s", target)
-        write_call_args(c, call_args)
+        cwritef(c, "\tcall void ")
+        cwritef(c, "%s", variadic_prefix)
+        cwritef(c, "%s", target)
+        cg_write_call_args(c, call_args)
         return {kind=.None, id=id}
     } else {
         new_t := new_tmp(c)
-        cwritef(c, "\t%s = call %s %s", new_t, sig.ret.coerced_type, target)
-        write_call_args(c, call_args)
+        cwritef(c, "\t%s = call %s ", new_t, sig.ret.coerced_type)
+        cwritef(c, "%s", variadic_prefix)
+        cwritef(c, "%s", target)
+        cg_write_call_args(c, call_args)
 
         if sig.ret.needs_coercion {
             real_ty_str := ty_to_llvm_str(c, sig.ret.orig_type)
-            slot := new_tmp(c)
-            cwritefln(c, "\t%s = alloca %s", slot, real_ty_str)
+            slot := new_entry_alloca(c, real_ty_str)
             cwritefln(c, "\tstore %s %s, ptr %s", sig.ret.coerced_type, new_t, slot)
             loaded := new_tmp(c)
             cwritefln(c, "\t%s = load %s, ptr %s", loaded, real_ty_str, slot)
@@ -734,7 +940,45 @@ cg_fn_call_internal_variadic :: proc(c: ^CGCtx, id: ExprId, e: FnCall, target: s
     }
 }
 
-cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall) -> CGExprRes {
+// Call to an internal variadic: fixed args are evaluated as usual, the tail
+// is packed into a slice, and the result is a plain non-variadic call
+// against the lowered type.
+cg_fn_call_internal_variadic :: proc(c: ^CGCtx, id: ExprId, e: FnCall, target: string, dest := "") -> CGExprRes {
+    fn_type_id := expr_ty(e.target)
+    fn_ty := get_type(fn_type_id)
+    lowered_id := lower_internal_variadic(fn_type_id)
+    sig := cg_abi_lower_signature(c, lowered_id, .SysV)
+
+    n_fixed := len(fn_ty.fn.args)
+    assert(len(e.args) >= n_fixed, "not enough arguments for variadic call")
+    assert(len(sig.args) == n_fixed + 1)
+
+    call_args := make([dynamic]string, allocator=get_ctx().allocator)
+
+    sret_slot := ""
+    if sig.ret.mode == .Indirect {
+        sret_slot = dest
+        if sret_slot == "" {
+            sret_slot = new_entry_alloca(c, ty_to_llvm_str(c, sig.ret.orig_type))
+        }
+        append(&call_args, aprintf(c, "ptr sret(%s) align %d %s",
+            ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align, sret_slot))
+    }
+
+    // fixed args, then the packed slice as the last lowered parameter
+    for k in 0 ..< n_fixed {
+        cg_emit_call_arg(c, e.args[k], sig, k, &call_args)
+    }
+    slice_v := cg_pack_variadic_slice(c, e.args[n_fixed:], fn_ty.fn.variadic_ty)
+    cg_emit_abi_arg(c, sig, n_fixed, slice_v, &call_args)
+
+    return cg_emit_call(c, id, sig, target, call_args, "", sret_slot)
+}
+
+// `dest`: if non-empty and the call returns through sret, the callee is
+// handed this address directly (no temporary, no copy) and the result comes
+// back as `.Place` with v == dest. See cg_expr_into.
+cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall, dest := "") -> CGExprRes {
     t := cg_fn_call_target(c, e.target)
     fn_type_id := expr_ty(e.target)
     fn_ty := get_type(fn_type_id)
@@ -742,7 +986,7 @@ cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall) -> CGExprRes {
     // internal (Gala) variadics: pack the tail into a slice and call the
     // lowered, non-variadic form. Extern C variadics continue below.
     if fn_ty.fn.is_variadic && !fn_ty.fn.is_external {
-        return cg_fn_call_internal_variadic(c, id, e, t)
+        return cg_fn_call_internal_variadic(c, id, e, t, dest)
     }
 
     sig := cg_abi_lower_signature(c, fn_type_id, .SysV)
@@ -751,8 +995,10 @@ cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall) -> CGExprRes {
 
     sret_slot := ""
     if sig.ret.mode == .Indirect {
-        sret_slot = new_tmp(c)
-        cwritefln(c, "\t%s = alloca %s", sret_slot, ty_to_llvm_str(c, sig.ret.orig_type))
+        sret_slot = dest
+        if sret_slot == "" {
+            sret_slot = new_entry_alloca(c, ty_to_llvm_str(c, sig.ret.orig_type))
+        }
         append(&call_args, aprintf(c, "ptr sret(%s) align %d %s",
             ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align, sret_slot))
     }
@@ -766,33 +1012,10 @@ cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall) -> CGExprRes {
     }
 
     // ---- fixed params ----
+    // (boxes into `any` when the parameter is `any`; large byval
+    // aggregates are passed by address, never loaded)
     for k in 0 ..< fixed_arg_count {
-        a := e.args[k]
-        al := sig.args[k]
-        // boxes into `any` when the parameter is `any`
-        r := cg_call_arg_value(c, a, al.orig_type)
-        arg_ty_str := ty_to_llvm_str(c, al.orig_type)
-
-        switch al.mode {
-        case .ByVal: {
-            slot := new_tmp(c)
-            cwritefln(c, "\t%s = alloca %s", slot, arg_ty_str)
-            cwritefln(c, "\tstore %s %s, ptr %s", arg_ty_str, r, slot)
-            append(&call_args, aprintf(c, "ptr byval(%s) align %d %s", arg_ty_str, al.byval_align, slot))
-        }
-        case .Direct: {
-            if al.needs_coercion {
-                slot := new_tmp(c)
-                cwritefln(c, "\t%s = alloca %s", slot, arg_ty_str)
-                cwritefln(c, "\tstore %s %s, ptr %s", arg_ty_str, r, slot)
-                coerced := new_tmp(c)
-                cwritefln(c, "\t%s = load %s, ptr %s", coerced, al.coerced_type, slot)
-                append(&call_args, aprintf(c, "%s %s", al.coerced_type, coerced))
-            } else {
-                append(&call_args, aprintf(c, "%s %s", al.coerced_type, r))
-            }
-        }
-        }
+        cg_emit_call_arg(c, e.args[k], sig, k, &call_args)
     }
 
     // ---- trailing C-variadic arguments ----
@@ -834,50 +1057,7 @@ cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall) -> CGExprRes {
         variadic_prefix = strings.to_string(vb)
     }
 
-    write_call_args := proc(c: ^CGCtx, call_args: [dynamic]string) {
-        cwrite(c, "(")
-        for a, i in call_args {
-            cwritef(c, "%s", a)
-            if i < len(call_args) - 1 {
-                cwritef(c, ", ")
-            }
-        }
-        cwriteln(c, ")")
-    }
-
-    if sig.ret.mode == .Indirect {
-        cwritef(c, "\tcall void ")
-        if fn_ty.fn.is_variadic { cwritef(c, "%s", variadic_prefix) }
-        cwritef(c, "%s", t)
-        write_call_args(c, call_args)
-
-        loaded := new_tmp(c)
-        cwritefln(c, "\t%s = load %s, ptr %s", loaded, ty_to_llvm_str(c, sig.ret.orig_type), sret_slot)
-        return {kind=.Value, v=loaded, id=id}
-    } else if sig.ret.coerced_type == "void" {
-        cwritef(c, "\tcall void ")
-        if fn_ty.fn.is_variadic { cwritef(c, "%s", variadic_prefix) }
-        cwritef(c, "%s", t)
-        write_call_args(c, call_args)
-        return {kind=.None, id=id}
-    } else {
-        new_t := new_tmp(c)
-        cwritef(c, "\t%s = call %s ", new_t, sig.ret.coerced_type)
-        if fn_ty.fn.is_variadic { cwritef(c, "%s", variadic_prefix) }
-        cwritef(c, "%s", t)
-        write_call_args(c, call_args)
-
-        if sig.ret.needs_coercion {
-            real_ty_str := ty_to_llvm_str(c, sig.ret.orig_type)
-            slot := new_tmp(c)
-            cwritefln(c, "\t%s = alloca %s", slot, real_ty_str)
-            cwritefln(c, "\tstore %s %s, ptr %s", sig.ret.coerced_type, new_t, slot)
-            loaded := new_tmp(c)
-            cwritefln(c, "\t%s = load %s, ptr %s", loaded, real_ty_str, slot)
-            return {kind=.Value, v=loaded, id=id}
-        }
-        return {kind=.Value, v=new_t, id=id}
-    }
+    return cg_emit_call(c, id, sig, t, call_args, variadic_prefix, sret_slot)
 }
 // Emits the C-variadic default-argument-promotion conversion for an
 // already-reduced value `v` of static type `type_id`, if one applies.

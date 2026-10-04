@@ -34,7 +34,10 @@ parse_integer_literal :: proc(s: string) -> (i64, bool) {
 }
 CGExprRes :: struct {
     id: ExprId,
-    kind: enum {Invalid, Address, Value, Binop, Number, Struct, None},
+    // .Place: the value lives in memory at `v` (a pointer operand) and has
+    // the type of expression `id`. Nothing has been loaded yet; reducing it
+    // loads the whole value, cg_expr_into memcpy's it.
+    kind: enum {Invalid, Address, Value, Binop, Number, Struct, None, Place},
     v: string,
     struct_lit: struct {
         fields: []string, // string of results
@@ -54,7 +57,7 @@ CGCtx :: struct {
     b: ^strings.Builder,
     tmp_id: int,
     scope: CGScope,
-    strings: map[string]StringGlobalResult,
+    cg_strings: map[string]StringGlobalResult,
     cur_fn_ret: AbiRetLowering, // ABI lowering of the return value of the function currently being emitted
     break_labels: map[StmtId]string,    // loop (or if/else passthrough) StmtId -> label to jump to on `break`
     continue_labels: map[StmtId]string, // loop (or if/else passthrough) StmtId -> label to jump to on `continue`
@@ -69,6 +72,15 @@ CGCtx :: struct {
     // function's body) and parked here; cg_module writes them out after the
     // regular items. See cg_fn_lit.
     lambdas: [dynamic]string,
+
+    // Entry-block allocas of the function currently being emitted. Local
+    // variables and large temporaries are allocated here rather than where
+    // they're declared, so an alloca inside a loop body doesn't grow the
+    // stack every iteration (and mem2reg can promote it, since it only
+    // looks at the entry block). cg_fn_definition splices this in right
+    // after `entry:`. nil outside a function body (e.g. while emitting a
+    // module's __init_globals), in which case allocas are written inline.
+    allocas: ^strings.Builder,
 
     // ---- declaration dedupe (see cg_items_dec) ----
     // A module can be reached through several import paths (main -> rl ->
@@ -122,6 +134,99 @@ cwriteln :: proc(c: ^CGCtx, format: string) {
 cwritefln :: proc(c: ^CGCtx, format: string, data: ..any) {
     fmt.sbprintfln(c.b, format, ..data);
 }
+
+// ---- large aggregates ----
+//
+// Big structs/arrays must never be first-class SSA values: LLVM's passes
+// split an aggregate value into one scalar per element, so a
+// `[16384 x Pixel]` becomes tens of thousands of values and llc crawls
+// (or looks hung). Like Clang and rustc, such types live in memory and are
+// only touched through addresses: GEP + scalar load/store for access,
+// `llvm.memcpy` for whole-value copies, `llvm.memset` for zeroing, and
+// destination-passing (cg_expr_into) for construction and calls.
+//
+// Structs/arrays up to this many bytes still travel as SSA values (cheap
+// for LLVM, and the ABI coercion code relies on loading small structs).
+LARGE_AGGREGATE_BYTES :: 64
+
+is_memory_type :: proc(t: TypeId) -> bool {
+    k := get_type(t).kind
+    if k != .Struct && k != .FixedSizeArray {
+        return false
+    }
+    return type_size(t) > LARGE_AGGREGATE_BYTES
+}
+
+// True if cg_addr can produce a real address for this expression, i.e. it
+// names an object in memory (variable, field of one, element, deref).
+is_addressable :: proc(c: ^CGCtx, id: ExprId) -> bool {
+    #partial switch e in get_expr(id) {
+    case Symbol:
+        return cgscope_get(&c.scope, e.name).kind == .Variable
+    case FieldAccess:
+        return is_addressable(c, e.target)
+    case Index, Deref:
+        return true
+    }
+    return false
+}
+
+// Address of the memory holding the value of `id`. Uses the real address if
+// the expression is an lvalue, otherwise evaluates it into a fresh
+// entry-block temporary and returns that.
+cg_value_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
+    if is_addressable(c, id) {
+        return cg_addr(c, id)
+    }
+    slot := new_entry_alloca(c, ty_to_llvm_str(c, expr_ty(id)))
+    cg_expr_into(c, id, slot)
+    return slot
+}
+
+// `declare`s for these three are written once at the top of every module
+// (see cg_module); a declare can't be emitted from inside a function body.
+
+// dst <- src, `size` bytes, regions must not overlap.
+cg_memcpy :: proc(c: ^CGCtx, dst: string, src: string, size: int) {
+    cwritefln(c, "\tcall void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)",
+        dst, src, size)
+}
+
+// dst <- src, `size` bytes, overlap allowed (e.g. `a = a`).
+cg_memmove :: proc(c: ^CGCtx, dst: string, src: string, size: int) {
+    cwritefln(c, "\tcall void @llvm.memmove.p0.p0.i64(ptr %s, ptr %s, i64 %d, i1 false)",
+        dst, src, size)
+}
+
+// fill `size` bytes at dst with `value` (0 for zero-init).
+cg_memset :: proc(c: ^CGCtx, dst: string, value: int, size: int) {
+    cwritefln(c, "\tcall void @llvm.memset.p0.i64(ptr %s, i8 %d, i64 %d, i1 false)",
+        dst, value, size)
+}
+
+// `name = alloca ty` in the current function's entry block (or inline when
+// there's no function-level allocas builder, which is only ever in an
+// entry block anyway).
+cg_alloca_named :: proc(c: ^CGCtx, name: string, ty_str: string) {
+    if c.allocas != nil {
+        fmt.sbprintfln(c.allocas, "\t%s = alloca %s", name, ty_str)
+    } else {
+        cwritefln(c, "\t%s = alloca %s", name, ty_str)
+    }
+}
+
+// Fresh-named entry-block alloca; returns the pointer name.
+//
+// The name must NOT be a bare number (`%49`): LLVM requires unnamed values
+// to appear in increasing numeric order in the text, and a hoisted alloca
+// is written above body code that was numbered earlier. A prefixed name
+// (`%slot49`) has no ordering rule. The shared counter still makes it unique.
+new_entry_alloca :: proc(c: ^CGCtx, ty_str: string) -> string {
+    name := new_tmp(c, "slot")
+    cg_alloca_named(c, name, ty_str)
+    return name
+}
+
 // ---- TypeKind-level helpers (is_integer/is_float take TypeId and exclude
 // Byte/Rune/Bool — these work on raw TypeKind and include them, since all
 // three are LLVM integer types) ----
@@ -310,48 +415,6 @@ llvm_double_const :: proc(v: f64) -> string {
     bits := transmute(u64)v
     return fmt.tprintf("0x%016X", bits)
 }
-// some expressions (fn calls with void returns) don't return so are invalid
-reduce_expr_to_single_value :: proc(c: ^CGCtx, e: CGExprRes) -> (string, bool) {
-    switch e.kind {
-    case .Address: {
-        return e.v, true;
-    }
-    case .Struct: {
-        lit := get_expr(e.id).(StructLit)
-        tid := expr_ty(e.id)
-        ty := get_type(tid);
-        ty_str := ty_to_llvm_str(c, tid)
-
-        cur := "undef"   // starting aggregate — a literal LLVM keyword, not a register
-        i := 0;
-        for field in ty.structure.fields {
-            f := lit.fields[field.name]
-            fv, returns := reduce_expr_to_single_value(c, cg_expr(c, f.expr))
-            assert(returns)
-            next := new_tmp(c)
-            cwritefln(c, "\t%s = insertvalue %s %s, %s %s, %d",
-                next, ty_str, cur, ty_to_llvm_str(c, expr_ty(f.expr)), fv, i)
-            cur = next
-            i+=1;
-        }
-        return cur, true
-    }
-    case .Invalid: gala_panic("invalid")
-    case .None: return "", false
-    case .Value: {
-        return e.v, true
-    }
-    case .Number: {
-        return e.v, true
-    }
-    case .Binop: {
-        t := new_tmp(c)
-        cwritefln(c, "\t%s = %s", t, e.v);
-        return t, true
-    }
-    }
-    panic("impl");
-}
 stmt_ends_block :: proc(stmt: StmtId) -> bool {
     switch s in get(stmt) {
     // both are unconditional jumps (`br label ...`) — an LLVM basic-block
@@ -511,13 +574,13 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         elem_ty := ty_to_llvm_str(c, elem_tid)
 
         idx_slot := new_tmp(c, "for_idx")
-        cwritefln(c, "\t%s = alloca i64", idx_slot)
+        cg_alloca_named(c, idx_slot, "i64")
         cwritefln(c, "\tstore i64 0, ptr %s", idx_slot)
 
         // The loop variable: one slot, overwritten each iteration with a
         // by-value copy of the element.
         var_slot := aprintf(c, "%%%s.for%d", s.name, id_suffix)
-        cwritefln(c, "\t%s = alloca %s", var_slot, elem_ty)
+        cg_alloca_named(c, var_slot, elem_ty)
 
         // break/continue registration (same scheme as WhileLoop)
         c.break_labels[id] = end_label
@@ -543,9 +606,14 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         elem_ptr := new_tmp(c, "for_elem_ptr")
         cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i64 %s",
             elem_ptr, elem_ty, data_ptr, cur_i)
-        elem_val := new_tmp(c, "for_elem")
-        cwritefln(c, "\t%s = load %s, ptr %s", elem_val, elem_ty, elem_ptr)
-        cwritefln(c, "\tstore %s %s, ptr %s", elem_ty, elem_val, var_slot)
+        if is_memory_type(elem_tid) {
+            // large element: copy it with memcpy, never load it as a value
+            cg_memcpy(c, var_slot, elem_ptr, int(type_size(elem_tid)))
+        } else {
+            elem_val := new_tmp(c, "for_elem")
+            cwritefln(c, "\t%s = load %s, ptr %s", elem_val, elem_ty, elem_ptr)
+            cwritefln(c, "\tstore %s %s, ptr %s", elem_ty, elem_val, var_slot)
+        }
 
         old := c.scope
         c.scope = new_gcscope(&old)
@@ -581,8 +649,14 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         c.cur_break_label = old_break
         c.cur_continue_label = old_continue
     }
-    case ExprId:
-        reduce_expr_to_single_value(c, cg_expr(c, s));
+    case ExprId: {
+        r := cg_expr(c, s)
+        // a discarded large-aggregate result (e.g. `make_terrain();`) is
+        // just an address — don't load the whole thing to throw it away
+        if r.kind != .Place {
+            reduce_expr_to_single_value(c, r);
+        }
+    }
     case IfElse: {
         id_suffix := next_tmp_index(c)
         end_label := aprintf(c, "end_label%d", id_suffix);
@@ -719,77 +793,95 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     }
     case VarDec:{
         // get object
-        id :=get_ctx().stmt_objects[id] 
-        obj := get_obj(id);
-        // gen value
-        v := cg_expr(c, s.value)
-        // write name to scope
-        c.scope.vars[s.name] = {.Variable, aprintf(c, "%%%s.%d", s.name, id)};
-        name := c.scope.vars[s.name].name
-        if true {
-            value, returns :=  reduce_expr_to_single_value(c, v);
-            assert(returns);
-            // allocate
-            cwritefln(c, "\t%s = alloca %s", name,
-                ty_to_llvm_str(c, obj.type.(TypeId)));
-            // init
-            cwritefln(c, "\tstore %s %s, ptr %s", ty_to_llvm_str(c, obj.type.(TypeId)),
-                value, name);
+        obj_id := get_ctx().stmt_objects[id]
+        obj := get_obj(obj_id);
+        var_tid := obj.type.(TypeId)
+        var_ty_str := ty_to_llvm_str(c, var_tid)
+        name := aprintf(c, "%%%s.%d", s.name, obj_id)
+
+        if is_memory_type(var_tid) {
+            // Large aggregate: allocate the slot and build the value
+            // straight into it (memcpy / in-place literal / sret call).
+            // The value is never an SSA value.
+            cg_alloca_named(c, name, var_ty_str)
+            cg_expr_into(c, s.value, name)
         } else {
-            cwritefln(c, "\t%s = alloca %s",name, 
-                ty_to_llvm_str(c, obj.type.(TypeId)));
-            tid := get_ctx().expr_resolution_types[v.id]
-            ty := get_type(tid);
-            for v, i in v.struct_lit.fields {
-                // load
-                // %y_addr = getelementptr inbounds %Vec2, %Vec2* %ptr, i32 0, i32 1
-                t := new_tmp(c)
-                llvm_t := ty_to_llvm_str(c, tid)
-                cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d",
-                            t, llvm_t, name, i)
-                // store
-                // store float 3.0, float* %y_addr
-                field_ty := ty_to_llvm_str(c, ty.structure.fields[i].type);
-                cwritefln(c, "\tstore %s %s, ptr %s",
-                            field_ty, v, t)
-            }
+            v := cg_expr(c, s.value)
+            value, returns := reduce_expr_to_single_value(c, v);
+            assert(returns);
+            // allocate (entry block, so loops don't grow the stack)
+            cg_alloca_named(c, name, var_ty_str)
+            // init
+            cwritefln(c, "\tstore %s %s, ptr %s", var_ty_str, value, name);
         }
+
+        // write name to scope (after the initialiser, so `x := x` still
+        // sees the outer x)
+        c.scope.vars[s.name] = {.Variable, name}
     }
     case Return: {
         if e, ok := s.expr.(ExprId); ok {
-            r, returns := reduce_expr_to_single_value(c, cg_expr(c, e));
-            assert(returns);
-            ret_ty_str := ty_to_llvm_str(c, expr_ty(e))
+            ret_tid := expr_ty(e)
 
-            switch c.cur_fn_ret.mode {
-            case .Indirect: {
-                // caller-allocated slot, already passed in as %.sret
-                cwritefln(c, "\tstore %s %s, ptr %s", ret_ty_str, r, "%.sret")
+            if c.cur_fn_ret.mode == .Indirect && is_memory_type(ret_tid) {
+                // Large aggregate return: construct directly into the
+                // caller's sret slot (or memcpy from a local) — no SSA copy.
+                cg_expr_into(c, e, "%.sret")
                 cwriteln(c, "\tret void")
-            }
-            case .Direct: {
-                if c.cur_fn_ret.needs_coercion {
-                    slot := new_tmp(c)
-                    cwritefln(c, "\t%s = alloca %s", slot, ret_ty_str)
-                    cwritefln(c, "\tstore %s %s, ptr %s", ret_ty_str, r, slot)
-                    coerced := new_tmp(c)
-                    cwritefln(c, "\t%s = load %s, ptr %s", coerced, c.cur_fn_ret.coerced_type, slot)
-                    cwritefln(c, "\tret %s %s", c.cur_fn_ret.coerced_type, coerced)
-                } else {
-                    cwritefln(c, "\tret %s %s", ret_ty_str, r)
+            } else {
+                r, returns := reduce_expr_to_single_value(c, cg_expr(c, e));
+                assert(returns);
+                ret_ty_str := ty_to_llvm_str(c, ret_tid)
+
+                switch c.cur_fn_ret.mode {
+                case .Indirect: {
+                    // caller-allocated slot, already passed in as %.sret
+                    cwritefln(c, "\tstore %s %s, ptr %s", ret_ty_str, r, "%.sret")
+                    cwriteln(c, "\tret void")
                 }
-            }
+                case .Direct: {
+                    if c.cur_fn_ret.needs_coercion {
+                        slot := new_entry_alloca(c, ret_ty_str)
+                        cwritefln(c, "\tstore %s %s, ptr %s", ret_ty_str, r, slot)
+                        coerced := new_tmp(c)
+                        cwritefln(c, "\t%s = load %s, ptr %s", coerced, c.cur_fn_ret.coerced_type, slot)
+                        cwritefln(c, "\tret %s %s", c.cur_fn_ret.coerced_type, coerced)
+                    } else {
+                        cwritefln(c, "\tret %s %s", ret_ty_str, r)
+                    }
+                }
+                }
             }
         } else {
             cwriteln(c, "\tret void")
         }
     }
     case Assignment: {
-        value, returns := reduce_expr_to_single_value(c, cg_expr(c, s.value))
-        assert(returns)
-        target_ptr := cg_addr(c, s.target)
-        cwritefln(c, "\tstore %s %s, ptr %s",
-            ty_to_llvm_str(c, expr_ty(s.target)), value, target_ptr)
+        target_tid := expr_ty(s.target)
+        if is_memory_type(target_tid) {
+            size := int(type_size(target_tid))
+            if is_addressable(c, s.value) {
+                // memory -> memory. memmove, since `a = a` (or overlapping
+                // views of the same object) is legal and memcpy forbids it.
+                src := cg_addr(c, s.value)
+                dst := cg_addr(c, s.target)
+                cg_memmove(c, dst, src, size)
+            } else {
+                // Evaluate into a temporary first: the expression may read
+                // the target (`t = {a = t.b}`), so it can't be built in
+                // place.
+                tmp := new_entry_alloca(c, ty_to_llvm_str(c, target_tid))
+                cg_expr_into(c, s.value, tmp)
+                dst := cg_addr(c, s.target)
+                cg_memcpy(c, dst, tmp, size)
+            }
+        } else {
+            value, returns := reduce_expr_to_single_value(c, cg_expr(c, s.value))
+            assert(returns)
+            target_ptr := cg_addr(c, s.target)
+            cwritefln(c, "\tstore %s %s, ptr %s",
+                ty_to_llvm_str(c, expr_ty(s.target)), value, target_ptr)
+        }
     }
     case:panic("impl");
     }
@@ -808,8 +900,9 @@ cg_iter_parts :: proc(c: ^CGCtx, id: ExprId) -> (data_ptr: string, len_v: string
     #partial switch ty.kind {
     case .FixedSizeArray:
         // iterates the array in place (no copy): the address is the data
-        // pointer, the length is a compile-time constant.
-        return cg_addr(c, id),
+        // pointer, the length is a compile-time constant. (An rvalue array,
+        // e.g. `for x in make_arr()`, is written to a temporary first.)
+        return cg_value_addr(c, id),
                fmt.aprintf("%d", ty.fixed_size_array.size, allocator = get_ctx().allocator),
                ty.fixed_size_array.type
 
@@ -844,9 +937,10 @@ cg_data_ptr :: proc(c: ^CGCtx, id: ExprId) -> (ptr: string, elem_ty_str: string)
     // cwritefln(c, "\t; cg_data_ptr expr tye: %s", tts(expr_ty(id)));
     #partial switch ty.kind {
     case .FixedSizeArray:
-        // arrays are always addressable, never SSA values — get its address,
-        // which (with opaque pointers) already IS "pointer to element 0"
-        return cg_addr(c, id), ty_to_llvm_str(c, ty.fixed_size_array.type)
+        // arrays always live in memory, never SSA values — get its address,
+        // which (with opaque pointers) already IS "pointer to element 0".
+        // An rvalue array (e.g. `make_arr()[3]`) is spilled to a temporary.
+        return cg_value_addr(c, id), ty_to_llvm_str(c, ty.fixed_size_array.type)
 
     case .Slice: {
         // slices are a small by-value {ptr, i64} — get the value however it
@@ -898,14 +992,16 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
     case Symbol: {
         v := cgscope_get(&c.scope, e.name)
         if v.kind == .Variable do return v.name
-        if v.kind == .Argument do return v.name
+        if v.kind == .Argument do panic("arguments can't have an address.");// return v.name
 
         panic("impl");
         // args aren't addressable — can't assign to a by-value param
         // can however if args is a ptr/array
     }
     case FieldAccess: {
-        base_ptr := cg_addr(c, e.target)
+        // cg_value_addr: for a real lvalue this is just cg_addr; an rvalue
+        // struct (`make_terrain().pixels[3]`) is spilled to a temporary.
+        base_ptr := cg_value_addr(c, e.target)
         base_ty := expr_ty(e.target)
         ty := get_type(base_ty)
 
@@ -1091,6 +1187,11 @@ cg_fn_declaration :: proc(c: ^CGCtx, i: Item, id: ItemId, is_extern := false, de
 //
 // The caller owns the scope: c.scope must already be a fresh scope with
 // the right parent (parameters are bound into it by cg_fn_header).
+//
+// The body is generated into a separate builder so that every alloca made
+// along the way (locals, big temporaries, sret slots — see c.allocas) can
+// be written in one block right after the prologue, i.e. in the entry
+// block, before the body text.
 cg_fn_definition :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string, block: Block, internal := false) {
     old_ret := c.cur_fn_ret
 
@@ -1116,6 +1217,18 @@ cg_fn_definition :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string, block: Blo
             c.scope.vars[a.name] = {.Argument, loaded}
         }
     }
+
+    // from here on: body -> its own builder, allocas -> their own builder
+    outer_b := c.b
+    saved_allocas := c.allocas
+
+    alloca_b: strings.Builder
+    strings.builder_init(&alloca_b, get_ctx().allocator)
+    body_b: strings.Builder
+    strings.builder_init(&body_b, get_ctx().allocator)
+
+    c.b = &body_b
+    c.allocas = &alloca_b
 
     block_ends := false
 
@@ -1148,6 +1261,13 @@ cg_fn_definition :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string, block: Blo
             cwriteln(c, "\tret void")
         }
     }
+
+    // restore, then splice: entry allocas first, then the body
+    c.b = outer_b
+    c.allocas = saved_allocas
+
+    cwrite(c, strings.to_string(alloca_b))
+    cwrite(c, strings.to_string(body_b))
     cwriteln(c, "}")
 
     c.cur_fn_ret = old_ret
@@ -1324,8 +1444,15 @@ cg_globals_init :: proc(c: ^CGCtx, mid: ModId, items: []ItemId) {
         if !ok do continue
 
         objid := get_ctx().item_objects[id]
-        ty_str := ty_to_llvm_str(c, get_ctx().objs[objid].type.(TypeId))
+        gtid := get_ctx().objs[objid].type.(TypeId)
+        ty_str := ty_to_llvm_str(c, gtid)
         name := get_ctx().cg_item_names[id]
+
+        if is_memory_type(gtid) {
+            // large aggregate global: build it straight into the global
+            cg_expr_into(c, g.value, aprintf(c, "@%s", name))
+            continue
+        }
 
         value, returns := reduce_expr_to_single_value(c, cg_expr(c, g.value))
         if !returns {
@@ -1476,7 +1603,7 @@ cg_module :: proc(m: ModId) {
     strings.builder_init(&sb)
     defer strings.builder_destroy(&sb)
     cgctx.b = &sb
-    cgctx.strings = make(map[string]StringGlobalResult, allocator=get_ctx().allocator);
+    cgctx.cg_strings = make(map[string]StringGlobalResult, allocator=get_ctx().allocator);
     cgctx.break_labels = make(map[StmtId]string, allocator=get_ctx().allocator);
     cgctx.continue_labels = make(map[StmtId]string, allocator=get_ctx().allocator);
     cgctx.lambdas = make([dynamic]string, allocator=get_ctx().allocator);
@@ -1493,6 +1620,13 @@ cg_module :: proc(m: ModId) {
     fmt.sbprintfln(cgctx.b, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"");
     fmt.sbprintfln(cgctx.b, "target triple = \"x86_64-pc-linux-gnu\" ");
 
+    // memory intrinsics used by cg_memcpy / cg_memmove / cg_memset.
+    // Declared unconditionally: an unused `declare` costs nothing, and one
+    // can't be emitted lazily from inside a function body.
+    fmt.sbprintfln(cgctx.b, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)")
+    fmt.sbprintfln(cgctx.b, "declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)")
+    fmt.sbprintfln(cgctx.b, "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)")
+
 
     // structs need to be declared first??
     cg_items_dec(&cgctx, ast.items);
@@ -1504,7 +1638,7 @@ cg_module :: proc(m: ModId) {
         t := new_tmp(&cgctx,p="string", symbol=true)
         v := emit_string_global(t, s);
         cwritefln(&cgctx, "%s", v.ir);
-        cgctx.strings[s] = v;
+        cgctx.cg_strings[s] = v;
     }
 
     // gen
@@ -1609,6 +1743,7 @@ cg_module :: proc(m: ModId) {
     }
 
     {
+        debugln("compiling:", name);
         o_name := aprintf(c, ".gala_build/%s.o", name)
 
         // compile optimised LLVM IR
@@ -1619,17 +1754,21 @@ cg_module :: proc(m: ModId) {
             opt_name,
             "-o", o_name,
         }});
+        debugln("started:", name);
 
         if err != .NONE {
             debugln( "llc", "-filetype=obj", "-O2", opt_name, "-o", o_name,)
             gala_panic("Failed to start llc process:", err);
         }
 
+        debugln("waiting:", name);
+        debugln( "llc", "-filetype=obj", "-O2", opt_name, "-o", o_name,)
         p_state, werr := os.process_wait(p)
         if werr != .NONE {
             gala_panic("Failed to wait for llc process:", werr);
         }
 
+        debugln("finished:", name);
         if p_state.exit_code != 0 {
             gala_panic(
                 "Failed to compile llvm ir. exit code:",
