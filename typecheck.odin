@@ -507,23 +507,16 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         left_ty  := expr_ty(e.left);
         right_ty := expr_ty(e.right);
 
-        debugln("------------");
-        debugln("BEFORE TYPE:", tts(left_ty), tts(right_ty));
         ty, ok, s := compare_and_reduce_types(left_ty, right_ty);
         if !ok {
             highlight_lines(get_span(id))
             gala_panic(s, tts(left_ty), "vs", tts(right_ty))
         }
-        highlight_lines(get_span(id));
-        debugln("REDUCED TYPE:", tts(ty));
         /*if is_untyped(ty) {
             ty = get_untyped_default(ty);
         }*/
-        debugln("BEFORE PROP:", tts(expr_ty(e.left)), tts(expr_ty(e.right)));
         propagate_type(ty, e.left);
         propagate_type(ty, e.right);
-        propagate_type(ty, id);
-        debugln("AFTER PROP:", tts(expr_ty(e.left)), tts(expr_ty(e.right)));
 
         switch e.kind {
         case .Addition, .Subtraction, .Multiply, .Divide, .Modulo: {
@@ -559,7 +552,6 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         case .NotEqual, .Equal: {
             if is_untyped(ty) {
                 ty = get_untyped_default(ty);
-                debugln("UNTYPED IN COMP:", tts(ty));
                 // force operands to resolve first
                 propagate_type(ty, e.left);
                 propagate_type(ty, e.right);
@@ -584,10 +576,8 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             }
 
 
-            debugln("AFTER COMP:", tts(expr_ty(e.left)), tts(expr_ty(e.right)));
             bool_ty := ty_from_name("bool");
             get_ctx().expr_types[id] = bool_ty;
-            debugln("END COMP:", tts(expr_ty(e.left)), tts(expr_ty(e.right)));
         }
         case .LessEqual, .GreaterEqual, .Less, .Greater: {
             if is_untyped(ty) {
@@ -1052,6 +1042,11 @@ propagate_type :: proc(ty: TypeId, expr: ExprId) {
         return // already should have a type
     }
     case Binop: {
+        t, ok := get_ctx().expr_types[expr];
+        if ok {
+            if !is_untyped(t) do return // skip if it's been assigned a type
+        }
+        // else propagate and set self
         propagate_type(ty, e.left)
         propagate_type(ty, e.right)
     }

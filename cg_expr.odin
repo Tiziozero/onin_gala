@@ -226,6 +226,38 @@ cg_expr_into :: proc(c: ^CGCtx, id: ExprId, dest: string) {
     cwritefln(c, "\tstore %s %s, ptr %s", ty_str, v, dest)
 }
 
+// Short-circuit && / ||. The result goes through an entry-block i1 slot
+// rather than a phi, so nested logical ops (which add blocks) stay correct.
+cg_logical :: proc(c: ^CGCtx, e: Binop) -> CGExprRes {
+    is_and := e.kind == .LogicalAnd
+
+    slot := new_entry_alloca(c, "i1")
+    n := next_tmp_index(c)
+    rhs_l := aprintf(c, "logic.rhs.%d", n)
+    end_l := aprintf(c, "logic.end.%d", n)
+
+    l, lok := reduce_expr_to_single_value(c, cg_expr(c, e.left))
+    assert(lok)
+    cwritefln(c, "\tstore i1 %s, ptr %s", l, slot)
+    if is_and {
+        // false -> result already stored, skip rhs
+        cwritefln(c, "\tbr i1 %s, label %%%s, label %%%s", l, rhs_l, end_l)
+    } else {
+        // true -> result already stored, skip rhs
+        cwritefln(c, "\tbr i1 %s, label %%%s, label %%%s", l, end_l, rhs_l)
+    }
+
+    cwritefln(c, "%s:", rhs_l)
+    r, rok := reduce_expr_to_single_value(c, cg_expr(c, e.right))
+    assert(rok)
+    cwritefln(c, "\tstore i1 %s, ptr %s", r, slot)
+    cwritefln(c, "\tbr label %%%s", end_l)
+
+    cwritefln(c, "%s:", end_l)
+    t := new_tmp(c)
+    cwritefln(c, "\t%s = load i1, ptr %s", t, slot)
+    return {kind=.Value, v=t}
+}
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     switch e in get_expr(id) {
     case TypeIdOf: {
@@ -560,18 +592,21 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         return {kind=.Number, v=aprintf(c, "%d", n)}
     }
     case Binop: {
+        if e.kind == .LogicalAnd || e.kind == .LogicalOr {
+            return cg_logical(c, e)
+        }
         left_ty := expr_ty(e.left)
         right_ty := expr_ty(e.right)
 
         left_is_ptr := is_pointer(left_ty)
         right_is_ptr := is_pointer(right_ty)
 
+        assert(left_ty == right_ty, "expresiions in binop must have the same type")
+
         // ---- pointer arithmetic / pointer comparison ----
         // Operands are always the same type in a Binop, so if either side is
         // a pointer, both are.
         if left_is_ptr || right_is_ptr {
-            debugln(tts(left_ty), tts(right_ty))
-            highlight_lines(get_span(id));
             assert(left_is_ptr && right_is_ptr, "pointer binop requires both operands to be pointers")
 
             l_res := cg_expr(c, e.left)
@@ -586,7 +621,6 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             // `null`). Feed those straight into the i64 math instead;
             // only reduce+ptrtoint values that are real pointers.
             to_i64 :: proc(c: ^CGCtx, res: CGExprRes) -> string {
-                debugln("ptr to int for", res);
                 /* if res.kind == .Number {
                     return res.v
                 } */
@@ -681,7 +715,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .Multiply:     op = "fmul"
             case .Divide:       op = "fdiv"
             case .Equal:        op = "fcmp oeq"
-            case .NotEqual:     op = "fcmp one"
+            case .NotEqual:     op = "fcmp une"
             case .LessEqual:    op = "fcmp ole"
             case .GreaterEqual: op = "fcmp oge"
             case .Less:         op = "fcmp olt"
