@@ -88,8 +88,6 @@ cg_fn_lit :: proc(c: ^CGCtx, id: ExprId, e: FnLit) -> CGExprRes {
 }
 
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
-    span := get_span(id).span
-    data := get_file_lines(get_ctx().current_file, span)
     switch e in get_expr(id) {
     case TypeIdOf: {
         // same resolution slot Sizeof uses for its type specifier
@@ -348,8 +346,9 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         return {kind=.Value, v=t};
     }
     case Number: {
-        if is_float(expr_ty(id)) {
-            #partial switch get_type(expr_ty(id)).kind {
+        ty_id := expr_ty(id)
+        if is_float(ty_id) {
+            #partial switch get_type(ty_id).kind {
             case .Flt64: {
                 f, ok := strconv.parse_f64(e.text)
                 assert(ok)
@@ -366,6 +365,12 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
 
         n, ok := parse_integer_literal(e.text)
         assert(ok)
+        if get_type(ty_id).kind == .Pointer {
+            if n == 0 {
+                return {kind=.Number, v="null"}
+            }
+            return {kind=.Number, v=aprintf(c, "inttoptr (i64 %d to ptr)", n)}
+        }
 
         return {kind=.Number, v=aprintf(c, "%d", n)}
     }

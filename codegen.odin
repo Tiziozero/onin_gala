@@ -41,6 +41,14 @@ CGExprRes :: struct {
     }
 }
 
+// A global variable whose LLVM definition line hasn't been written yet.
+// cg_items_dec records these; cg_globals_dec writes them once every struct
+// type has a name (see cg_globals_dec).
+PendingGlobal :: struct {
+    id:       ItemId,
+    external: bool, // true -> `external global` (declared by an importer)
+}
+
 CGCtx :: struct {
     arena: ^mem.Dynamic_Arena,
     b: ^strings.Builder,
@@ -70,6 +78,14 @@ CGCtx :: struct {
     declared_items: map[ItemId]bool, // items whose declaration was handled
     declared_mods: map[ModId]bool,   // modules whose items were already walked
     emitted_externs: map[string]bool, // C symbol names already `declare`d
+
+    // ---- globals ----
+    // Collected by cg_items_dec, written by cg_globals_dec once all types exist.
+    pending_globals: [dynamic]PendingGlobal,
+    // Imported modules that have globals, in post-order (a module's own
+    // imports come before it). The entry `main` wrapper calls their
+    // __init_globals functions in this order.
+    init_mods: [dynamic]ModId,
 }
 CGObjectKind :: enum {
     Invalid,
@@ -252,7 +268,7 @@ aprintf :: proc(c: ^CGCtx, format: string, data: ..any) -> string {
 cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
     v, ok := reduce_expr_to_single_value(c, cg_expr(c,id));
     if !ok {
-        highlight_lines(get_span(id).span);
+        highlight_lines(get_span(id));
         gala_panic("Expression can't be void/must return.");
     } else {
         return v;
@@ -814,7 +830,7 @@ cg_iter_parts :: proc(c: ^CGCtx, id: ExprId) -> (data_ptr: string, len_v: string
         return p, l, byte_type()
 
     case:
-        highlight_lines(get_span(id).span)
+        highlight_lines(get_span(id))
         gala_panic("for: expression is not iterable (expected array, slice or string)")
     }
 }
@@ -936,7 +952,7 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
     }
     case:
         debugln(get(id))
-        highlight_lines(get_span(id).span);
+        highlight_lines(get_span(id));
         panic("not an lvalue")
     }
 }
@@ -1141,6 +1157,9 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
     case Import: {} // ok
     case StructDec: {
     }
+    case GlobalVarDec: {
+        // declared by cg_globals_dec, initialised by cg_globals_init
+    }
     case ExternFnDec: {
         // cg_items_dec may already have declared this C symbol while walking
         // an import; LLVM rejects a second `declare` of the same name.
@@ -1176,7 +1195,7 @@ check_rets :: proc(b: Block) -> bool {
 }
 check_fn :: proc(f: FnDec) -> bool {
     if !check_rets(f.block) {
-        highlight_lines(f.span);
+        highlight_lines(get_ctx().current_file, f.span);
         gala_panic("function must return at all branches")
     }
     return true
@@ -1251,6 +1270,85 @@ emit_string_global :: proc(name: string, content: string) -> StringGlobalResult 
         s           = name,
     }
 }
+
+// ---- global variables ----
+//
+// A top-level `x := expr;` / `x: T = expr;` becomes an LLVM global
+// `@<mod prefix>.x = global T zeroinitializer` in the module that defines it
+// (`external global T` in every module that imports it). Its initialiser
+// runs at startup in a per-module `__init_globals` function, in declaration
+// order; the entry `main` wrapper calls the imported modules' init functions
+// first (post-order over the import graph), then its own, then gala `main`.
+//
+// In scope a global is a `.Variable` whose name is the `@global` address, so
+// the existing load-on-read / store-through-address paths work unchanged.
+
+items_have_globals :: proc(items: []ItemId) -> bool {
+    for id in items {
+        if _, ok := get_item(id).(GlobalVarDec); ok do return true
+    }
+    return false
+}
+
+// "@gala.mod_src_foo.__init_globals"
+mod_init_name :: proc(c: ^CGCtx, mid: ModId) -> string {
+    mod_prefix, ok := get_ctx().cg_module_prefix[mid]
+    if !ok {
+        module := get_ctx().mods[mid]
+        mod_prefix = mod_prefix_from_path(module.path, prefix="gala.mod")
+        get_ctx().cg_module_prefix[mid] = mod_prefix
+    }
+    return aprintf(c, "@%s.__init_globals", mod_prefix)
+}
+
+// Writes the `@global = [external] global T` lines. Runs after cg_items_dec
+// so every struct type already has its LLVM name (a global may use a struct
+// declared later in the file, or in a later import).
+cg_globals_dec :: proc(c: ^CGCtx) {
+    for g in c.pending_globals {
+        objid := get_ctx().item_objects[g.id]
+        ty_str := ty_to_llvm_str(c, get_ctx().objs[objid].type.(TypeId))
+        name := get_ctx().cg_item_names[g.id]
+        if g.external {
+            cwritefln(c, "@%s = external global %s", name, ty_str)
+        } else {
+            cwritefln(c, "@%s = global %s zeroinitializer", name, ty_str)
+        }
+    }
+}
+
+// Emits this module's init function: evaluates each global's initialiser in
+// declaration order and stores it into the global.
+cg_globals_init :: proc(c: ^CGCtx, mid: ModId, items: []ItemId) {
+    old_ret := c.cur_fn_ret
+
+    cwritef(c, "define void %s() ", mod_init_name(c, mid))
+    cwriteln(c, "{")
+    cwriteln(c, "entry:")
+
+    for id in items {
+        g, ok := get_item(id).(GlobalVarDec)
+        if !ok do continue
+
+        objid := get_ctx().item_objects[id]
+        ty_str := ty_to_llvm_str(c, get_ctx().objs[objid].type.(TypeId))
+        name := get_ctx().cg_item_names[id]
+
+        value, returns := reduce_expr_to_single_value(c, cg_expr(c, g.value))
+        if !returns {
+            highlight_lines(get_span(g.value))
+            gala_panic("Global initialiser must produce a value.")
+        }
+        cwritefln(c, "\tstore %s %s, ptr @%s", ty_str, value, name)
+    }
+
+    cwriteln(c, "\tret void")
+    cwriteln(c, "}")
+    cwriteln(c, "")
+
+    c.cur_fn_ret = old_ret
+}
+
 // Writes the type definitions and function prototypes this module needs,
 // including everything reachable through its imports.
 //
@@ -1288,6 +1386,13 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
             ctx.declared_mods[mid] = true // mark before recursing so cycles terminate
             m := get_ctx().mods[mid];
             cg_items_dec(ctx, m.ast.items, true); // gen items into this
+
+            // Post-order: this module's own imports were appended during the
+            // recursion above, so they run before it.
+            if items_have_globals(m.ast.items) {
+                append(&ctx.init_mods, mid)
+                cwritefln(ctx, "declare void %s()", mod_init_name(ctx, mid))
+            }
             cwritefln(ctx, "; end")
             debugln("Declared decs for mod", i.fname);
         }
@@ -1308,6 +1413,18 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
                 }
             }
             cwriteln(c, "}")
+        }
+        case GlobalVarDec: {
+            if ctx.declared_items[id] do continue
+            ctx.declared_items[id] = true
+
+            // Bind now (so later code can look the name up); the actual
+            // `@x = global ...` line is written by cg_globals_dec once every
+            // struct type has a name. A global is an address, so it's a
+            // .Variable: loads/stores go through `ptr @name`.
+            name := mod_item_obj_name(ctx, id)
+            ctx.scope.vars[i.name] = {.Variable, aprintf(ctx, "@%s", name)}
+            append(&ctx.pending_globals, PendingGlobal{id = id, external = is_import})
         }
         case FnDec: { 
             if ctx.declared_items[id] do continue
@@ -1377,6 +1494,8 @@ cg_module :: proc(m: ModId) {
     cgctx.declared_items = make(map[ItemId]bool, allocator=get_ctx().allocator);
     cgctx.declared_mods = make(map[ModId]bool, allocator=get_ctx().allocator);
     cgctx.emitted_externs = make(map[string]bool, allocator=get_ctx().allocator);
+    cgctx.pending_globals = make([dynamic]PendingGlobal, allocator=get_ctx().allocator);
+    cgctx.init_mods = make([dynamic]ModId, allocator=get_ctx().allocator);
     cgctx.scope = new_gcscope(nil);
 
 
@@ -1389,6 +1508,9 @@ cg_module :: proc(m: ModId) {
     // structs need to be declared first??
     cg_items_dec(&cgctx, ast.items);
 
+    // globals go after all type definitions (see cg_globals_dec)
+    cg_globals_dec(&cgctx)
+
     for s in get_ctx().data {
         t := new_tmp(&cgctx,p="string", symbol=true)
         v := emit_string_global(t, s);
@@ -1398,6 +1520,13 @@ cg_module :: proc(m: ModId) {
 
     // gen
     cg_ast(&cgctx, ast)
+
+    // this module's global initialisers (needs the scope bindings made by
+    // cg_items_dec, so it must come before anything resets cgctx.scope)
+    has_globals := items_have_globals(ast.items)
+    if has_globals {
+        cg_globals_init(&cgctx, m, ast.items)
+    }
 
     // function literals found while generating the items above were
     // generated into their own builders (see cg_fn_lit); emit them now.
@@ -1413,6 +1542,17 @@ cg_module :: proc(m: ModId) {
         name := get_ctx().cg_item_names[main_id];
         entry := aprintf(&cgctx, "@%s", name)
 
+        // Global initialisers: imported modules first (post-order), then ours.
+        init_sb: strings.Builder
+        strings.builder_init(&init_sb, get_ctx().allocator)
+        for mid in cgctx.init_mods {
+            fmt.sbprintfln(&init_sb, "            call void %s()", mod_init_name(&cgctx, mid))
+        }
+        if has_globals {
+            fmt.sbprintfln(&init_sb, "            call void %s()", mod_init_name(&cgctx, m))
+        }
+        init_calls := strings.to_string(init_sb)
+
         // The C `main` wrapper has to match gala main's real return type.
         // Calling a `void` gala main as `i32` leaves the process exit status
         // as whatever happened to be in eax (this used to exit with the last
@@ -1423,14 +1563,14 @@ cg_module :: proc(m: ModId) {
         #partial switch main_ret_kind {
         case .Void:
             fmt.sbprintfln(cgctx.b,` define i32 @main(i32 %%argc, ptr %%argv) {{
-            call void %s()
+%s            call void %s()
             ret i32 0
-        }`, entry);
+        }`, init_calls, entry);
         case .Int32:
             fmt.sbprintfln(cgctx.b,` define i32 @main(i32 %%argc, ptr %%argv) {{
-            %%result = call i32 %s()
+%s            %%result = call i32 %s()
             ret i32 %%result
-        }`, entry);
+        }`, init_calls, entry);
         case:
             gala_panic("`main` must return void or i32")
         }
@@ -1458,21 +1598,10 @@ cg_module :: proc(m: ModId) {
     {
         // mem2reg
         p, err := os.process_start({command={
-            "opt",
-            "-passes=mem2reg",
-            ll_name,
-            "-S",
-            "-o", opt_name,
-        }});
+            "opt", "-passes=mem2reg", ll_name, "-S", "-o", opt_name, }});
 
         if err != .NONE {
-            debugln(
-                "opt",
-                "-passes=mem2reg",
-                ll_name,
-                "-S",
-                "-o", opt_name,
-            )
+            debugln( "opt", "-passes=mem2reg", ll_name, "-S", "-o", opt_name,)
             gala_panic("Failed to start LLVM opt process:", err);
         }
 
@@ -1482,10 +1611,9 @@ cg_module :: proc(m: ModId) {
         }
 
         if p_state.exit_code != 0 {
-            gala_panic(
-                "Failed to optimise LLVM IR. exit code:",
-                p_state.exit_code, "for:", opt_name
-            );
+            debugln( "opt", "-passes=mem2reg", ll_name, "-S", "-o", opt_name,)
+            gala_panic( "Failed to optimise LLVM IR. exit code:",
+                p_state.exit_code, "for:", opt_name);
         }
 
         debugln("opt exit code:", p_state.exit_code);

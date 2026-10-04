@@ -54,11 +54,11 @@ Context :: struct {
 
 
     spans: struct {
-        exprs: map[ExprId]struct{file_name: string, span: Span},
-        stmts: map[StmtId]struct{file_name: string, span: Span},
-        items: map[ItemId]struct{file_name: string, span: Span},
+        exprs: map[ExprId]SpanStruct,
+        stmts: map[StmtId]SpanStruct,
+        items: map[ItemId]SpanStruct,
         // includes item decs + regular vardecs since both use ObjId
-        objs_decs: map[ObjId]struct{file_name: string, span: Span},
+        objs_decs: map[ObjId]SpanStruct,
     },
     files:                                  map[string]string,
     parsing:                                map[string]string,
@@ -123,9 +123,14 @@ highlight_lines_span :: proc(span:Span) {
     lines := get_file_lines(f, span);
     print_lines(lines, span);
 }
+highlight_lines_struct :: proc(span:SpanStruct) {
+    f := span.file_name
+    lines := get_file_lines(f, span.span);
+    print_lines(lines, span.span);
+}
 highlight_lines :: proc {
-    highlight_lines_span,
     highlight_lines_file_name,
+    highlight_lines_struct,
 }
 print_lines :: proc(lines: []FileLine, highlight: Span = {0, 0}) {
     has_highlight := highlight.start != highlight.end
@@ -232,8 +237,8 @@ get_span :: proc {
     get_span_item,
     get_span_obj,
 }
-
-get_span_expr :: proc(id: ExprId) -> struct{file_name: string, span: Span} {
+SpanStruct :: struct{file_name: string, span: Span}
+get_span_expr :: proc(id: ExprId) -> SpanStruct {
     get_ctx := get_ctx()
     s, ok := get_ctx.spans.exprs[id]
     if !ok {
@@ -242,7 +247,7 @@ get_span_expr :: proc(id: ExprId) -> struct{file_name: string, span: Span} {
     return s
 }
 
-get_span_stmt :: proc(id: StmtId) -> struct{file_name: string, span: Span} {
+get_span_stmt :: proc(id: StmtId) -> SpanStruct {
     get_ctx := get_ctx()
     s, ok := get_ctx.spans.stmts[id]
     if !ok {
@@ -251,7 +256,7 @@ get_span_stmt :: proc(id: StmtId) -> struct{file_name: string, span: Span} {
     return s
 }
 
-get_span_item :: proc(id: ItemId) -> struct{file_name: string, span: Span} {
+get_span_item :: proc(id: ItemId) -> SpanStruct {
     get_ctx := get_ctx()
     s, ok := get_ctx.spans.items[id]
     if !ok {
@@ -260,7 +265,7 @@ get_span_item :: proc(id: ItemId) -> struct{file_name: string, span: Span} {
     return s
 }
 
-get_span_obj :: proc(id: ObjId) -> struct{file_name: string, span: Span} {
+get_span_obj :: proc(id: ObjId) -> SpanStruct {
     get_ctx := get_ctx()
     s, ok := get_ctx.spans.objs_decs[id]
     if !ok {

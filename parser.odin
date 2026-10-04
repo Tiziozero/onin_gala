@@ -1,6 +1,6 @@
 package main
 
-import "core:debug/trace"
+import "core:fmt"
 import "core:strconv"
 
 BinopKind :: enum {
@@ -180,6 +180,11 @@ Parser::struct{
     i: int,
 
     ignore_struct_lit: bool,
+
+    // Hidden top-level items created while parsing the current top-level
+    // item (see make_default_thunk). parse_tokens moves them into the item
+    // list, ahead of the item that caused them.
+    extra_items: [dynamic]ItemId,
 }
 op_kind :: proc(t: Token) -> (kind: BinopKind, ok: bool) {
     switch t.text {
@@ -246,7 +251,7 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
             expect_symbol(p, "=");
             expr:=parse_expr(p);
             if f, ok := fields[fname.text]; ok {
-                highlight_lines(fname.span)
+                highlight_lines(get_ctx().current_file, fname.span)
                 gala_panic("duplicate fields.");
             }
             fields[fname.text] = {expr, fname.span}
@@ -267,7 +272,7 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
         open_b := consume_token(p); // "["
         n := consume_token(p); // number
         if n.kind != .Number {
-            highlight_lines(n.span);
+            highlight_lines(get_ctx().current_file, n.span);
             gala_panic("expected number for fixed size array init");
         }
         size, ok := strconv.parse_int(n.text); assert(ok);
@@ -299,7 +304,7 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
         span := Span{start=open_b.span.start, end=end.span.end}
 
         if len(elems) > size {
-            highlight_lines(span)
+            highlight_lines(get_ctx().current_file, span)
             gala_panic("too many elements in array initialiser")
         }
 
@@ -575,11 +580,10 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         return id;
     // "for name in obj {..."
     } else if is_kw(current_token(p), .For) {
-        debugln("parsing for");
         token := consume_token(p); // "for"
         ident := expect_ident(p);
         if !is_kw(current_token(p), .In) {
-            highlight_lines(current_token(p).span);
+            highlight_lines(get_ctx().current_file, current_token(p).span);
             gala_panic("Expected \"in\".");
         }
         in_kw := consume_token(p);
@@ -751,7 +755,7 @@ parse_fn_lit :: proc(p: ^Parser) -> ExprId {
         lit.block = parse_block(p)
         end_pos = prev_token_span(p).end // the closing "}"
     } else {
-        highlight_lines(current_token(p).span)
+        highlight_lines(get_ctx().current_file, current_token(p).span)
         gala_panic("Expected '{' or '=>' after function literal signature.")
     }
 
@@ -901,7 +905,7 @@ parse_primary :: proc(p: ^Parser) -> ExprId {
         }
         return id
     }
-    highlight_lines(current_token(p).span);
+    highlight_lines(get_ctx().current_file, current_token(p).span);
     gala_panic("invalid primary token")
 }
 parse_block :: proc(p: ^Parser) -> Block{
@@ -916,9 +920,9 @@ parse_block :: proc(p: ^Parser) -> Block{
     return Block{stmts=stmts[:]}
 }
 
-// `default` is set for `name: type = <expr>` parameters. The expression is
-// parsed here like any other; the resolver checks it's a constant expression
-// and the type checker checks it against `t`.
+// `default` is set for `name: type = <expr>` parameters. The parser never
+// stores the written expression here directly: it is moved into a hidden
+// function and `default` is a call to that function (see make_default_thunk).
 FnDecArg :: struct{name: string, t: TypeSpecifier, span: Span, default: Maybe(ExprId)}
 FnDecSignature :: struct {
     name: string,
@@ -942,6 +946,17 @@ ExternFnDec :: struct {
     using signature: FnDecSignature,
     span: Span,
 }
+// Top-level variable:
+//   counter := 0;
+//   limit: i32 = 100;
+// `type` is nil for the `:=` form (inferred by the type checker). The value
+// can be any expression: codegen runs it in a per-module init function
+// before gala `main`, in declaration order.
+GlobalVarDec :: struct {
+    name: string,
+    type: Maybe(TypeSpecifier),
+    value: ExprId,
+}
 
 Import :: struct {
     fname, alias: string,
@@ -951,6 +966,7 @@ Item :: union {
     StructDec,
     FnDec,
     ExternFnDec,
+    GlobalVarDec,
 }
 
 base_span :: proc(t: ^TypeSpecifier) -> Span {
@@ -1020,17 +1036,74 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
         t := consume_token(p); // "any"
         return AnySpecifier{span=t.span};
     }
-    highlight_lines(current_token(p).span)
+    highlight_lines(get_ctx().current_file, current_token(p).span)
     gala_panic("Invalid token in type specifier.");
 }
 
 ArgSpecs :: struct {
 }
 
+// Unique across the whole compiler run, not per file: codegen binds items
+// into its scope by *name*, and an output file sees the items of every
+// module it imports, so two modules must never produce the same thunk name.
+default_thunk_counter: int
+
+// A parameter default can be any expression, so it can't be re-evaluated at
+// the call site: it might name a global (which a local in the caller could
+// shadow), contain a function literal (which would be emitted once per call
+// site), or need the declaring module's scope. Instead it is moved into a
+// hidden top-level function
+//
+//     fn __default_N(): <param type> { return <expr>; }
+//
+// and the parameter's default becomes the call `__default_N()`. Everything
+// downstream then treats it like any other call:
+//   - the resolver resolves the expression once, in module scope (so it can
+//     see globals and functions, but not parameters or locals),
+//   - typing the call only needs the thunk's signature, never its body, so
+//     checking defaults doesn't depend on globals having been typed yet,
+//   - codegen emits one function per default and a plain call per omitted
+//     argument. The default is re-evaluated on every call that omits it.
+//
+// The thunk item is queued in p.extra_items; parse_tokens inserts it ahead of
+// the item that contains the signature.
+make_default_thunk :: proc(p: ^Parser, ty: TypeSpecifier, expr: ExprId) -> ExprId {
+    span := get_span(expr).span
+    file := get_ctx().current_file
+
+    name := fmt.aprintf("__default_%d", default_thunk_counter, allocator=get_ctx().allocator)
+    default_thunk_counter += 1
+
+    // body: `return <expr>;`
+    ret_id := new_stmt(Stmt(Return{expr=expr}))
+    get_ctx().spans.stmts[ret_id] = {file_name=file, span=span}
+    stmts := make([dynamic]StmtId, allocator=get_ctx().allocator)
+    append(&stmts, ret_id)
+
+    f := FnDec{}
+    f.name = name
+    f.ret_ty = ty
+    f.span = span
+    f.block = Block{stmts=stmts[:]}
+    item_id := new_item(Item(f))
+    get_ctx().spans.items[item_id] = {file_name=file, span=span}
+    append(&p.extra_items, item_id)
+
+    // the new default: `__default_N()`
+    sym := new_expr(Expr(Symbol{name}))
+    get_ctx().spans.exprs[sym] = {file_name=file, span=span}
+
+    call := new_expr(FnCall{target=sym, args=make([dynamic]FnCallArg, allocator=get_ctx().allocator)})
+    get_ctx().spans.exprs[call] = {file_name=file, span=span}
+    return call
+}
+
 // Parameters are positional, so once one has a default every parameter after
 // it must too (otherwise a call couldn't leave the earlier one out).
 // Defaults can't be combined with a variadic tail: the tail would have to
 // come after the defaulted params, and there'd be no way to skip them.
+// `any` parameters can't have a default: the hidden function would have to
+// return `any`, and `any` is only accepted as a parameter type.
 parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
     f := FnDecSignature{};
     args := make([dynamic]FnDecArg, allocator=get_ctx().allocator)
@@ -1054,15 +1127,23 @@ parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
         default: Maybe(ExprId) = nil
         if is_symbol(current_token(p), "=") {
             consume_token(p); // "="
+
+            if _, is_any := ty.(AnySpecifier); is_any {
+                highlight_lines(get_ctx().current_file, name.span)
+                gala_panic("Default values aren't supported for `any` parameters.")
+            }
+
             // inside the parens, so a struct literal is unambiguous even if
             // this signature sits in an `if`/`while` condition
             prev_ignore_struct_lit := p.ignore_struct_lit
             p.ignore_struct_lit = false
-            default = parse_expr(p)
+            written := parse_expr(p)
             p.ignore_struct_lit = prev_ignore_struct_lit
+
+            default = make_default_thunk(p, ty, written)
             seen_default = true
         } else if seen_default {
-            highlight_lines(name.span)
+            highlight_lines(get_ctx().current_file, name.span)
             gala_panic("A parameter without a default value can't come after one with a default.")
         }
 
@@ -1075,7 +1156,7 @@ parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
     }
     end := expect_symbol(p, ")");
     if f.is_variadic && seen_default {
-        highlight_lines(end.span)
+        highlight_lines(get_ctx().current_file, end.span)
         gala_panic("Default parameter values can't be combined with a variadic parameter.")
     }
     f.args = args[:]
@@ -1089,7 +1170,7 @@ parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
 parse_fn_signature :: proc(p: ^Parser) -> FnDec {
     kw := consume_token(p); // "fn"
     if !(kw.kind == .Keyword && kw.kw == .Fn) {
-        highlight_lines(kw.span)
+        highlight_lines(get_ctx().current_file, kw.span)
         gala_panic("Expected \"fn\".");
     }
     name := expect_ident(p);
@@ -1101,6 +1182,32 @@ parse_fn_signature :: proc(p: ^Parser) -> FnDec {
     f.span.start = kw.span.start
     f.span.end = current_token(p).span.end;
     return f;
+}
+// Top-level `name := expr;` or `name: type = expr;`
+parse_global_var_dec :: proc(p: ^Parser) -> ItemId {
+    name := expect_ident(p)
+
+    ty: Maybe(TypeSpecifier) = nil
+    if is_symbol(current_token(p), ":=") {
+        consume_token(p) // ":="
+    } else if is_symbol(current_token(p), ":") {
+        consume_token(p) // ":"
+        ty = parse_type(p)
+        expect_symbol(p, "=")
+    } else {
+        highlight_lines(get_ctx().current_file, current_token(p).span)
+        gala_panic("Expected \":=\" or \":\" after a top-level name (only declarations are allowed at the top level).")
+    }
+
+    value := parse_expr(p)
+    end := expect_symbol(p, ";")
+
+    id := new_item(Item(GlobalVarDec{name=name.text, type=ty, value=value}))
+    get_ctx().spans.items[id] = {
+        file_name=get_ctx().current_file,
+        span={name.span.start, end.span.end},
+    }
+    return id
 }
 parse_module_kw :: proc(p: ^Parser) -> ItemId {
     #partial switch current_token(p).kw {
@@ -1168,11 +1275,11 @@ parse_module_kw :: proc(p: ^Parser) -> ItemId {
         token := consume_token(p); // "import"
         fname := consume_token(p); // file name?
         if fname.kind != .String {
-            highlight_lines(fname.span)
+            highlight_lines(get_ctx().current_file, fname.span)
             gala_panic("Expected string.");
         }
         semi := expect_symbol(p, ";"); // ";"
-        handle_file(get_ctx(), fname.text);
+        handle_file(fname.text);
         id := new_item(Item(Import{fname=fname.text}))
         get_ctx().spans.items[id] = {
             file_name=get_ctx().current_file,
@@ -1188,11 +1295,11 @@ parse_module_kw :: proc(p: ^Parser) -> ItemId {
 expect_symbol :: proc(p: ^Parser, str: string) -> Token {
     c := current_token(p);
     if c.kind != .Symbol {
-        highlight_lines(c.span);
+        highlight_lines(get_ctx().current_file, c.span);
         gala_panic("Expected symbol, got:", c);
     }
     if c.text != str {
-        highlight_lines(c.span);
+        highlight_lines(get_ctx().current_file, c.span);
         gala_panic("Expected", str, "got:", c.text);
     }
     return consume_token(p)
@@ -1200,7 +1307,7 @@ expect_symbol :: proc(p: ^Parser, str: string) -> Token {
 expect_ident :: proc(p: ^Parser) -> Token {
     c := current_token(p);
     if c.kind != .Ident {
-        highlight_lines(c.span)
+        highlight_lines(get_ctx().current_file, c.span)
         gala_panic("Expected ident got:", c);
     }
     return consume_token(p)
@@ -1209,19 +1316,33 @@ AST :: struct {
     items: []ItemId,
 }
 parse_tokens :: proc(file_name: string, tokens: []Token) -> AST {
-    _p:= Parser{file_name, tokens, 0, false};
+    _p := Parser{file=file_name, tokens=tokens}
+    _p.extra_items = make([dynamic]ItemId, allocator=get_ctx().allocator)
     p := &_p
     items := make([dynamic]ItemId, allocator=get_ctx().allocator)
     for current_token(p).kind != .EOF {
+        id: ItemId
         #partial switch current_token(p).kind {
         case .Keyword: {
-            append(&items,parse_module_kw(p));
+            id = parse_module_kw(p)
+        }
+        case .Ident: {
+            id = parse_global_var_dec(p)
         }
         case:
             debugln(current_token(p));
-            highlight_lines(current_token(p).span);
+            highlight_lines(get_ctx().current_file, current_token(p).span);
             panic("impl");
         }
+
+        // hidden default-value functions created while parsing this item go
+        // in first, so they precede the item that refers to them
+        for extra in p.extra_items {
+            append(&items, extra)
+        }
+        clear(&p.extra_items)
+
+        append(&items, id)
     }
     return AST{items=items[:]}
 }

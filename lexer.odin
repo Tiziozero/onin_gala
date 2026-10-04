@@ -108,7 +108,7 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                 }
 
                 if i == hex_start {
-                    highlight_lines(Span{start, i})
+                    highlight_lines(get_ctx().current_file, Span{start, i})
                     gala_panic("expected hexadecimal digits after 0x")
                 }
             } else {

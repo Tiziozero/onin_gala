@@ -1,16 +1,43 @@
 import "./core.gala";
 import "./rl.gala";
 struct Abc {}
+
+struct entity {
+    pos: Vector2,
+    color: Color,
+}
+entities := [10]entity{};
 fn main() {
-    InitWindow(500, 500, &("Hello from gala!.")[0]);
+    player_index := 0;
+    j := 0;
+    while j < len(entities) {
+        entities[j] = entity{pos=Vector2{x=cast(f32)GetRandomValue(0, 500),
+                                        y=cast(f32)GetRandomValue(0, 500),},
+                            color=Color{r=123, g=123, b=123, a=255}};
+        println(entities[j].pos.x, entities[j].pos.y);
+        j += 1;
+    }
+    InitWindow(500, 500, cstr("Hello from gala!."));
     SetTargetFPS(60);
     i :byte= 0;
+    v :=alloc(1024);
+    free(v);
     while !WindowShouldClose() {
+        dt := GetFrameTime();
         r : byte = i;
         b : byte = 255-i;
         g : byte = (i*i) % 255;
         BeginDrawing();
+        ClearBackground(Color{r=0, b=0, g=0, a=255});
         ClearBackground(Color{r=r, b=b, g=g, a=255});
+        for e in entities {
+            DrawRectangle(cast(i32)e.pos.x, cast(i32)e.pos.y, 50, 50, e.color);
+        }
+        pv : f32 = 200.0;
+        if IsKeyDown(KEY_A) { entities[player_index].pos.x -= pv*dt; }
+        if IsKeyDown(KEY_D) { entities[player_index].pos.x += pv*dt; }
+        if IsKeyDown(KEY_W) { entities[player_index].pos.y -= pv*dt; }
+        if IsKeyDown(KEY_S) { entities[player_index].pos.y += pv*dt; }
         EndDrawing();
         i += 1;
         i = i % 60;

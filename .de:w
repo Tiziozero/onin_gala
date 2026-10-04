@@ -861,7 +861,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             // compare return expr type with fn return type
             ty, ok, s := compare_and_reduce_types(expr_ty(e), tc.fn_ret_ty.(TypeId));
             if !ok {
-                highlight_lines(get_span(e));
+                highlight_lines(get_span(e).span);
                 gala_panic(s, tts(expr_ty(e)), "vs", tts(tc.fn_ret_ty.(TypeId)));
             }
             propagate_type(ty, e);
@@ -883,7 +883,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
         _, tyok := get_ctx().expr_types[stmt.target]; assert(tyok);
         t, ok, err := compare_and_reduce_types(expr_ty(stmt.target), expr_ty(stmt.value))
         if !ok {
-            highlight_lines(get_span(s));
+            highlight_lines(get_span(s).span);
             debugln(tts(expr_ty(stmt.target)), tts(expr_ty(stmt.value)));
             gala_panic(err);
         }
@@ -915,7 +915,7 @@ tc_global_var_dec :: proc(tc: ^TcContext, id: ItemId) {
         if is_untyped(t) {
             propagate_type(get_untyped_default(t), gd.value)
         } else if get(t).kind == .ZeroInit {
-            highlight_lines(get_ctx().current_file, span)
+            highlight_lines(span)
             gala_panic("can't have zero initialiser here. Type required")
         }
         get_obj(oid).type = expr_ty(gd.value)
@@ -923,7 +923,7 @@ tc_global_var_dec :: proc(tc: ^TcContext, id: ItemId) {
         expected := resolved_ty.(TypeId)
         t, cok, err := compare_and_reduce_types(expected, expr_ty(gd.value))
         if !cok {
-            highlight_lines(get_ctx().current_file, span)
+            highlight_lines(span)
             gala_panicf("types don't match (%s vs %s): %s",
                 tts(expected), tts(expr_ty(gd.value)), err)
         }

@@ -127,28 +127,6 @@ enclosing_module_scope :: proc(s: ^Scope) -> ^Scope {
     if sc == nil do return s // shouldn't happen, fall back to the given scope
     return sc
 }
-// Default parameter values are re-emitted at every call site that omits the
-// argument, in the *caller's* scope, so they're restricted to constant
-// expressions: literals and operators/casts over literals. That rules out
-// references to other parameters or locals (not visible at the call site),
-// calls with side effects, and function literals (which would be generated
-// once per call site).
-is_const_default_expr :: proc(id: ExprId) -> bool {
-    #partial switch e in get(id) {
-    case Number, String, BoolLitTrue, BoolLitFalse, Sizeof:
-        return true
-    case UnNegative:
-        return is_const_default_expr(e.expr)
-    case UnNot:
-        return is_const_default_expr(e.expr)
-    case Cast:
-        return is_const_default_expr(e.target)
-    case Binop:
-        return is_const_default_expr(e.left) && is_const_default_expr(e.right)
-    case:
-        return false
-    }
-}
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
     case TypeIdOf: {
@@ -221,7 +199,7 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
                 if k.name == name do found = true
             }
             if !found {
-                highlight_lines(f.span)
+                highlight_lines(get_ctx().current_file, f.span)
                 gala_panicf("Field %s doesn't exist in type %s.",
                     name, e.name);
             }
@@ -252,7 +230,7 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     case Symbol: {
         obj, ok := scope_get_object(s, e.name);
         if !ok {
-            highlight_lines(get_span(id).span);
+            highlight_lines(get_span(id));
             gala_panic("Couldn't find", e.name, "in scope.");
         }
         get_ctx().expr_objects[id] = obj
@@ -357,7 +335,7 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
         // would have no meaning for calls through a pointer of that type.
         for a in k.signature.args {
             if a.default != nil {
-                highlight_lines(a.span)
+                highlight_lines(get_ctx().current_file, a.span)
                 gala_panic("Default values aren't allowed in function types.")
             }
         }
@@ -480,7 +458,7 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 
     for f,i in sd.fields {
         if d, ok := declared[f.name]; ok {
-            highlight_lines(f.span);
+            highlight_lines(get_ctx().current_file, f.span);
             gala_panic("Field already exists.");
         }
         t := resolve_type_specifier(s, f.t);
@@ -533,10 +511,6 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
         // confusing "couldn't find in scope"), and is resolved against the
         // *outer* scope `s`, not `new_scope`, so it can't see parameters.
         if def, has_default := a.default.(ExprId); has_default {
-            if !is_const_default_expr(def) {
-                highlight_lines(get_span(def).span)
-                gala_panic("Default parameter values must be constant expressions (literals and operators on literals).")
-            }
             resolve_expr(s, def)
             arg.default = def
         }
@@ -614,6 +588,30 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     s.objects[fndec.name] = oid; // recreate link
     get_ctx().item_objects[id] = oid;
 }
+// Top-level variable. The object was forward-declared (see forward_item) so
+// functions and other globals can refer to it regardless of order; here the
+// initialiser is resolved in the module scope (so no locals/params are
+// visible) and the explicit type, if any, is resolved. For `:=` the type
+// stays nil until the type checker infers it from the initialiser.
+resolve_global_var_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
+    gd, ok := get(id).(GlobalVarDec); assert(ok)
+    oid, ook := s.obj_foreward[gd.name]; assert(ook) // make sure fd exists
+
+    resolve_expr(s, gd.value)
+
+    obj := get(oid) // gets pointer, so modify that
+    if gd.type != nil {
+        ts, tok := gd.type.(TypeSpecifier); assert(tok)
+        obj.type = resolve_type_specifier(s, ts)
+    }
+    obj.name = gd.name
+    // update object
+    get_ctx().objs[oid] = obj^
+
+    delete_key(&s.obj_foreward, gd.name); // delete fd and create object
+    s.objects[gd.name] = oid; // recreate link
+    get_ctx().item_objects[id] = oid;
+}
 forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     item := get(id)
     // foreward
@@ -647,6 +645,9 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     case StructDec:     new_type_fd(s, Type{kind=.Struct, name=i.name})
     case FnDec:         new_object_fd(s, Object{kind=.Variable, name=i.name});
     case ExternFnDec:   new_object_fd(s, Object{kind=.Variable, name=i.name});
+    // kind=.Variable on purpose: a global is addressable like any local, so
+    // the type checker and codegen treat its uses the same way.
+    case GlobalVarDec:  new_object_fd(s, Object{kind=.Variable, name=i.name});
     case:               panic("impl")
     }
 }
@@ -658,6 +659,7 @@ resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
     case StructDec:     resolve_struct_dec_item(s, id);
     case FnDec:         resolve_fn_dec_item(s, id);
     case ExternFnDec:   resolve_extern_fn_dec_item(s, id);
+    case GlobalVarDec:  resolve_global_var_dec_item(s, id);
     case:               panic("impl")
     }
 }
@@ -713,8 +715,19 @@ resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
         forward_item(&global_scope, id)
     }
 
+    // Structs first: a struct literal in a function body or a global
+    // initialiser asserts that the struct's fields are already filled in,
+    // so it mustn't matter whether the struct is declared before or after
+    // its first use in the file.
     for id in ast.items {
-        resolve_item(&global_scope, id)
+        if _, is_struct := get(id).(StructDec); is_struct {
+            resolve_item(&global_scope, id)
+        }
+    }
+    for id in ast.items {
+        if _, is_struct := get(id).(StructDec); !is_struct {
+            resolve_item(&global_scope, id)
+        }
     }
     // assign module
     get_ctx().mods[mid] = Module {

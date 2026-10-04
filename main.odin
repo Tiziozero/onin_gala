@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:path/filepath"
 import "core:strings"
 import "core:mem/virtual"
@@ -37,10 +38,10 @@ init_context :: proc(debug := false) -> ^Context {
     ctx.stmt_types   = make(map[StmtId]TypeId, allocator = al)
     ctx.expr_resolution_types = make(map[ExprId]TypeId, allocator = al)
 
-    ctx.spans.exprs = make(map[ExprId]struct{file_name: string, span: Span}, allocator = al)
-    ctx.spans.items = make(map[ItemId]struct{file_name: string, span: Span}, allocator = al)
-    ctx.spans.stmts = make(map[StmtId]struct{file_name: string, span: Span}, allocator = al)
-    ctx.spans.objs_decs = make(map[ObjId]struct{file_name: string, span: Span}, allocator = al)
+    ctx.spans.exprs = make(map[ExprId]SpanStruct, allocator = al)
+    ctx.spans.items = make(map[ItemId]SpanStruct, allocator = al)
+    ctx.spans.stmts = make(map[StmtId]SpanStruct, allocator = al)
+    ctx.spans.objs_decs = make(map[ObjId]SpanStruct, allocator = al)
 
     ctx.files = make(map[string]string, allocator = al)
     ctx.parsing = make(map[string]string, allocator = al)
@@ -101,33 +102,33 @@ resolve_import_path :: proc(importer_path: string, import_path: string) -> strin
 // Returns the resolved path, so callers (e.g. import-handling code in the
 // resolver) can use it too — e.g. to record which module an import refers
 // to.
-handle_file :: proc(ctx: ^Context, file_name: string) -> string {
-    resolved := resolve_import_path(ctx.current_file, file_name)
+handle_file :: proc(file_name: string) -> string {
+    resolved := resolve_import_path(get_ctx().current_file, file_name)
 
-    if _, ok := ctx.parsing[resolved]; ok {
+    if _, ok := get_ctx().parsing[resolved]; ok {
         gala_panicf("Cyclical imports with file: \"%s\".", resolved)
     }
-    if _, ok := ctx.modules[resolved]; ok {
+    if _, ok := get_ctx().modules[resolved]; ok {
         // Already fully parsed/resolved (e.g. two files import the same
         // dependency) — nothing more to do.
         return resolved
     }
 
-    data, err := os.read_entire_file(resolved, ctx.allocator)
+    data, err := os.read_entire_file(resolved, get_ctx().allocator)
     if err != io.Error.None {
         gala_panic("Failed to read file:", resolved)
     }
 
-    ctx.files[resolved] = string(data)
-    ctx.parsing[resolved] = string(data)
+    get_ctx().files[resolved] = string(data)
+    get_ctx().parsing[resolved] = string(data)
 
-    // Save/restore ctx.current_file around this (possibly nested) call so
+    // Save/restore get_ctx().current_file around this (possibly nested) call so
     // that once this imported file is fully handled, whoever imported it
     // goes back to resolving *its own* further imports relative to itself,
     // not to whatever file we just finished.
-    prev_file := ctx.current_file
-    ctx.current_file = resolved
-    defer ctx.current_file = prev_file
+    prev_file := get_ctx().current_file
+    fmt.println("prev file:", prev_file, "new", resolved)
+    get_ctx().current_file = resolved
 
     tokens := lex_file(data)
     defer delete(tokens)
@@ -136,9 +137,11 @@ handle_file :: proc(ctx: ^Context, file_name: string) -> string {
     mid := resolve_module_ast(&ast, resolved)
     typecheck_module(&ast)
     cg_module(mid)
-    ctx.modules[resolved] = mid
-    delete_key(&ctx.parsing, resolved)
+    get_ctx().modules[resolved] = mid
+    delete_key(&get_ctx().parsing, resolved)
 
+    fmt.println("resetting to:", prev_file, "current", get_ctx().current_file)
+    get_ctx().current_file = prev_file
     return resolved
 }
 
@@ -378,7 +381,7 @@ main :: proc() { // odins context is passed down, not up, or some shi
     // entry point is emitted. ctx.current_file is "" here, same as it will
     // be when handle_file resolves it below.
     get_ctx().entry_file = resolve_import_path("", cli.entry_file)
-    handle_file(ctx, cli.entry_file)
+    handle_file(cli.entry_file)
 
     link_executable(ctx, cli.extra_libs[:])
 
