@@ -540,7 +540,6 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             return {kind=.Value,v=v.name};
         }
         case .Invalid: {
-            debugln(string(c.b.buf[:]))
             gala_panic("invalid object");
         }
         }

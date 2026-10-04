@@ -1207,13 +1207,6 @@ cgscope_get :: proc(scope: ^CGScope, v: string) -> CGObj {
         if ok do return n
         s = s.parent
     }
-    s = scope
-    for s != nil {
-        for var in s.vars {
-            debugln("\t:", var)
-        }
-        s = s.parent
-    }
     debugln(v, "doesn't exist")
     return CGObj{kind=.Invalid}
 }
@@ -1375,12 +1368,9 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
         switch i in get_item(id) {
         case Import: {
             mid := get_ctx().item_module[id]
-            debugln("dewclared mods", ctx.declared_mods, mid)
             cwritefln(ctx, "; decs from mod %s %d", i.fname, mid)
-            debugln("decs from mods", i.fname)
             if ctx.declared_mods[mid] {
                 cwritefln(ctx, "; exst already")
-                debugln("already declared")
                 continue
             }
             ctx.declared_mods[mid] = true // mark before recursing so cycles terminate
@@ -1394,7 +1384,6 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
                 cwritefln(ctx, "declare void %s()", mod_init_name(ctx, mid))
             }
             cwritefln(ctx, "; end")
-            debugln("Declared decs for mod", i.fname);
         }
         case StructDec: {
             if ctx.declared_items[id] do continue
@@ -1632,13 +1621,7 @@ cg_module :: proc(m: ModId) {
         }});
 
         if err != .NONE {
-            debugln(
-                "llc",
-                "-filetype=obj",
-                "-O2",
-                opt_name,
-                "-o", o_name,
-            )
+            debugln( "llc", "-filetype=obj", "-O2", opt_name, "-o", o_name,)
             gala_panic("Failed to start llc process:", err);
         }
 

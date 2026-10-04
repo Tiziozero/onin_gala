@@ -885,7 +885,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
         if !ok {
             highlight_lines(get_span(s));
             debugln(tts(expr_ty(stmt.target)), tts(expr_ty(stmt.value)));
-            gala_panic(err);
+            gala_panic("Assignment error.", err);
         }
         propagate_type(t, stmt.value);
 
