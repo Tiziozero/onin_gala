@@ -121,7 +121,44 @@ type_kind_size :: proc(k: TypeKind) -> int {
     return 0 // caller should fall back to type_size for aggregates
 }
 
-type_size :: proc(id: TypeId) -> int {
+// Size of a type in bytes, matching LLVM's layout for non-packed types:
+// fields sit at their natural alignment, and the struct's total size is
+// rounded up to its own alignment (trailing padding), so arrays of
+// structs stay aligned.
+type_size :: proc(type_id: TypeId) -> int {
+    ty := get_type(type_id)
+    #partial switch ty.kind {
+    case .UInt64, .Int64, .Flt64, .Pointer, .Function:
+        return 8
+    case .UInt32, .Int32, .Flt32, .Rune:
+        return 4
+    case .UInt16, .Int16, .Flt16:
+        return 2
+    case .UInt_8, .Int_8, .Flt_8, .Byte, .Bool:
+        return 1
+    case .Slice, .String, .Any:
+        return 16
+    case .FixedSizeArray:
+        // an element's size is already a multiple of its alignment
+        return ty.fixed_size_array.size * type_size(ty.fixed_size_array.type)
+    case .Struct:
+        n := len(ty.structure.fields)
+        if n == 0 do return 0
+
+        offsets := struct_field_offsets(type_id)
+        end := offsets[n - 1] + type_size(ty.structure.fields[n - 1].type)
+
+        a := type_align_of(type_id)
+        if end % a != 0 {
+            end += a - (end % a)
+        }
+        return end
+    case:
+        gala_panic("type_size: unhandled kind", ty.kind)
+    }
+    return 0
+}
+type_size_no_abi :: proc(id: TypeId) -> int {
     t := get_type(id)
 
     #partial switch t.kind {
