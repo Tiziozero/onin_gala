@@ -27,10 +27,12 @@ init_context :: proc(debug := false) -> ^Context {
     ctx.data  = make([dynamic]string, allocator = al)
     ctx.table = make(map[string]StringId, allocator = al)
 
+    ctx.obj_modules   = make(map[ObjId]ModId, allocator = al)
     ctx.expr_types   = make(map[ExprId]TypeId, allocator = al)
     ctx.expr_objects = make(map[ExprId]ObjId, allocator = al)
     ctx.item_types   = make(map[ItemId]TypeId, allocator = al)
     ctx.item_objects = make(map[ItemId]ObjId, allocator = al)
+    ctx.item_module = make(map[ItemId]ModId, allocator = al)
     ctx.stmt_objects = make(map[StmtId]ObjId, allocator = al)
     ctx.stmt_types   = make(map[StmtId]TypeId, allocator = al)
     ctx.expr_resolution_types = make(map[ExprId]TypeId, allocator = al)
@@ -67,7 +69,7 @@ resolve_import_path :: proc(importer_path: string, import_path: string) -> strin
         joined = import_path
     } else {
         importer_dir := len(importer_path) > 0 ? filepath.dir(importer_path) : "."
-        joined, _ = filepath.join({importer_dir, import_path})
+        joined, _ = filepath.join({importer_dir, import_path}, allocator=get_ctx().allocator)
     }
 
     abs_path, abs_ok := filepath.abs(joined)
@@ -75,12 +77,12 @@ resolve_import_path :: proc(importer_path: string, import_path: string) -> strin
         abs_path = joined
     }
 
-    cleaned, cerr := filepath.clean(abs_path)
+    cleaned, cerr := filepath.clean(abs_path, allocator=get_ctx().allocator)
     assert(cerr == .None)
 
     cwd, _ := os.get_working_directory(get_ctx().allocator)
 
-    rel, rerr := filepath.rel(cwd, cleaned)
+    rel, rerr := filepath.rel(cwd, cleaned, allocator=get_ctx().allocator)
     if rerr != .None {
         // Can't be made relative (e.g. different drive on Windows) — fall
         // back to the absolute path.
@@ -140,9 +142,12 @@ handle_file :: proc(ctx: ^Context, file_name: string) -> string {
     return resolved
 }
 
-destroy_context :: proc(ctx: ^Context) {
+// `ctx_allocator` is the allocator `ctx` itself was created with (the
+// heap, see main) — NOT ctx.allocator, which is the arena being destroyed
+// here and can't free individual blocks anyway.
+destroy_context :: proc(ctx: ^Context, ctx_allocator: mem.Allocator) {
     virtual.arena_destroy(&ctx.arena)
-    free(ctx)
+    free(ctx, ctx_allocator)
 }
 
 // ---------------------------------------------------------------------
@@ -323,9 +328,24 @@ link_executable :: proc(ctx: ^Context, extra_libs: []string) {
 
 main :: proc() { // odins context is passed down, not up, or some shi
     cli := parse_cli_args(os.args[1:]) // skip program name itself
+    // extra_libs was made on the heap before we switch allocators below; a
+    // dynamic array remembers its own allocator, so this frees it correctly
+    // even though it runs after context.allocator has been changed.
+    defer delete(cli.extra_libs)
+
+    // `ctx` itself is allocated from the heap (it holds the arena, so it
+    // can't live inside it). Remember that allocator so it can be freed at
+    // the end.
+    heap := context.allocator
 
     ctx := init_context(debug=cli.debug)
     context.user_ptr = ctx   // <-- set it here, so it's live for the rest of main's scope
+
+    // Route EVERYTHING below main (every bare make/append/aprintf/
+    // strings.builder_make/filepath.* call, and every lazily-allocated nil
+    // map such as ctx.modules or ctx.ty_modules) into the arena, so it's all
+    // released by one arena_destroy instead of showing up as a heap leak.
+    context.allocator = ctx.allocator
 
     // integer types
     new_type(&ctx.base_mod, Type{name="i8", kind=.Int_8});
@@ -362,7 +382,7 @@ main :: proc() { // odins context is passed down, not up, or some shi
 
     link_executable(ctx, cli.extra_libs[:])
 
-    destroy_context(ctx);
+    destroy_context(ctx, heap);
     free_all(context.temp_allocator);
     // gala_info("Finished parsing");
 }

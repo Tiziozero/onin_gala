@@ -207,7 +207,6 @@ mark_arg :: proc(arg: ^FnCallArg, param_ty: TypeId, r: TypeId) {
         arg.needs_boxing = true;
         arg.box_type = expr_ty(earg);
     } else {
-        debugln(tts(r), tts(param_ty));
         assert(r == param_ty); // should always match
         propagate_type(r, earg);
     }
@@ -512,7 +511,6 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
                 highlight_lines(get_span(id).span);
                 gala_panicf("can't perform a binop on these two expressions. (%s)", tts(ty));
             }
-            debugln("can binop:", get(ty).kind, e.kind)
             if e.kind == .Modulo {
                 if !is_int_kind(get(ty).kind) {
                     highlight_lines(get_span(id).span)

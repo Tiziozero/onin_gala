@@ -61,6 +61,15 @@ CGCtx :: struct {
     // function's body) and parked here; cg_module writes them out after the
     // regular items. See cg_fn_lit.
     lambdas: [dynamic]string,
+
+    // ---- declaration dedupe (see cg_items_dec) ----
+    // A module can be reached through several import paths (main -> rl ->
+    // core and main -> core), and LLVM rejects redefining a type or
+    // redeclaring a function. These record what this output file has
+    // already seen so every declaration is written exactly once.
+    declared_items: map[ItemId]bool, // items whose declaration was handled
+    declared_mods: map[ModId]bool,   // modules whose items were already walked
+    emitted_externs: map[string]bool, // C symbol names already `declare`d
 }
 CGObjectKind :: enum {
     Invalid,
@@ -1133,6 +1142,10 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
     case StructDec: {
     }
     case ExternFnDec: {
+        // cg_items_dec may already have declared this C symbol while walking
+        // an import; LLVM rejects a second `declare` of the same name.
+        if c.emitted_externs[i.name] do return
+        c.emitted_externs[i.name] = true
         cg_fn_declaration(c, i, id, is_extern = true)
     }
     case FnDec: {
@@ -1238,15 +1251,50 @@ emit_string_global :: proc(name: string, content: string) -> StringGlobalResult 
         s           = name,
     }
 }
+// Writes the type definitions and function prototypes this module needs,
+// including everything reachable through its imports.
+//
+// A module can be reached along several import paths (main -> rl -> core
+// and main -> core), and LLVM rejects redefining a type or redeclaring a
+// function, so everything is emitted at most once per output file:
+//   - declared_mods:    a module's items are walked only the first time we
+//                       see it (this also makes import cycles terminate).
+//   - declared_items:   per-item guard, keyed on ItemId. Imports share the
+//                       same AST, so the same declaration always has the
+//                       same ItemId however it was reached.
+//   - emitted_externs:  extern C functions are keyed on their symbol name,
+//                       since two different .gala files may each declare
+//                       `extern fn printf` (different ItemIds, same symbol).
+// Transitive imports need no `exports` flag: we follow every Import item,
+// so `main -> rl -> core` still declares core's items even if `main` never
+// imports core itself.
+//
+// Skipping an already-handled item is safe for name lookup too: the
+// `ctx.scope.vars` binding is made the first time the item is seen, and
+// there is one scope for the whole output file.
 cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
     for id in items {
         switch i in get_item(id) {
         case Import: {
-            mid := get_ctx().modules[i.fname];
+            mid := get_ctx().item_module[id]
+            debugln("dewclared mods", ctx.declared_mods, mid)
+            cwritefln(ctx, "; decs from mod %s %d", i.fname, mid)
+            debugln("decs from mods", i.fname)
+            if ctx.declared_mods[mid] {
+                cwritefln(ctx, "; exst already")
+                debugln("already declared")
+                continue
+            }
+            ctx.declared_mods[mid] = true // mark before recursing so cycles terminate
             m := get_ctx().mods[mid];
             cg_items_dec(ctx, m.ast.items, true); // gen items into this
+            cwritefln(ctx, "; end")
+            debugln("Declared decs for mod", i.fname);
         }
         case StructDec: {
+            if ctx.declared_items[id] do continue
+            ctx.declared_items[id] = true
+
             item := i;
             c := ctx;
             name := mod_item_type_name(c, id);
@@ -1262,6 +1310,9 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
             cwriteln(c, "}")
         }
         case FnDec: { 
+            if ctx.declared_items[id] do continue
+            ctx.declared_items[id] = true
+
             name := mod_item_obj_name(ctx, id);
             // declare first;
             // it's a function , so use "@main" instead of "%main"
@@ -1271,12 +1322,16 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
             }
         }
         case ExternFnDec: { 
+            if ctx.declared_items[id] do continue
+            ctx.declared_items[id] = true
+
             name := i.name // use normal name here since it's external
             get_ctx().cg_item_names[id] = name
             // declare first;
             // it's a function , so use "@main" instead of "%main"
             ctx.scope.vars[i.name] = {.Symbol, aprintf(ctx, "@%s", name)};
-            if is_import {
+            if is_import && !ctx.emitted_externs[name] {
+                ctx.emitted_externs[name] = true
                 cg_fn_declaration(ctx, i, id, is_extern = true);
             }
         }
@@ -1319,6 +1374,9 @@ cg_module :: proc(m: ModId) {
     cgctx.break_labels = make(map[StmtId]string, allocator=get_ctx().allocator);
     cgctx.continue_labels = make(map[StmtId]string, allocator=get_ctx().allocator);
     cgctx.lambdas = make([dynamic]string, allocator=get_ctx().allocator);
+    cgctx.declared_items = make(map[ItemId]bool, allocator=get_ctx().allocator);
+    cgctx.declared_mods = make(map[ModId]bool, allocator=get_ctx().allocator);
+    cgctx.emitted_externs = make(map[string]bool, allocator=get_ctx().allocator);
     cgctx.scope = new_gcscope(nil);
 
 
@@ -1426,7 +1484,7 @@ cg_module :: proc(m: ModId) {
         if p_state.exit_code != 0 {
             gala_panic(
                 "Failed to optimise LLVM IR. exit code:",
-                p_state.exit_code,
+                p_state.exit_code, "for:", opt_name
             );
         }
 

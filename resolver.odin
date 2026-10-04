@@ -31,7 +31,6 @@ Scope :: struct {
     types:          map[string]TypeId,
     obj_foreward:   map[string]ObjId,
     ty_foreward:    map[string]TypeId,
-    items:          map[string]ItemId,
     parent:         ^Scope,
 }
 ModuleScope :: struct {
@@ -322,13 +321,7 @@ scope_get_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
         if ok { return id, true }
         scope = scope.parent
     }
-
-    t := s;
-    for t != nil {
-        for ty in s.types {
-        }
-        t = t.parent
-    }
+    debugln(n, "Not found")
     return 0, false
 }
 resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
@@ -483,8 +476,7 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     // ty := get_type(tid); // gets pointer, so modify that
     // check duplicate fields
     fields := make([]Field, len(sd.fields), allocator=get_ctx().allocator)
-    declared := make(map[string]Field);
-    defer delete(declared);
+    declared := make(map[string]Field, allocator=get_ctx().allocator);
 
     for f,i in sd.fields {
         if d, ok := declared[f.name]; ok {
@@ -496,11 +488,15 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
         fields[i] = field;
         declared[f.name] = field;
     }
-    i := 0
+
+
     // redefine type
     t := Type{name=sd.name, kind=.Struct, structure={fields=fields}}
     get_ctx().types[tid] = t;
+
     // link item to type
+    delete_key(&s.ty_foreward, sd.name); // delete fd and create object
+    s.types[sd.name] = tid;
     get_ctx().item_types[id] = tid;
 }
 
@@ -630,14 +626,6 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
         }
         decs:= get_ctx().mods[modid];
 
-        for item, v in decs.declarations.items {
-            _, exists := s.items[item];
-            if exists {
-                debugln(item, v);
-                gala_panicf("duplicate name.");
-            }
-            s.items[item] = v
-        }
         for obj, v in decs.declarations.objects {
             _, exists := s.objects[obj];
             if exists {
@@ -646,6 +634,15 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
             }
             s.objects[obj] = v
         }
+        for ty, v in decs.declarations.types {
+            _, exists := s.types[ty];
+            if exists {
+                debugln(item, v);
+                gala_panic("duplicate name.");
+            }
+            s.types[ty] = v
+        }
+        get_ctx().item_module[id] = modid
     }
     case StructDec:     new_type_fd(s, Type{kind=.Struct, name=i.name})
     case FnDec:         new_object_fd(s, Object{kind=.Variable, name=i.name});
@@ -669,7 +666,6 @@ new_scope :: proc(parent:^Scope=nil, allocator:=get_ctx().allocator) -> Scope {
     s := Scope{}
     s.objects       = make(map[string]ObjId,  allocator=allocator);
     s.types         = make(map[string]TypeId, allocator=allocator);
-    s.items         = make(map[string]ItemId, allocator=allocator);
     s.parent = parent;
     return s;
 }
@@ -687,7 +683,6 @@ free_scope :: proc(s: ^Scope) {
 
     delete(s.objects);
     delete(s.types);
-    delete(s.items);
 
     s^ = {};
 }

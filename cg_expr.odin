@@ -463,7 +463,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .BitOr:        op = "or"
             case: panic("impl")
             }
-        } else if is_integer_unsigned(operand_ty) {
+        } else if is_integer_unsigned(operand_ty) || get_type(operand_ty).kind == .Byte {
             #partial switch e.kind {
             case .Addition:     op = "add"
             case .Subtraction:  op = "sub"
@@ -535,6 +535,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             return {kind=.Value,v=v.name};
         }
         case .Invalid: {
+            debugln(string(c.b.buf[:]))
             gala_panic("invalid object");
         }
         }

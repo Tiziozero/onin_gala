@@ -35,6 +35,7 @@ Context :: struct {
 
     item_types:         map[ItemId]TypeId,
     item_objects:       map[ItemId]ObjId,
+    item_module:        map[ItemId]ModId, // import module ids
 
     stmt_objects:       map[StmtId]ObjId,
     stmt_types:         map[StmtId]TypeId,

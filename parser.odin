@@ -1033,7 +1033,7 @@ ArgSpecs :: struct {
 // come after the defaulted params, and there'd be no way to skip them.
 parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
     f := FnDecSignature{};
-    args := make([dynamic]FnDecArg)
+    args := make([dynamic]FnDecArg, allocator=get_ctx().allocator)
     seen_default := false
     expect_symbol(p, "(");
     for !is_symbol(current_token(p), ")") {
@@ -1088,7 +1088,10 @@ parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
 
 parse_fn_signature :: proc(p: ^Parser) -> FnDec {
     kw := consume_token(p); // "fn"
-    assert(kw.kind == .Keyword && kw.kw == .Fn);
+    if !(kw.kind == .Keyword && kw.kw == .Fn) {
+        highlight_lines(kw.span)
+        gala_panic("Expected \"fn\".");
+    }
     name := expect_ident(p);
           // args
     f := FnDec{};

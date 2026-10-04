@@ -1,8 +1,8 @@
 #!/bin/bash
 set -x
 set -e
-odin build . -out=galac
-./galac main.gala -l ./libtestlib.so -l /lib/x86_64-linux-gnu/libm.so
+odin build . -out=galac -debug
+./galac main.gala -d -l ./libtestlib.so -l /lib/x86_64-linux-gnu/libm.so -l ./lib/libraylib.so
 # #  galac a.gala -l ./libtestlib.so -d
-./main
+export LD_LIBRARY_PATH=./ && ./main
 echo "ret $?"
