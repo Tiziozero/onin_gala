@@ -1024,7 +1024,6 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
         return cg_elem_ptr(c, e.target, e.index)
     }
     case Deref: {
-        debugln("deref inner:", get(e.expr));
         // generate expression, as that would already be a pointer, otherwise
         // dereferencing wouldn't make sense
         ptr_val, returns := reduce_expr_to_single_value(c, cg_expr(c, e.expr));

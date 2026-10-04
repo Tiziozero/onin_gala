@@ -570,6 +570,8 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         // Operands are always the same type in a Binop, so if either side is
         // a pointer, both are.
         if left_is_ptr || right_is_ptr {
+            debugln(tts(left_ty), tts(right_ty))
+            highlight_lines(get_span(id));
             assert(left_is_ptr && right_is_ptr, "pointer binop requires both operands to be pointers")
 
             l_res := cg_expr(c, e.left)

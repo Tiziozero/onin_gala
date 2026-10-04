@@ -507,17 +507,23 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         left_ty  := expr_ty(e.left);
         right_ty := expr_ty(e.right);
 
+        debugln("------------");
+        debugln("BEFORE TYPE:", tts(left_ty), tts(right_ty));
         ty, ok, s := compare_and_reduce_types(left_ty, right_ty);
         if !ok {
-            
             highlight_lines(get_span(id))
             gala_panic(s, tts(left_ty), "vs", tts(right_ty))
         }
+        highlight_lines(get_span(id));
+        debugln("REDUCED TYPE:", tts(ty));
         /*if is_untyped(ty) {
             ty = get_untyped_default(ty);
         }*/
+        debugln("BEFORE PROP:", tts(expr_ty(e.left)), tts(expr_ty(e.right)));
         propagate_type(ty, e.left);
         propagate_type(ty, e.right);
+        propagate_type(ty, id);
+        debugln("AFTER PROP:", tts(expr_ty(e.left)), tts(expr_ty(e.right)));
 
         switch e.kind {
         case .Addition, .Subtraction, .Multiply, .Divide, .Modulo: {
@@ -550,13 +556,14 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
             get_ctx().expr_types[id] = ty;
         }
-        case .Equal: {
+        case .NotEqual, .Equal: {
             if is_untyped(ty) {
                 ty = get_untyped_default(ty);
+                debugln("UNTYPED IN COMP:", tts(ty));
+                // force operands to resolve first
+                propagate_type(ty, e.left);
+                propagate_type(ty, e.right);
             }
-            // force operands to resolve first
-            propagate_type(ty, e.left);
-            propagate_type(ty, e.right);
 
             if !can_equal(ty, e.kind) {
                 highlight_lines(get_span(id));
@@ -577,10 +584,12 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             }
 
 
+            debugln("AFTER COMP:", tts(expr_ty(e.left)), tts(expr_ty(e.right)));
             bool_ty := ty_from_name("bool");
             get_ctx().expr_types[id] = bool_ty;
+            debugln("END COMP:", tts(expr_ty(e.left)), tts(expr_ty(e.right)));
         }
-        case .NotEqual, .LessEqual, .GreaterEqual, .Less, .Greater: {
+        case .LessEqual, .GreaterEqual, .Less, .Greater: {
             if is_untyped(ty) {
                 ty = get_untyped_default(ty);
             }
@@ -589,7 +598,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
             if !can_order(ty) {
                 highlight_lines(get_span(id));
-                gala_panic("can't compare these two expressions");
+                gala_panic("can't order these two expressions");
             }
             check_binop_post :: proc(id: ExprId, ty: TypeId, op: BinopKind) -> bool {
                 #partial switch e in get(id) {
@@ -1047,6 +1056,8 @@ propagate_type :: proc(ty: TypeId, expr: ExprId) {
         propagate_type(ty, e.right)
     }
     case Number: {
+        t := expr_ty(expr);
+        if !is_untyped(t) do return // skip if it's been assigned a type
     }
     case Symbol: { // should have a fixed type
         return
