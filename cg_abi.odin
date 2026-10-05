@@ -29,9 +29,12 @@ AbiClass :: enum {
 }
 
 AbiEightbyte :: struct {
-    class:     AbiClass,
-    llvm_type: string, // valid once class != .NoClass
-    hi:        int,    // exclusive end (absolute struct offset) of the furthest real data byte seen in this eightbyte
+    class: AbiClass,
+    llvm_type: string,
+    hi: int,
+
+    f32_count: int,
+    only_f32: bool,
 }
 
 // Result of classifying an aggregate (struct / fixed array / slice /
@@ -151,7 +154,13 @@ classify_into_eightbytes :: proc(type_id: TypeId, base_offset: int, eb: ^[2]AbiE
     case: {
         class := scalar_abi_class(ty.kind)
         idx := base_offset / 8
+
         eb[idx].class = merge_abi_class(eb[idx].class, class)
+
+        if ty.kind == .Flt32 {
+            eb[idx].f32_count += 1
+        }
+
         end := base_offset + type_size(type_id)
         if end > eb[idx].hi do eb[idx].hi = end
     }
@@ -232,9 +241,11 @@ classify_type :: proc(type_id: TypeId) -> AbiClassified {
     r.num_eightbytes = size <= 8 ? 1 : 2
 
     for i in 0 ..< r.num_eightbytes {
+        eb[i].only_f32 = true
         class := eb[i].class
         if class == .NoClass do class = .Integer
         r.eightbytes[i].class = class
+        r.eightbytes[i].f32_count = eb[i].f32_count
 
         // SysV/clang shrink a coercion type to how much real data THIS
         // eightbyte alone holds. Padding elsewhere in the struct -- even a
@@ -255,7 +266,11 @@ classify_type :: proc(type_id: TypeId) -> AbiClassified {
         if nbytes <= 0 || nbytes > 8 do nbytes = 8
 
         if class == .Sse {
-            r.eightbytes[i].llvm_type = nbytes <= 4 ? "float" : "double"
+            if r.eightbytes[i].f32_count == 2 {
+                r.eightbytes[i].llvm_type = "<2 x float>"
+            } else {
+                r.eightbytes[i].llvm_type = nbytes <= 4 ? "float" : "double"
+            }
         } else {
             r.eightbytes[i].llvm_type = int_class_llvm_type(nbytes)
         }

@@ -1,46 +1,47 @@
 import "./core.gala";
 import "./rl.gala";
-struct Abc {}
 
-struct entity {
-    pos: Vector2,
-    color: Color,
-}
-entities := [10]entity{};
-fn main() {
-    player_index := 0;
-    j := 0;
-    while j < len(entities) {
-        entities[j] = entity{pos=Vector2{x=cast(f32)GetRandomValue(0, 500),
-                                        y=cast(f32)GetRandomValue(0, 500),},
-                            color=Color{r=123, g=123, b=123, a=255}};
-        println(entities[j].pos.x, entities[j].pos.y);
-        j += 1;
+fn draw_poly_centre(vertecies: []Vector2, centre: Vector2) {
+    l := len(vertecies);
+    i := 0;
+    while i < l {
+        DrawTriangle(
+            centre,
+            vertecies[i],
+            vertecies[(i + 1) % l],
+            Color{r=255, g=255, b=255, a=255}
+        );
+        println(i,
+            vertecies[i].x, vertecies[i].y, ":",
+            vertecies[(i + 1) % l].x, vertecies[(i + 1) % l].y);
+        i += 1;
     }
+}
+fn main() {
+    r := Rectangle{x=150 + 50, y=150 + 50, w=100, h=100};
     InitWindow(500, 500, cstr("Hello from gala!."));
     SetTargetFPS(60);
-    i :byte= 0;
-    v :=alloc(1024);
-    free(v);
+    t: f32 = 0;
+    v :f32 = 1.0;
+    polygon := [4]Vector2{Vector2{x=100, y=100},Vector2{x=450, y=250}, Vector2{x=500,y=500},Vector2{x=0,y=450}};
     while !WindowShouldClose() {
+        if IsKeyPressed(KEY_UP) { v *= 1.2; }
+        if IsKeyPressed(KEY_DOWN) { v /= 1.2; }
         dt := GetFrameTime();
-        r : byte = i;
-        b : byte = 255-i;
-        g : byte = (i*3) % 255;
+        t += v*dt;
+        nr := r;
+        dx := 50 * sinf(t);
+        dy := 50 * cosf(t);
+        nr.x -= dx/2;
+        nr.w += dx;
+        nr.y -= dy/2;
+        nr.h += dy;
         BeginDrawing();
         ClearBackground(Color{r=0, b=0, g=0, a=255});
-        ClearBackground(Color{r=r, b=b, g=g, a=255});
-        for e in entities {
-            DrawRectangle(cast(i32)e.pos.x, cast(i32)e.pos.y, 50, 50, e.color);
-        }
-        pv : f32 = 200.0;
-        if IsKeyDown(KEY_A) { entities[player_index].pos.x -= pv*dt; }
-        if IsKeyDown(KEY_D) { entities[player_index].pos.x += pv*dt; }
-        if IsKeyDown(KEY_W) { entities[player_index].pos.y -= pv*dt; }
-        if IsKeyDown(KEY_S) { entities[player_index].pos.y += pv*dt; }
+            draw_poly_centre(polygon[0:4], Vector2{x=150,y=150});
+            DrawRectangle(cast(i32)nr.x, cast(i32)nr.y, cast(i32)nr.w, cast(i32)nr.h,
+                    Color{r=255, g=255, b=50,a=255});
         EndDrawing();
-        i += 1;
-        i = i % 60;
     }
     CloseWindow();
 }

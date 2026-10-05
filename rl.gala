@@ -32,8 +32,8 @@ struct Color {
 struct Rectangle {
     x: f32,
     y: f32,
-    width: f32,
-    height: f32,
+    w: f32,
+    h: f32,
 }
 
 struct Texture {
@@ -531,11 +531,11 @@ KEY_TAB := 258;
 KEY_BACKSPACE := 259;
 KEY_INSERT := 260;
 KEY_DELETE := 261;
-KEY_RIGHT := 262;
-KEY_LEFT := 263;
-KEY_DOWN := 264;
-KEY_UP := 265;
-KEY_PAGE_UP := 266;
+KEY_RIGHT   : i32 = 262;
+KEY_LEFT    : i32 = 263;
+KEY_DOWN    : i32 = 264;
+KEY_UP      : i32 = 265;
+KEY_PAGE_UP : i32 = 266;
 KEY_PAGE_DOWN := 267;
 KEY_HOME := 268;
 KEY_END := 269;
