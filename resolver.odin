@@ -628,7 +628,7 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
             _, exists := s.objects[obj];
             if exists {
                 debugln(item, v);
-                gala_panic("duplicate name.");
+                gala_panic("duplicate name in import for object", obj);
             }
             s.objects[obj] = v
         }
@@ -636,7 +636,7 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
             _, exists := s.types[ty];
             if exists {
                 debugln(item, v);
-                gala_panic("duplicate name.");
+                gala_panic("duplicate name in import for type", ty);
             }
             s.types[ty] = v
         }

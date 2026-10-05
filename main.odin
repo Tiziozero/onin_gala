@@ -127,7 +127,6 @@ handle_file :: proc(file_name: string) -> string {
     // goes back to resolving *its own* further imports relative to itself,
     // not to whatever file we just finished.
     prev_file := get_ctx().current_file
-    fmt.println("prev file:", prev_file, "new", resolved)
     get_ctx().current_file = resolved
 
     tokens := lex_file(data)
@@ -140,7 +139,6 @@ handle_file :: proc(file_name: string) -> string {
     get_ctx().modules[resolved] = mid
     delete_key(&get_ctx().parsing, resolved)
 
-    fmt.println("resetting to:", prev_file, "current", get_ctx().current_file)
     get_ctx().current_file = prev_file
     return resolved
 }

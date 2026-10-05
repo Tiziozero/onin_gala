@@ -1,0 +1,383 @@
+import "./core.gala";
+
+// ============================================================
+// abi_common.gala
+//
+// Shared by abi_selfcheck.gala and abi_interop.gala:
+//   - the test harness (check / eq_* / approx / finish)
+//   - one struct per distinct x86-64 SysV case
+//   - for every struct X three helpers:
+//       mk_X(s)     builds an X whose fields are derived from seed s
+//       ok_X(v, s)  true iff EVERY field of v is what mk_X(s) gives
+//       rt_X(v, s)  "round trip": bumps G_CB if v is right, returns v
+//   - functions with many / mixed arguments (register exhaustion)
+//
+// Field values are chosen so that truncation, swapped fields,
+// sign/zero-extension bugs and wrong registers all show up
+// (i64 fields use values above 2^32, i16 fields go negative, ...).
+//
+// Rules: `:=` inferred, `x : T = v;` typed, no `++`, struct literals
+// give every member, literals only combined with typed values,
+// parameters are never assigned to.
+// ============================================================
+
+passed : i32 = 0;
+failed : i32 = 0;
+G_CB   : i32 = 0;   // rt_* callbacks add 1 when they received the right value
+
+
+// ------------------------------------------------------------
+// Harness
+// ------------------------------------------------------------
+
+fn section(name: string) {
+    println("--", name);
+}
+
+fn check(name: string, ok: bool) {
+    if ok {
+        passed += 1;
+    } else {
+        failed += 1;
+        println("  FAIL:", name);
+    }
+}
+
+fn eq_i32(name: string, got: i32, want: i32) {
+    if got == want {
+        passed += 1;
+    } else {
+        failed += 1;
+        println("  FAIL:", name, "got", got, "want", want);
+    }
+}
+
+fn eq_i64(name: string, got: i64, want: i64) {
+    if got == want {
+        passed += 1;
+    } else {
+        failed += 1;
+        println("  FAIL:", name, "got", got, "want", want);
+    }
+}
+
+fn approx(name: string, got: f64, want: f64) {
+    if fabs(got - want) < 0.0001 {
+        passed += 1;
+    } else {
+        failed += 1;
+        println("  FAIL:", name, "got", got, "want", want);
+    }
+}
+
+fn approx32(name: string, got: f32, want: f32) {
+    approx(name, cast(f64)got, cast(f64)want);
+}
+
+fn b2i(b: bool): i32 {
+    if b {
+        return 1;
+    }
+
+    return 0;
+}
+
+fn finish(): i32 {
+    println("----");
+    println("passed:", passed, "failed:", failed);
+
+    if failed == 0 {
+        println("ALL TESTS PASSED");
+    } else {
+        println("SOME TESTS FAILED");
+    }
+
+    return failed;
+}
+
+
+// ------------------------------------------------------------
+// Types.   size   SysV class of each eightbyte -> LLVM coercion
+// ------------------------------------------------------------
+
+// ---- SSE only ----
+struct V2  { x: f32, y: f32, }                  //  8   SSE            -> <2 x float>
+struct V3  { x: f32, y: f32, z: f32, }          // 12   SSE, SSE       -> { <2 x float>, float }
+struct V4  { x: f32, y: f32, z: f32, w: f32, }  // 16   SSE, SSE       -> { <2 x float>, <2 x float> }
+struct D1  { a: f64, }                          //  8   SSE            -> double
+struct D2  { a: f64, b: f64, }                  // 16   SSE, SSE       -> { double, double }
+
+// ---- INTEGER only ----
+struct I2  { a: i32, b: i32, }                  //  8   INT            -> i64
+struct I3  { a: i32, b: i32, c: i32, }          // 12   INT, INT       -> { i64, i32 }
+
+// ---- odd sizes (used to be rounded up to i32/i64: overran the slot) ----
+struct B3  { a: byte, b: byte, c: byte, }       //  3   INT            -> i24
+struct B5  { a: byte, b: byte, c: byte, d: byte, e: byte, }                   //  5 -> i40
+struct S3  { a: i16, b: i16, c: i16, }          //  6   INT            -> i48
+struct B7  { a: byte, b: byte, c: byte, d: byte, e: byte, f: byte, g: byte, } //  7 -> i56
+
+// ---- mixed INTEGER / SSE eightbytes (each eightbyte sized on its own) ----
+struct FI  { f: f32, n: i32, }                  //  8   INT (f32+i32 merge)  -> i64
+struct DI  { d: f64, n: i32, }                  // 16   SSE, INT       -> { double, i32 }
+struct ID  { n: i32, d: f64, }                  // 16   INT, SSE       -> { i32, double }
+struct LF  { n: i64, f: f32, }                  // 16   INT, SSE       -> { i64, float }
+struct FL  { f: f32, n: i64, }                  // 16   SSE, INT       -> { float, i64 }
+struct BL  { a: byte, n: i64, }                 // 16   INT, INT       -> { i8, i64 }
+struct LB  { n: i64, a: byte, }                 // 16   INT, INT       -> { i64, i8 }
+
+// ---- nested / arrays inside small structs ----
+struct Seg  { a: V2, b: V2, }                   // 16   SSE, SSE
+struct Arr2 { v: [2]i32, }                      //  8   INT
+struct ArrF { v: [4]f32, }                      // 16   SSE, SSE
+
+// ---- MEMORY class (> 16 bytes): sret / byval ----
+struct M3  { a: i64, b: i64, c: i64, }          // 24
+struct M5  { v: [5]i32, }                       // 20   (Texture-like: byval align must be 8)
+struct M11 { v: [11]f32, }                      // 44   (Camera-like)
+struct Big { a: i32, b: i32, data: [500]i32, }  // 2008 (way past any "memory type" threshold)
+
+
+// ------------------------------------------------------------
+// mk_X / ok_X / rt_X
+// ------------------------------------------------------------
+
+fn mk_V2(s: i32): V2 { f := cast(f32)s; return V2{x = f + 1.0, y = f + 2.0,}; }
+fn ok_V2(v: V2, s: i32): bool { f := cast(f32)s; return v.x == f + 1.0 && v.y == f + 2.0; }
+fn rt_V2(v: V2, s: i32): V2 { G_CB += b2i(ok_V2(v, s)); return v; }
+
+fn mk_V3(s: i32): V3 { f := cast(f32)s; return V3{x = f + 1.0, y = f + 2.0, z = f + 3.0,}; }
+fn ok_V3(v: V3, s: i32): bool { f := cast(f32)s; return v.x == f + 1.0 && v.y == f + 2.0 && v.z == f + 3.0; }
+fn rt_V3(v: V3, s: i32): V3 { G_CB += b2i(ok_V3(v, s)); return v; }
+
+fn mk_V4(s: i32): V4 { f := cast(f32)s; return V4{x = f + 1.0, y = f + 2.0, z = f + 3.0, w = f + 4.0,}; }
+fn ok_V4(v: V4, s: i32): bool {
+    f := cast(f32)s;
+    return v.x == f + 1.0 && v.y == f + 2.0 && v.z == f + 3.0 && v.w == f + 4.0;
+}
+fn rt_V4(v: V4, s: i32): V4 { G_CB += b2i(ok_V4(v, s)); return v; }
+
+fn mk_D1(s: i32): D1 { d := cast(f64)s; return D1{a = d + 1.0,}; }
+fn ok_D1(v: D1, s: i32): bool { d := cast(f64)s; return v.a == d + 1.0; }
+fn rt_D1(v: D1, s: i32): D1 { G_CB += b2i(ok_D1(v, s)); return v; }
+
+fn mk_D2(s: i32): D2 { d := cast(f64)s; return D2{a = d + 1.0, b = d + 2.0,}; }
+fn ok_D2(v: D2, s: i32): bool { d := cast(f64)s; return v.a == d + 1.0 && v.b == d + 2.0; }
+fn rt_D2(v: D2, s: i32): D2 { G_CB += b2i(ok_D2(v, s)); return v; }
+
+fn mk_I2(s: i32): I2 { return I2{a = s + 1, b = s + 2,}; }
+fn ok_I2(v: I2, s: i32): bool { return v.a == s + 1 && v.b == s + 2; }
+fn rt_I2(v: I2, s: i32): I2 { G_CB += b2i(ok_I2(v, s)); return v; }
+
+fn mk_I3(s: i32): I3 { return I3{a = s + 1, b = s + 2, c = s + 3,}; }
+fn ok_I3(v: I3, s: i32): bool { return v.a == s + 1 && v.b == s + 2 && v.c == s + 3; }
+fn rt_I3(v: I3, s: i32): I3 { G_CB += b2i(ok_I3(v, s)); return v; }
+
+fn mk_B3(s: i32): B3 { return B3{a = cast(byte)(s + 1), b = cast(byte)(s + 2), c = cast(byte)(s + 3),}; }
+fn ok_B3(v: B3, s: i32): bool {
+    return v.a == cast(byte)(s + 1) && v.b == cast(byte)(s + 2) && v.c == cast(byte)(s + 3);
+}
+fn rt_B3(v: B3, s: i32): B3 { G_CB += b2i(ok_B3(v, s)); return v; }
+
+fn mk_B5(s: i32): B5 {
+    return B5{a = cast(byte)(s + 1), b = cast(byte)(s + 2), c = cast(byte)(s + 3),
+              d = cast(byte)(s + 4), e = cast(byte)(s + 5),};
+}
+fn ok_B5(v: B5, s: i32): bool {
+    return v.a == cast(byte)(s + 1) && v.b == cast(byte)(s + 2) && v.c == cast(byte)(s + 3)
+        && v.d == cast(byte)(s + 4) && v.e == cast(byte)(s + 5);
+}
+fn rt_B5(v: B5, s: i32): B5 { G_CB += b2i(ok_B5(v, s)); return v; }
+
+// c is negative so sign extension of i16 pieces is exercised
+fn mk_S3(s: i32): S3 {
+    return S3{a = cast(i16)(s + 1000), b = cast(i16)(s + 2000), c = cast(i16)(0 - (s + 3000)),};
+}
+fn ok_S3(v: S3, s: i32): bool {
+    return v.a == cast(i16)(s + 1000) && v.b == cast(i16)(s + 2000) && v.c == cast(i16)(0 - (s + 3000));
+}
+fn rt_S3(v: S3, s: i32): S3 { G_CB += b2i(ok_S3(v, s)); return v; }
+
+fn mk_B7(s: i32): B7 {
+    return B7{a = cast(byte)(s + 1), b = cast(byte)(s + 2), c = cast(byte)(s + 3), d = cast(byte)(s + 4),
+              e = cast(byte)(s + 5), f = cast(byte)(s + 6), g = cast(byte)(s + 7),};
+}
+fn ok_B7(v: B7, s: i32): bool {
+    return v.a == cast(byte)(s + 1) && v.b == cast(byte)(s + 2) && v.c == cast(byte)(s + 3)
+        && v.d == cast(byte)(s + 4) && v.e == cast(byte)(s + 5) && v.f == cast(byte)(s + 6)
+        && v.g == cast(byte)(s + 7);
+}
+fn rt_B7(v: B7, s: i32): B7 { G_CB += b2i(ok_B7(v, s)); return v; }
+
+fn mk_FI(s: i32): FI { return FI{f = cast(f32)s + 1.0, n = s + 2,}; }
+fn ok_FI(v: FI, s: i32): bool { return v.f == cast(f32)s + 1.0 && v.n == s + 2; }
+fn rt_FI(v: FI, s: i32): FI { G_CB += b2i(ok_FI(v, s)); return v; }
+
+fn mk_DI(s: i32): DI { return DI{d = cast(f64)s + 1.0, n = s + 2,}; }
+fn ok_DI(v: DI, s: i32): bool { return v.d == cast(f64)s + 1.0 && v.n == s + 2; }
+fn rt_DI(v: DI, s: i32): DI { G_CB += b2i(ok_DI(v, s)); return v; }
+
+fn mk_ID(s: i32): ID { return ID{n = s + 1, d = cast(f64)s + 2.0,}; }
+fn ok_ID(v: ID, s: i32): bool { return v.n == s + 1 && v.d == cast(f64)s + 2.0; }
+fn rt_ID(v: ID, s: i32): ID { G_CB += b2i(ok_ID(v, s)); return v; }
+
+fn mk_LF(s: i32): LF { return LF{n = cast(i64)s + 5000000001, f = cast(f32)s + 2.0,}; }
+fn ok_LF(v: LF, s: i32): bool { return v.n == cast(i64)s + 5000000001 && v.f == cast(f32)s + 2.0; }
+fn rt_LF(v: LF, s: i32): LF { G_CB += b2i(ok_LF(v, s)); return v; }
+
+fn mk_FL(s: i32): FL { return FL{f = cast(f32)s + 1.0, n = cast(i64)s + 5000000002,}; }
+fn ok_FL(v: FL, s: i32): bool { return v.f == cast(f32)s + 1.0 && v.n == cast(i64)s + 5000000002; }
+fn rt_FL(v: FL, s: i32): FL { G_CB += b2i(ok_FL(v, s)); return v; }
+
+fn mk_BL(s: i32): BL { return BL{a = cast(byte)(s + 1), n = cast(i64)s + 5000000002,}; }
+fn ok_BL(v: BL, s: i32): bool { return v.a == cast(byte)(s + 1) && v.n == cast(i64)s + 5000000002; }
+fn rt_BL(v: BL, s: i32): BL { G_CB += b2i(ok_BL(v, s)); return v; }
+
+fn mk_LB(s: i32): LB { return LB{n = cast(i64)s + 5000000001, a = cast(byte)(s + 2),}; }
+fn ok_LB(v: LB, s: i32): bool { return v.n == cast(i64)s + 5000000001 && v.a == cast(byte)(s + 2); }
+fn rt_LB(v: LB, s: i32): LB { G_CB += b2i(ok_LB(v, s)); return v; }
+
+fn mk_Seg(s: i32): Seg { return Seg{a = mk_V2(s), b = mk_V2(s + 10),}; }
+fn ok_Seg(v: Seg, s: i32): bool { return ok_V2(v.a, s) && ok_V2(v.b, s + 10); }
+fn rt_Seg(v: Seg, s: i32): Seg { G_CB += b2i(ok_Seg(v, s)); return v; }
+
+fn mk_Arr2(s: i32): Arr2 { return Arr2{v = [2]i32{s + 1, s + 2}}; }
+fn ok_Arr2(v: Arr2, s: i32): bool { return v.v[0] == s + 1 && v.v[1] == s + 2; }
+fn rt_Arr2(v: Arr2, s: i32): Arr2 { G_CB += b2i(ok_Arr2(v, s)); return v; }
+
+fn mk_ArrF(s: i32): ArrF { f := cast(f32)s; return ArrF{v = [4]f32{f + 1.0, f + 2.0, f + 3.0, f + 4.0}}; }
+fn ok_ArrF(v: ArrF, s: i32): bool {
+    f := cast(f32)s;
+    return v.v[0] == f + 1.0 && v.v[1] == f + 2.0 && v.v[2] == f + 3.0 && v.v[3] == f + 4.0;
+}
+fn rt_ArrF(v: ArrF, s: i32): ArrF { G_CB += b2i(ok_ArrF(v, s)); return v; }
+
+fn mk_M3(s: i32): M3 { return M3{a = cast(i64)s + 5000000001, b = cast(i64)s + 2, c = cast(i64)s + 3,}; }
+fn ok_M3(v: M3, s: i32): bool {
+    return v.a == cast(i64)s + 5000000001 && v.b == cast(i64)s + 2 && v.c == cast(i64)s + 3;
+}
+fn rt_M3(v: M3, s: i32): M3 { G_CB += b2i(ok_M3(v, s)); return v; }
+
+fn mk_M5(s: i32): M5 { return M5{v = [5]i32{s + 1, s + 2, s + 3, s + 4, s + 5}}; }
+fn ok_M5(v: M5, s: i32): bool {
+    return v.v[0] == s + 1 && v.v[1] == s + 2 && v.v[2] == s + 3 && v.v[3] == s + 4 && v.v[4] == s + 5;
+}
+fn rt_M5(v: M5, s: i32): M5 { G_CB += b2i(ok_M5(v, s)); return v; }
+
+fn mk_M11(s: i32): M11 {
+    r := M11{v = [11]f32{}};
+    f := cast(f32)s;
+    i := 0;
+
+    while i < 11 {
+        r.v[i] = f + cast(f32)(i + 1);
+        i += 1;
+    }
+
+    return r;
+}
+fn ok_M11(v: M11, s: i32): bool {
+    f := cast(f32)s;
+    i := 0;
+
+    while i < 11 {
+        if v.v[i] != f + cast(f32)(i + 1) {
+            return false;
+        }
+
+        i += 1;
+    }
+
+    return true;
+}
+fn rt_M11(v: M11, s: i32): M11 { G_CB += b2i(ok_M11(v, s)); return v; }
+
+fn mk_Big(s: i32): Big {
+    r := Big{a = s + 1, b = s + 2, data = [500]i32{}};
+    i := 0;
+
+    while i < 500 {
+        r.data[i] = s + 3 + cast(i32)i;
+        i += 1;
+    }
+
+    return r;
+}
+fn ok_Big(v: Big, s: i32): bool {
+    if v.a != s + 1 || v.b != s + 2 {
+        return false;
+    }
+
+    i := 0;
+
+    while i < 500 {
+        if v.data[i] != s + 3 + cast(i32)i {
+            return false;
+        }
+
+        i += 1;
+    }
+
+    return true;
+}
+fn rt_Big(v: Big, s: i32): Big { G_CB += b2i(ok_Big(v, s)); return v; }
+
+
+// ------------------------------------------------------------
+// Register exhaustion: x86-64 SysV has 6 integer + 8 SSE argument
+// registers. An aggregate that doesn't fit entirely in what is
+// left goes to the stack AS A WHOLE (C never splits it).
+// All return 1 when every argument arrived intact.
+// ------------------------------------------------------------
+
+// 10 x one SSE eightbyte: the last two overflow to the stack
+fn pressure_v2(a: V2, b: V2, c: V2, d: V2, e: V2, f: V2, g: V2, h: V2, i: V2, j: V2): i32 {
+    return b2i(ok_V2(a, 1) && ok_V2(b, 2) && ok_V2(c, 3) && ok_V2(d, 4) && ok_V2(e, 5)
+            && ok_V2(f, 6) && ok_V2(g, 7) && ok_V2(h, 8) && ok_V2(i, 9) && ok_V2(j, 10));
+}
+
+// 8 x one INTEGER eightbyte: the last two overflow
+fn pressure_i2(a: I2, b: I2, c: I2, d: I2, e: I2, f: I2, g: I2, h: I2): i32 {
+    return b2i(ok_I2(a, 1) && ok_I2(b, 2) && ok_I2(c, 3) && ok_I2(d, 4)
+            && ok_I2(e, 5) && ok_I2(f, 6) && ok_I2(g, 7) && ok_I2(h, 8));
+}
+
+// 9 x 3-byte struct (i24 on the stack)
+fn pressure_b3(a: B3, b: B3, c: B3, d: B3, e: B3, f: B3, g: B3, h: B3, i: B3): i32 {
+    return b2i(ok_B3(a, 1) && ok_B3(b, 2) && ok_B3(c, 3) && ok_B3(d, 4) && ok_B3(e, 5)
+            && ok_B3(f, 6) && ok_B3(g, 7) && ok_B3(h, 8) && ok_B3(i, 9));
+}
+
+// THE classic: 7 SSE registers taken, V3 needs 2 but only 1 is left,
+// so V3 goes to the stack whole and `tail` still gets the last xmm.
+fn pressure_v3(f0: f32, f1: f32, f2: f32, f3: f32, f4: f32, f5: f32, f6: f32, v: V3, tail: f32): i32 {
+    return b2i(f0 == 10.0 && f1 == 11.0 && f2 == 12.0 && f3 == 13.0 && f4 == 14.0 && f5 == 15.0
+            && f6 == 16.0 && ok_V3(v, 1) && tail == 99.5);
+}
+
+// integer twin: 5 registers taken, LB needs 2 but 1 is left -> stack;
+// `z` still gets the last integer register
+fn tail_lb(a: i64, b: i64, c: i64, d: i64, e: i64, l: LB, z: i64): i32 {
+    return b2i(a == 1 && b == 2 && c == 3 && d == 4 && e == 5 && ok_LB(l, 6) && z == 7);
+}
+
+// every class interleaved: int, SSE, byval memory, odd size, 2xSSE,
+// i64, 2KB byval, f32, mixed, 20-byte byval, byte
+fn mixed(a: i32, v: V2, m: M3, b: B3, d: D2, n: i64, w: Big, f: f32, l: LF, p: M5, k: byte): i32 {
+    return b2i(a == 7 && ok_V2(v, 1) && ok_M3(m, 2) && ok_B3(b, 3) && ok_D2(d, 4)
+            && n == 5000000009 && ok_Big(w, 5) && f == 2.5 && ok_LF(l, 6) && ok_M5(p, 8) && k == 250);
+}
+
+// sret takes the first integer register, so all 7 ints are shifted
+fn sret_regs(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64): M3 {
+    return M3{a = a + g, b = b + f, c = c + e + d,};
+}
+
+// sret + struct arguments of three different kinds
+fn sret_args(v: V2, m: M3, b: B3): M5 {
+    if ok_V2(v, 1) && ok_M3(m, 2) && ok_B3(b, 3) {
+        return mk_M5(9);
+    }
+
+    return mk_M5(0);
+}

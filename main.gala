@@ -11,9 +11,9 @@ fn draw_poly_centre(vertecies: []Vector2, centre: Vector2) {
             vertecies[(i + 1) % l],
             Color{r=255, g=255, b=255, a=255}
         );
-        println(i,
+        /* println(i,
             vertecies[i].x, vertecies[i].y, ":",
-            vertecies[(i + 1) % l].x, vertecies[(i + 1) % l].y);
+            vertecies[(i + 1) % l].x, vertecies[(i + 1) % l].y); */
         i += 1;
     }
 }
@@ -23,7 +23,12 @@ fn main() {
     SetTargetFPS(60);
     t: f32 = 0;
     v :f32 = 1.0;
-    polygon := [4]Vector2{Vector2{x=100, y=100},Vector2{x=450, y=250}, Vector2{x=500,y=500},Vector2{x=0,y=450}};
+    polygon := [4]Vector2{
+        Vector2{x=0,y=450},
+        Vector2{x=500,y=500},
+        Vector2{x=450, y=250},
+        Vector2{x=100, y=100},
+        };
     while !WindowShouldClose() {
         if IsKeyPressed(KEY_UP) { v *= 1.2; }
         if IsKeyPressed(KEY_DOWN) { v /= 1.2; }

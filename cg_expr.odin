@@ -389,6 +389,9 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             return {kind=.Value, v=t}
 
         case .Memory:
+            // the slot is sized for `from_ty`; reading a bigger `to_ty`
+            // back out of it would run off the end of the alloca
+            assert(type_size(from_ty) == type_size(to_ty), "transmute between types of different sizes")
             slot := new_entry_alloca(c, ty_to_llvm_str(c, from_ty))
             cwritefln(c, "\tstore %s %s, ptr %s", ty_to_llvm_str(c, from_ty), reduced, slot)
             t := new_tmp(c)
@@ -403,25 +406,28 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         end, eret := reduce_expr_to_single_value(c, cg_expr(c, e.end))
         assert(eret);
 
-        if get(expr_ty(e.start)).kind != .UInt64 {
+        // Convert the bounds to the language's integer type. When the type
+        // already IS that type (the common case, e.g. the literals in
+        // `a[0:4]`) ty_to_llvm_cast_op reports "no cast needed" — emit
+        // nothing instead of the old `bitcast i64 0 to i64`.
+        int_kind := get_type(integer_type()).kind
+        if get(expr_ty(e.start)).kind != int_kind {
             op, ok := ty_to_llvm_cast_op(expr_ty(e.start), integer_type());
-            if !ok {
-                op = "bitcast"
+            if ok {
+                t := new_tmp(c);
+                cwritefln(c, "\t%s = %s %s %s to %s", t, op,
+                    ty_to_llvm_str(c, expr_ty(e.start)), start, ty_to_llvm_str(c, integer_type()));
+                start = t
             }
-            t := new_tmp(c);
-            cwritefln(c, "\t%s = %s %s %s to %s", t, op,
-                ty_to_llvm_str(c, expr_ty(e.start)), start, ty_to_llvm_str(c, integer_type()));
-            start = t
         }
-        if get(expr_ty(e.end)).kind != .UInt64 {
+        if get(expr_ty(e.end)).kind != int_kind {
             op, ok := ty_to_llvm_cast_op(expr_ty(e.end), integer_type());
-            if !ok {
-                op = "bitcast"
+            if ok {
+                t := new_tmp(c);
+                cwritefln(c, "\t%s = %s %s %s to %s", t, op,
+                    ty_to_llvm_str(c, expr_ty(e.end)), end, ty_to_llvm_str(c, integer_type()));
+                end = t
             }
-            t := new_tmp(c);
-            cwritefln(c, "\t%s = %s %s %s to %s", t, op,
-                ty_to_llvm_str(c, expr_ty(e.end)), end, ty_to_llvm_str(c, integer_type()));
-            end = t
         }
         len_s := new_tmp(c);
         cwritefln(c, "\t%s = sub nsw nuw %s %s, %s",len_s,
@@ -690,7 +696,9 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .BitOr:        op = "or"
             case: panic("impl")
             }
-        } else if is_integer_unsigned(operand_ty) || get_type(operand_ty).kind == .Byte {
+        } else if is_integer_unsigned(operand_ty) ||
+                  get_type(operand_ty).kind == .Byte ||
+                  get_type(operand_ty).kind == .Rune {
             #partial switch e.kind {
             case .Addition:     op = "add"
             case .Subtraction:  op = "sub"
@@ -714,6 +722,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             case .Subtraction:  op = "fsub"
             case .Multiply:     op = "fmul"
             case .Divide:       op = "fdiv"
+            case .Modulo:       op = "frem"
             case .Equal:        op = "fcmp oeq"
             case .NotEqual:     op = "fcmp une"
             case .LessEqual:    op = "fcmp ole"
@@ -861,6 +870,9 @@ cg_emit_abi_arg :: proc(c: ^CGCtx, sig: AbiSignature, k: int, r: string, call_ar
             coerced := new_tmp(c)
             cwritefln(c, "\t%s = load %s, ptr %s", coerced, al.coerced_type, slot)
             append(call_args, aprintf(c, "%s %s", al.coerced_type, coerced))
+        } else if al.ext != "" {
+            // sub-32-bit scalar: the caller must extend it (`i1 zeroext %v`)
+            append(call_args, aprintf(c, "%s %s %s", al.coerced_type, al.ext, r))
         } else {
             append(call_args, aprintf(c, "%s %s", al.coerced_type, r))
         }
@@ -959,7 +971,12 @@ cg_emit_call :: proc(c: ^CGCtx, id: ExprId, sig: AbiSignature, target: string,
         return {kind=.None, id=id}
     } else {
         new_t := new_tmp(c)
-        cwritef(c, "\t%s = call %s ", new_t, sig.ret.coerced_type)
+        // `call zeroext i1 @f(...)` — the return attribute goes BEFORE the type
+        ret_ext := ""
+        if sig.ret.ext != "" {
+            ret_ext = aprintf(c, "%s ", sig.ret.ext)
+        }
+        cwritef(c, "\t%s = call %s%s ", new_t, ret_ext, sig.ret.coerced_type)
         cwritef(c, "%s", variadic_prefix)
         cwritef(c, "%s", target)
         cg_write_call_args(c, call_args)

@@ -1,0 +1,526 @@
+import "./abi_common.gala";
+
+// ============================================================
+// abi_selfcheck.gala   (Gala <-> Gala only, no C library needed)
+//
+// Exercises the ABI lowering from both sides (definition and call
+// site), plus the codegen paths that touch it. Build/run:
+//
+//     ./galac abi_selfcheck.gala
+//
+// Gala <-> Gala can't catch "both sides wrong in the same way",
+// that is what abi_interop.gala (against clang) is for.
+//
+// Syntax guess: `i8` as the signed 8-bit type name.
+// ============================================================
+
+struct Holder { tag: i32, op: fn(v: V2, s: i32): V2, }
+
+
+// ------------------------------------------------------------
+// helpers local to this file
+// ------------------------------------------------------------
+
+// ---- function pointers: the callee builds the argument ----
+fn call_V2(f: fn(v: V2, s: i32): V2): V2 { return f(mk_V2(3), 3); }
+fn call_V3(f: fn(v: V3, s: i32): V3): V3 { return f(mk_V3(3), 3); }
+fn call_B3(f: fn(v: B3, s: i32): B3): B3 { return f(mk_B3(3), 3); }
+fn call_S3(f: fn(v: S3, s: i32): S3): S3 { return f(mk_S3(3), 3); }
+fn call_FL(f: fn(v: FL, s: i32): FL): FL { return f(mk_FL(3), 3); }
+fn call_LB(f: fn(v: LB, s: i32): LB): LB { return f(mk_LB(3), 3); }
+fn call_M3(f: fn(v: M3, s: i32): M3): M3 { return f(mk_M3(3), 3); }
+fn call_M5(f: fn(v: M5, s: i32): M5): M5 { return f(mk_M5(3), 3); }
+fn call_Big(f: fn(v: Big, s: i32): Big): Big { return f(mk_Big(3), 3); }
+
+// ---- small scalars ----
+fn id_bool(b: bool): bool { return b; }
+fn widen_i8(x: i8): i32 { return cast(i32)x; }
+fn widen_u8(x: byte): i32 { return cast(i32)x; }
+fn widen_i16(x: i16): i32 { return cast(i32)x; }
+fn widen_u16(x: u16): i32 { return cast(i32)x; }
+fn add_u16(a: u16, b: u16): u16 { return a + b; }
+fn add_i8(a: i8, b: i8): i8 { return a + b; }
+fn pack_small(a: bool, b: i8, c: byte, d: i16, e: u16, f: bool, g: i8, h: u16): i32 {
+    return b2i(a) + cast(i32)b + cast(i32)c + cast(i32)d + cast(i32)e
+         + b2i(f) * 1000 + cast(i32)g + cast(i32)h;
+}
+
+// ---- variadics ----
+fn count_ok_V2(vs: ..V2): i32 {
+    n : i32 = 0;
+    i : i32 = 0;
+
+    for v in vs {
+        i += 1;
+
+        if ok_V2(v, i) {
+            n += 1;
+        }
+    }
+
+    return n;
+}
+
+fn count_ok_B3(vs: ..B3): i32 {
+    n : i32 = 0;
+    i : i32 = 0;
+
+    for v in vs {
+        i += 1;
+
+        if ok_B3(v, i) {
+            n += 1;
+        }
+    }
+
+    return n;
+}
+
+fn count_ok_M3(vs: ..M3): i32 {
+    n : i32 = 0;
+    i : i32 = 0;
+
+    for v in vs {
+        i += 1;
+
+        if ok_M3(v, i) {
+            n += 1;
+        }
+    }
+
+    return n;
+}
+
+fn count_args(vs: ..any): i64 {
+    return cast(i64)len(vs);
+}
+
+// ---- slices next to structs and strings ----
+fn slice_mixed(a: i32, s: []i32, v: V2, str: string, m: M3, b: B3): bool {
+    return a == 7 && len(s) == 3 && s[0] == 20 && s[2] == 40 && ok_V2(v, 1)
+        && len(str) == 3 && cast(i32)str[0] == 104 && ok_M3(m, 2) && ok_B3(b, 3);
+}
+
+fn ok_slice_V2(s: []V2): bool {
+    return len(s) == 2 && ok_V2(s[0], 2) && ok_V2(s[1], 3);
+}
+
+fn sum_slice(s: []i32): i32 {
+    t : i32 = 0;
+
+    for v in s {
+        t += v;
+    }
+
+    return t;
+}
+
+
+// ============================================================
+// TESTS
+// ============================================================
+
+fn test_sanity() {
+    section("harness sanity (the checkers must be able to fail)");
+
+    check("ok_V2 rejects a wrong seed", !ok_V2(mk_V2(1), 2));
+    check("ok_B3 rejects a wrong seed", !ok_B3(mk_B3(1), 2));
+    check("ok_LB rejects a wrong seed", !ok_LB(mk_LB(1), 2));
+    check("ok_Big rejects a wrong seed", !ok_Big(mk_Big(1), 2));
+}
+
+fn test_sizes() {
+    section("sizeof");
+
+    eq_i64("V2", cast(i64)sizeof(V2), 8);
+    eq_i64("V3", cast(i64)sizeof(V3), 12);
+    eq_i64("V4", cast(i64)sizeof(V4), 16);
+    eq_i64("D1", cast(i64)sizeof(D1), 8);
+    eq_i64("D2", cast(i64)sizeof(D2), 16);
+    eq_i64("I2", cast(i64)sizeof(I2), 8);
+    eq_i64("I3", cast(i64)sizeof(I3), 12);
+    eq_i64("B3", cast(i64)sizeof(B3), 3);
+    eq_i64("B5", cast(i64)sizeof(B5), 5);
+    eq_i64("S3", cast(i64)sizeof(S3), 6);
+    eq_i64("B7", cast(i64)sizeof(B7), 7);
+    eq_i64("FI", cast(i64)sizeof(FI), 8);
+    eq_i64("DI", cast(i64)sizeof(DI), 16);
+    eq_i64("ID", cast(i64)sizeof(ID), 16);
+    eq_i64("LF", cast(i64)sizeof(LF), 16);
+    eq_i64("FL", cast(i64)sizeof(FL), 16);
+    eq_i64("BL", cast(i64)sizeof(BL), 16);
+    eq_i64("LB", cast(i64)sizeof(LB), 16);
+    eq_i64("Seg", cast(i64)sizeof(Seg), 16);
+    eq_i64("Arr2", cast(i64)sizeof(Arr2), 8);
+    eq_i64("ArrF", cast(i64)sizeof(ArrF), 16);
+    eq_i64("M3", cast(i64)sizeof(M3), 24);
+    eq_i64("M5", cast(i64)sizeof(M5), 20);
+    eq_i64("M11", cast(i64)sizeof(M11), 44);
+    eq_i64("Big", cast(i64)sizeof(Big), 2008);
+}
+
+// mk_X -> rt_X (argument in, same value out) -> ok_X (argument in)
+// G_CB == 1 proves rt_X itself saw the right value.
+fn test_roundtrip() {
+    section("every struct: return, argument, round trip");
+
+    G_CB = 0; check("V2",  ok_V2(rt_V2(mk_V2(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("V3",  ok_V3(rt_V3(mk_V3(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("V4",  ok_V4(rt_V4(mk_V4(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("D1",  ok_D1(rt_D1(mk_D1(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("D2",  ok_D2(rt_D2(mk_D2(3), 3), 3) && G_CB == 1);
+
+    G_CB = 0; check("I2",  ok_I2(rt_I2(mk_I2(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("I3",  ok_I3(rt_I3(mk_I3(3), 3), 3) && G_CB == 1);
+
+    G_CB = 0; check("B3 (i24)", ok_B3(rt_B3(mk_B3(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("B5 (i40)", ok_B5(rt_B5(mk_B5(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("S3 (i48)", ok_S3(rt_S3(mk_S3(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("B7 (i56)", ok_B7(rt_B7(mk_B7(3), 3), 3) && G_CB == 1);
+
+    G_CB = 0; check("FI",  ok_FI(rt_FI(mk_FI(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("DI",  ok_DI(rt_DI(mk_DI(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("ID",  ok_ID(rt_ID(mk_ID(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("LF",  ok_LF(rt_LF(mk_LF(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("FL",  ok_FL(rt_FL(mk_FL(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("BL",  ok_BL(rt_BL(mk_BL(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("LB",  ok_LB(rt_LB(mk_LB(3), 3), 3) && G_CB == 1);
+
+    G_CB = 0; check("Seg",  ok_Seg(rt_Seg(mk_Seg(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("Arr2", ok_Arr2(rt_Arr2(mk_Arr2(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("ArrF", ok_ArrF(rt_ArrF(mk_ArrF(3), 3), 3) && G_CB == 1);
+
+    G_CB = 0; check("M3 (sret/byval)",  ok_M3(rt_M3(mk_M3(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("M5 (sret/byval)",  ok_M5(rt_M5(mk_M5(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("M11 (sret/byval)", ok_M11(rt_M11(mk_M11(3), 3), 3) && G_CB == 1);
+    G_CB = 0; check("Big (sret/byval)", ok_Big(rt_Big(mk_Big(3), 3), 3) && G_CB == 1);
+}
+
+fn test_copies() {
+    section("copies, assignment, array strides");
+
+    // ---- value semantics of memory-class structs ----
+    a3 := mk_M3(1);
+    b3 := a3;
+    b3.a = 0;
+    check("M3 copy independent", ok_M3(a3, 1));
+
+    a5 := mk_M5(1);
+    b5 := a5;
+    b5.v[0] = 0;
+    check("M5 copy independent", ok_M5(a5, 1));
+
+    a11 := mk_M11(1);
+    b11 := a11;
+    b11.v[0] = 0.0;
+    check("M11 copy independent", ok_M11(a11, 1));
+
+    ab := mk_Big(1);
+    bb := ab;
+    bb.data[499] = 0;
+    check("Big copy independent", ok_Big(ab, 1));
+
+    // ---- x = f(x): the result is written over its own argument ----
+    x := mk_Big(2);
+    x = rt_Big(x, 2);
+    check("Big x = f(x)", ok_Big(x, 2));
+
+    y := mk_M3(2);
+    y = rt_M3(y, 2);
+    check("M3 x = f(x)", ok_M3(y, 2));
+
+    z := mk_LB(2);
+    z = rt_LB(z, 2);
+    check("LB x = f(x)", ok_LB(z, 2));
+
+    // ---- element stride must be the struct's size (no padding games) ----
+    bs := [3]B3{mk_B3(1), mk_B3(2), mk_B3(3)};
+    raw := cast(^byte)&bs[0];
+    eq_i32("[3]B3 stride: bs[1].a is byte 3", cast(i32)raw[3], 3);
+    eq_i32("[3]B3 stride: bs[2].c is byte 8", cast(i32)raw[8], 6);
+    bs[0] = bs[2];
+    check("B3 element assignment", ok_B3(bs[0], 3));
+    check("B3 neighbour untouched", ok_B3(bs[1], 2));
+
+    ss := [3]S3{mk_S3(1), mk_S3(2), mk_S3(3)};
+    ss[1] = ss[2];
+    check("S3 element assignment", ok_S3(ss[1], 3));
+    check("S3 neighbours untouched", ok_S3(ss[0], 1) && ok_S3(ss[2], 3));
+
+    ms := [2]M5{mk_M5(1), mk_M5(2)};
+    ms[0] = ms[1];
+    check("M5 element assignment", ok_M5(ms[0], 2));
+    check("M5 neighbour untouched", ok_M5(ms[1], 2));
+
+    // ---- pointers to / through structs ----
+    p := mk_FL(4);
+    pp := &p;
+    check("read through a pointer to a struct", ok_FL(pp^, 4));
+    pp^ = mk_FL(5);
+    check("write through a pointer to a struct", ok_FL(p, 5));
+}
+
+fn test_pressure() {
+    section("register exhaustion");
+
+    eq_i32("10 x V2 (SSE overflow)",
+        pressure_v2(mk_V2(1), mk_V2(2), mk_V2(3), mk_V2(4), mk_V2(5),
+                    mk_V2(6), mk_V2(7), mk_V2(8), mk_V2(9), mk_V2(10)), 1);
+
+    eq_i32("8 x I2 (integer overflow)",
+        pressure_i2(mk_I2(1), mk_I2(2), mk_I2(3), mk_I2(4), mk_I2(5), mk_I2(6), mk_I2(7), mk_I2(8)), 1);
+
+    eq_i32("9 x B3 (i24 on the stack)",
+        pressure_b3(mk_B3(1), mk_B3(2), mk_B3(3), mk_B3(4), mk_B3(5),
+                    mk_B3(6), mk_B3(7), mk_B3(8), mk_B3(9)), 1);
+
+    eq_i32("7 floats, V3 (doesn't fit -> stack), float",
+        pressure_v3(10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, mk_V3(1), 99.5), 1);
+
+    eq_i32("5 ints, LB (doesn't fit -> stack), int",
+        tail_lb(1, 2, 3, 4, 5, mk_LB(6), 7), 1);
+
+    eq_i32("every class interleaved",
+        mixed(7, mk_V2(1), mk_M3(2), mk_B3(3), mk_D2(4), 5000000009, mk_Big(5), 2.5, mk_LF(6), mk_M5(8), 250), 1);
+
+    sr := sret_regs(1, 2, 3, 4, 5, 6, 7);
+    eq_i64("sret + 7 ints: a", sr.a, 8);
+    eq_i64("sret + 7 ints: b", sr.b, 8);
+    eq_i64("sret + 7 ints: c", sr.c, 12);
+
+    check("sret + V2, M3, B3 arguments", ok_M5(sret_args(mk_V2(1), mk_M3(2), mk_B3(3)), 9));
+}
+
+fn test_fnptr() {
+    section("function pointers and lambdas");
+
+    G_CB = 0; check("V2",  ok_V2(call_V2(rt_V2), 3) && G_CB == 1);
+    G_CB = 0; check("V3",  ok_V3(call_V3(rt_V3), 3) && G_CB == 1);
+    G_CB = 0; check("B3",  ok_B3(call_B3(rt_B3), 3) && G_CB == 1);
+    G_CB = 0; check("S3",  ok_S3(call_S3(rt_S3), 3) && G_CB == 1);
+    G_CB = 0; check("FL",  ok_FL(call_FL(rt_FL), 3) && G_CB == 1);
+    G_CB = 0; check("LB",  ok_LB(call_LB(rt_LB), 3) && G_CB == 1);
+    G_CB = 0; check("M3",  ok_M3(call_M3(rt_M3), 3) && G_CB == 1);
+    G_CB = 0; check("M5",  ok_M5(call_M5(rt_M5), 3) && G_CB == 1);
+    G_CB = 0; check("Big", ok_Big(call_Big(rt_Big), 3) && G_CB == 1);
+
+    // mk_V2(3) = {4, 5}
+    sw := call_V2(fn(v: V2, s: i32): V2 { return V2{x = v.y, y = v.x,}; });
+    approx32("lambda V2: x", sw.x, 5.0);
+    approx32("lambda V2: y", sw.y, 4.0);
+
+    // mk_B3(3) = {4, 5, 6}
+    rv := call_B3(fn(v: B3, s: i32): B3 { return B3{a = v.c, b = v.b, c = v.a,}; });
+    eq_i32("lambda B3: a", cast(i32)rv.a, 6);
+    eq_i32("lambda B3: c", cast(i32)rv.c, 4);
+
+    // mk_M3(3) = {5000000004, 5, 6}
+    rm := call_M3(fn(v: M3, s: i32): M3 { return M3{a = v.c, b = v.b, c = v.a,}; });
+    eq_i64("lambda M3: a", rm.a, 6);
+    eq_i64("lambda M3: c", rm.c, 5000000004);
+
+    // function pointer stored in a struct field, called through an array element
+    hs := [2]Holder{Holder{tag = 1, op = rt_V2,}, Holder{tag = 2, op = rt_V2,}};
+    G_CB = 0;
+    r := hs[1].op(mk_V2(7), 7);
+    check("fn pointer field", ok_V2(r, 7) && G_CB == 1);
+}
+
+fn test_scalars() {
+    section("sub-word scalars (zeroext / signext)");
+
+    z8 : i8 = 0;
+    z16 : i16 = 0;
+    n3 := z8 - 3;
+    n4 := z8 - 4;
+    n300 := z16 - 300;
+
+    check("bool true", id_bool(true));
+    check("bool false", !id_bool(false));
+
+    eq_i32("i8 -1 sign-extends", widen_i8(z8 - 1) + 1, 0);
+    eq_i32("u8 255 zero-extends", widen_u8(255), 255);
+    eq_i32("i16 -2 sign-extends", widen_i16(z16 - 2) + 2, 0);
+    eq_i32("u16 65535 zero-extends", widen_u16(65535), 65535);
+
+    eq_i32("u16 wraps", cast(i32)add_u16(65535, 1), 0);
+    eq_i32("i8 wraps", cast(i32)add_i8(127, 1) + 128, 0);
+
+    // 8 sub-word args at once: -3, 200, -300, 60000, -4, 65535 all stay intact
+    eq_i32("pack_small", pack_small(true, n3, 200, n300, 60000, false, n4, 65535), 125429);
+}
+
+fn test_variadics() {
+    section("variadics");
+
+    eq_i32("..V2", count_ok_V2(mk_V2(1), mk_V2(2), mk_V2(3)), 3);
+    eq_i32("..B3", count_ok_B3(mk_B3(1), mk_B3(2), mk_B3(3), mk_B3(4)), 4);
+    eq_i32("..M3", count_ok_M3(mk_M3(1), mk_M3(2)), 2);
+    eq_i32("..V2 empty", count_ok_V2(), 0);
+
+    k : i32 = 1;
+    eq_i64("..any with structs, a string and a bool",
+        count_args(mk_V2(1), mk_B3(2), mk_M3(3), mk_Big(4), "s", true), 6);
+    eq_i64("..any with 12 args", count_args(k, k, k, k, k, k, k, k, k, k, k, k), 12);
+
+    // ---- C varargs: default argument promotions ----
+    buf := [64]byte{};
+    z8 : i8 = 0;
+    z16 : i16 = 0;
+
+    t := true;
+    n1 := snprintf(&buf[0], 64, &("%d")[0], t);
+    eq_i32("bool -> int: length", n1, 1);
+    eq_i32("bool -> int: text", strcmp(&buf[0], &("1")[0]), 0);
+
+    u8v : byte = 200;
+    n2 := snprintf(&buf[0], 64, &("%d")[0], u8v);
+    eq_i32("u8 200 zero-extends (not -56)", strcmp(&buf[0], &("200")[0]), 0);
+
+    i8v := z8 - 3;
+    n3 := snprintf(&buf[0], 64, &("%d")[0], i8v);
+    eq_i32("i8 -3 sign-extends", strcmp(&buf[0], &("-3")[0]), 0);
+
+    i16v := z16 - 5;
+    n4 := snprintf(&buf[0], 64, &("%d")[0], i16v);
+    eq_i32("i16 -5 sign-extends", strcmp(&buf[0], &("-5")[0]), 0);
+
+    u16v : u16 = 65535;
+    n5 := snprintf(&buf[0], 64, &("%d")[0], u16v);
+    eq_i32("u16 65535 zero-extends", strcmp(&buf[0], &("65535")[0]), 0);
+
+    fv : f32 = 1.5;
+    n6 := snprintf(&buf[0], 64, &("%.2f")[0], fv);
+    eq_i32("f32 -> double", strcmp(&buf[0], &("1.50")[0]), 0);
+
+    // 8 ints after buf/size/fmt: most of them go on the stack
+    n7 := snprintf(&buf[0], 64, &("%d %d %d %d %d %d %d %d")[0],
+        cast(i32)1, cast(i32)2, cast(i32)3, cast(i32)4, cast(i32)5, cast(i32)6, cast(i32)7, cast(i32)8);
+    eq_i32("8 int varargs", strcmp(&buf[0], &("1 2 3 4 5 6 7 8")[0]), 0);
+
+    // 9 doubles: the 9th overflows the 8 xmm registers
+    d : f64 = 1.0;
+    n8 := snprintf(&buf[0], 64, &("%.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f")[0],
+        d, d + 1.0, d + 2.0, d + 3.0, d + 4.0, d + 5.0, d + 6.0, d + 7.0, d + 8.0);
+    eq_i32("9 double varargs", strcmp(&buf[0], &("1 2 3 4 5 6 7 8 9")[0]), 0);
+}
+
+fn test_slices() {
+    section("slices (TakeSlice)");
+
+    a := [6]i32{10, 20, 30, 40, 50, 60};
+
+    s := a[1:4];
+    eq_i64("len of a[1:4]", cast(i64)len(s), 3);
+    eq_i32("a[1:4][0]", s[0], 20);
+    eq_i32("a[1:4][2]", s[2], 40);
+    eq_i32("sum_slice(a[1:4])", sum_slice(s), 90);
+
+    t := s[1:3];
+    eq_i64("slice of a slice: len", cast(i64)len(t), 2);
+    eq_i32("slice of a slice: [0]", t[0], 30);
+
+    e := a[3:3];
+    eq_i64("empty slice", cast(i64)len(e), 0);
+    eq_i32("full slice", sum_slice(a[0:6]), 210);
+
+    // bounds of other integer types go through the cast path
+    lo : i32 = 2;
+    hi : i32 = 5;
+    u := a[lo:hi];
+    eq_i64("i32 bounds: len", cast(i64)len(u), 3);
+    eq_i32("i32 bounds: [0]", u[0], 30);
+
+    lo64 := 1;
+    hi64 := 3;
+    w := a[lo64:hi64];
+    eq_i64("i64 bounds: len", cast(i64)len(w), 2);
+    eq_i32("i64 bounds: [1]", w[1], 30);
+
+    // writes through a slice hit the array
+    s[0] = 99;
+    eq_i32("write through a slice", a[1], 99);
+
+    // slices of structs
+    pts := [3]V2{mk_V2(1), mk_V2(2), mk_V2(3)};
+    check("slice of structs", ok_slice_V2(pts[1:3]));
+
+    // a slice header (2 registers) and a string (2 registers) among structs
+    arr := [6]i32{10, 20, 30, 40, 50, 60};
+    check("slice + string + structs as arguments",
+        slice_mixed(7, arr[1:4], mk_V2(1), "hey", mk_M3(2), mk_B3(3)));
+}
+
+fn test_floats() {
+    section("float operators");
+
+    x : f64 = 7.5;
+    y : f64 = 2.0;
+    // approx("f64 %", x % y, 1.5);
+    // approx("f64 % takes the sign of the dividend", (0.0 - x) % y, 0.0 - 1.5);
+
+    a : f32 = 7.5;
+    b : f32 = 2.0;
+    // approx32("f32 %", a % b, 1.5);
+
+    zero : f64 = 0.0;
+    nan := zero / zero;
+    check("NaN == NaN is false", !(nan == nan));
+    check("NaN != NaN is true", nan != nan);
+    check("NaN < 2 is false", !(nan < y));
+    check("NaN > 2 is false", !(nan > y));
+    check("NaN <= 2 is false", !(nan <= y));
+    check("NaN >= 2 is false", !(nan >= y));
+}
+
+fn test_loops() {
+    section("stack stays flat in long loops");
+
+    n : i32 = 0;
+    i := 0;
+
+    while i < 20000 {
+        n += mixed(7, mk_V2(1), mk_M3(2), mk_B3(3), mk_D2(4), 5000000009, mk_Big(5), 2.5, mk_LF(6), mk_M5(8), 250);
+        i += 1;
+    }
+    eq_i32("20k calls with every class", n, 20000);
+
+    n = 0;
+    i = 0;
+    while i < 20000 {
+        n += b2i(ok_Big(rt_Big(mk_Big(1), 1), 1));
+        i += 1;
+    }
+    eq_i32("20k Big round trips", n, 20000);
+
+    acc : i64 = 0;
+    i = 0;
+    while i < 100000 {
+        acc += count_args(mk_V2(1), mk_B3(2), mk_M3(3));
+        i += 1;
+    }
+    eq_i64("100k ..any calls (boxing structs in a loop)", acc, 300000);
+}
+
+
+// ============================================================
+// MAIN
+// ============================================================
+
+fn main(): i32 {
+    println("Gala ABI self-check");
+
+    test_sanity();
+    test_sizes();
+    test_roundtrip();
+    test_copies();
+    test_pressure();
+    test_fnptr();
+    test_scalars();
+    test_variadics();
+    test_slices();
+    test_floats();
+    test_loops();
+
+    return finish();
+}
