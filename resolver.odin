@@ -35,6 +35,8 @@ Scope :: struct {
 }
 ModuleScope :: struct {
     using scope: Scope,
+    obj_exports:   map[string]ObjId,
+    ty_exports:    map[string]TypeId,
 }
 name_exists :: proc(scope: ^Scope, n: string) -> bool {
     s := scope
@@ -624,7 +626,8 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
         }
         decs:= get_ctx().mods[modid];
 
-        for obj, v in decs.declarations.objects {
+        // import exports only
+        for obj, v in decs.declarations.obj_exports {
             _, exists := s.objects[obj];
             if exists {
                 debugln(item, v);
@@ -632,7 +635,7 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
             }
             s.objects[obj] = v
         }
-        for ty, v in decs.declarations.types {
+        for ty, v in decs.declarations.ty_exports {
             _, exists := s.types[ty];
             if exists {
                 debugln(item, v);
@@ -654,12 +657,28 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
 resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
     item := get(id)
 
-    switch _ in item {
+    switch i in item {
     case Import:        {}
-    case StructDec:     resolve_struct_dec_item(s, id);
-    case FnDec:         resolve_fn_dec_item(s, id);
-    case ExternFnDec:   resolve_extern_fn_dec_item(s, id);
-    case GlobalVarDec:  resolve_global_var_dec_item(s, id);
+    case StructDec: {
+        resolve_struct_dec_item(s, id);
+        tid, ok := get_ctx().item_types[id]; assert(ok);
+        s.ty_exports[i.name] = tid
+    }
+    case FnDec: {
+        resolve_fn_dec_item(s, id);
+        oid, ok := get_ctx().item_objects[id]; assert(ok);
+        s.obj_exports[i.name] = oid
+    }
+    case ExternFnDec: {
+        resolve_extern_fn_dec_item(s, id);
+        oid, ok := get_ctx().item_objects[id]; assert(ok);
+        s.obj_exports[i.name] = oid
+    }
+    case GlobalVarDec: {
+        resolve_global_var_dec_item(s, id);
+        oid, ok := get_ctx().item_objects[id]; assert(ok);
+        s.obj_exports[i.name] = oid
+    }
     case:               panic("impl")
     }
 }
