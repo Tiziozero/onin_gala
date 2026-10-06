@@ -29,6 +29,11 @@ fn main() {
         Vector2{x=450, y=250},
         Vector2{x=100, y=100},
     };
+    b := 1;
+    c := b | 4;
+    println(c);
+    c = b ~ 5;
+    println(c);
     while !WindowShouldClose() {
         if IsKeyPressed(KEY_UP) { v *= 1.2; }
         if IsKeyPressed(KEY_DOWN) { v /= 1.2; }
