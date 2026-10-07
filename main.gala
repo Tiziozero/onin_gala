@@ -11,15 +11,16 @@ fn draw_poly_centre(vertecies: []Vector2, centre: Vector2) {
             vertecies[(i + 1) % l],
             Color{r=255, g=255, b=255, a=255}
         );
-        /* println(i,
-            vertecies[i].x, vertecies[i].y, ":",
+        /* println(i, vertecies[i].x, vertecies[i].y, ":",
             vertecies[(i + 1) % l].x, vertecies[(i + 1) % l].y); */
         i += 1;
     }
 }
+struct fg { g: f32, f: f32 }
 fn main() {
-    a := Vector2{150, 250};
-    println(a.x, a.y);
+    a := fg{150, 250};
+    println(a.g, a.f);
+    println(a.f, a.g);
     r := Rectangle{x=150 + 50, y=150 + 50, w=100, h=100};
     InitWindow(500, 500, cstr("Hello from gala!."));
     SetTargetFPS(60);
