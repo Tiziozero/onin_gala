@@ -180,11 +180,11 @@ fn tcp_accept(server: TcpSocket): TcpSocket {
 // Sending
 // ============================================================
 
-fn tcp_send(_socket: TcpSocket, data: ^byte, length: u64): i64 {
+fn tcp_send(_socket: TcpSocket, data: []byte): i64 {
     return send(
         _socket.fd,
-        data,
-        length,
+        &data[0],
+        cast(u64)len(data),
         0,
     );
 }
@@ -194,11 +194,11 @@ fn tcp_send(_socket: TcpSocket, data: ^byte, length: u64): i64 {
 // Receiving
 // ============================================================
 
-fn tcp_recv(_socket: TcpSocket, buffer: ^byte, length: u64): i64 {
+fn tcp_recv(_socket: TcpSocket, buffer: []byte): i64 {
     return recv(
         _socket.fd,
-        buffer,
-        length,
+        &buffer[0],
+        cast(u64)len(buffer),
         0,
     );
 }

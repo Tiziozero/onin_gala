@@ -24,21 +24,13 @@ fn main() {
         buffer:=[1024]byte{};
 
         while true {
-            n := tcp_recv(
-                client,
-                &buffer[0],
-                1024,
-            );
+            n := tcp_recv(client, buffer[0:1024]);
 
             if n <= 0 {
                 break;
             }
 
-            tcp_send(
-                client,
-                &buffer[0],
-                cast(u64)n,
-            );
+            tcp_send(client, buffer[0:n]);
         }
 
         println("client disconnected");
