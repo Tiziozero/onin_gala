@@ -180,34 +180,7 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         resolve_expr(s, e.target);
     }
     case StructLit: {
-        // check type exists
-        tid, ok := scope_get_type(s, e.name); assert(ok);
-        ty := get_type(tid);
-        assert(ty.kind == .Struct);
-        assert(len(ty.structure.fields) == len(e.fields))
-        // check this exists
-        /*for sf in ty.structure.fields {
-            f, ok := e.fields[sf.name];
-            if !ok {
-                highlight_lines(get_span(id).span)
-                gala_panicf("Field doesn't exist in type %s.",
-                    e.name);
-            }
-            resolve_expr(s, f.expr);
-        }*/
-        for name, f in e.fields {
-            found := false
-            for k in ty.structure.fields {
-                if k.name == name do found = true
-            }
-            if !found {
-                highlight_lines(get_ctx().current_file, f.span)
-                gala_panicf("Field %s doesn't exist in type %s.",
-                    name, e.name);
-            }
-            resolve_expr(s, f.expr);
-        }
-        get_ctx().expr_resolution_types[id]=tid
+        resolve_struct_lit(s, id)
     }
     case ZeroInit: {
     }
@@ -259,6 +232,48 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
 
     case: panic("impl");
     }
+}
+resolve_struct_lit :: proc(s: ^Scope, id: ExprId) {
+    e := get_expr(id).(StructLit)
+    // check type exists
+    tid, ok := scope_get_type(s, e.name); assert(ok);
+    ty := get_type(tid);
+    assert(ty.kind == .Struct);
+    sfields := ty.structure.fields
+
+    // `Foo{1, 2}`: assign the values to the struct's fields in declaration
+    // order, so everything after this sees an ordinary named literal.
+    if len(e.positional) > 0 {
+        if len(e.positional) != len(sfields) {
+            highlight_lines(get_ctx().current_file, get_span(id).span)
+            gala_panicf("Type %s has %d fields, but the literal has %d values.",
+                e.name, len(sfields), len(e.positional));
+        }
+        for sf, i in sfields {
+            e.fields[sf.name] = e.positional[i]
+        }
+    }
+
+    if len(sfields) != len(e.fields) {
+        highlight_lines(get_ctx().current_file, get_span(id).span)
+        gala_panicf("Type %s has %d fields, but the literal sets %d.",
+            e.name, len(sfields), len(e.fields));
+    }
+
+    for name, f in e.fields {
+        found := false
+        for k in sfields {
+            if k.name == name do found = true
+        }
+        if !found {
+            highlight_lines(get_ctx().current_file, f.span)
+            gala_panicf("Field %s doesn't exist in type %s.",
+                name, e.name);
+        }
+        resolve_expr(s, f.expr);
+    }
+    get_ctx().expr_resolution_types[id]=tid
+    get_expr(id)^ = e
 }
 // always allocates a new TypeId, never dedupes — function types are nominal,
 // not structural (distinct decls with identical signatures must stay distinct)

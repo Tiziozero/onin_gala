@@ -46,6 +46,9 @@ ContinueStmt :: struct {label: string};
 StructLit :: struct {
     name: string,
     fields: map[string]struct{expr:ExprId,span:Span},
+    // `Foo{1, 2}` form: values in source order. The resolver moves these into
+    // `fields` once it knows the struct's field names; after that this is unused.
+    positional: []struct{expr:ExprId,span:Span},
 }
 Len :: struct { target: ExprId };
 Sizeof :: struct { t: TypeSpecifier };
@@ -240,32 +243,55 @@ parse_condition :: proc(p: ^Parser) -> ExprId {
     p.ignore_struct_lit = prev_ignore_struct_lit
     return e;
 }
-parse_expr :: proc(p: ^Parser) -> ExprId {
-    if current_token(p).kind ==.Ident && is_symbol(next_token(p), "{") &&
-            !p.ignore_struct_lit { // flag to ignore struct lits
-        name := expect_ident(p); // "name
-        consume_token(p); // "{"
-        fields := make(map[string]struct{expr: ExprId,span:Span}, allocator=get_ctx().allocator);
-        for !is_symbol(current_token(p), "}") {
+// `Name{x=1, y=2}` or `Name{1, 2}` (not both in one literal)
+parse_struct_lit :: proc(p: ^Parser) -> ExprId {
+    name := expect_ident(p); // "name"
+    consume_token(p); // "{"
+    fields := make(map[string]struct{expr: ExprId, span: Span}, allocator=get_ctx().allocator);
+    positional := make([dynamic]struct{expr: ExprId, span: Span}, allocator=get_ctx().allocator);
+
+    for !is_symbol(current_token(p), "}") {
+        if current_token(p).kind == .Ident && is_symbol(next_token(p), "=") {
+            // named: `x = expr`
+            if len(positional) > 0 {
+                highlight_lines(get_ctx().current_file, current_token(p).span)
+                gala_panic("Can't mix named and positional fields in a struct literal.")
+            }
             fname := expect_ident(p);
-            expect_symbol(p, "=");
-            expr:=parse_expr(p);
-            if f, ok := fields[fname.text]; ok {
+            consume_token(p); // "="
+            expr := parse_expr(p);
+            if _, exists := fields[fname.text]; exists {
                 highlight_lines(get_ctx().current_file, fname.span)
                 gala_panic("duplicate fields.");
             }
             fields[fname.text] = {expr, fname.span}
-            if is_symbol(current_token(p), ",") {
-                consume_token(p); // ","
-            } else do break
+        } else {
+            // positional: `expr`
+            if len(fields) > 0 {
+                highlight_lines(get_ctx().current_file, current_token(p).span)
+                gala_panic("Can't mix named and positional fields in a struct literal.")
+            }
+            expr := parse_expr(p);
+            append(&positional, struct{expr: ExprId, span: Span}{expr, get_span(expr).span})
         }
-        end := expect_symbol(p, "}");
-        id := new_expr(StructLit{name.text, fields})
-        get_ctx().spans.exprs[id] = {
-            file_name=get_ctx().current_file,
-            span={name.span.start, end.span.end}
-        }
-        return id;
+
+        if is_symbol(current_token(p), ",") {
+            consume_token(p); // ","
+        } else do break
+    }
+    end := expect_symbol(p, "}");
+
+    id := new_expr(StructLit{name=name.text, fields=fields, positional=positional[:]})
+    get_ctx().spans.exprs[id] = {
+        file_name=get_ctx().current_file,
+        span={name.span.start, end.span.end}
+    }
+    return id;
+}
+parse_expr :: proc(p: ^Parser) -> ExprId {
+    if current_token(p).kind ==.Ident && is_symbol(next_token(p), "{") &&
+        !p.ignore_struct_lit { // flag to ignore struct lits
+            return parse_struct_lit(p)
     } else if is_symbol(current_token(p), "[") {
         // eg: "v := [1024]byte{}"       (all zeroes)
         //     "v := [3]i32{1, 2, 3}"    (initialised, trailing comma ok)

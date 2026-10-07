@@ -18,8 +18,6 @@ fn draw_poly_centre(vertecies: []Vector2, centre: Vector2) {
     }
 }
 fn main() {
-    a := Vector2{150, 250};
-    println(a.x, a.y);
     r := Rectangle{x=150 + 50, y=150 + 50, w=100, h=100};
     InitWindow(500, 500, cstr("Hello from gala!."));
     SetTargetFPS(60);
