@@ -59,6 +59,7 @@ Context :: struct {
         items: map[ItemId]SpanStruct,
         // includes item decs + regular vardecs since both use ObjId
         objs_decs: map[ObjId]SpanStruct,
+        ty_decs: map[TypeId]SpanStruct,
     },
     files:                                  map[string]string,
     parsing:                                map[string]string,
@@ -115,16 +116,19 @@ get_file_lines :: proc(file_name: string, span: Span) -> []FileLine {
 
 highlight_lines_file_name :: proc(file_name:string, span:Span) {
     f := file_name
+    fmt.printfln("in \"%s\":", f);
     lines := get_file_lines(f, span);
     print_lines(lines, span);
 }
 highlight_lines_span :: proc(span:Span) {
     f := get_ctx().current_file
+    fmt.printfln("in \"%s\":", f);
     lines := get_file_lines(f, span);
     print_lines(lines, span);
 }
 highlight_lines_struct :: proc(span:SpanStruct) {
     f := span.file_name
+    fmt.printfln("in \"%s\":", span.file_name);
     lines := get_file_lines(f, span.span);
     print_lines(lines, span.span);
 }
@@ -236,6 +240,7 @@ get_span :: proc {
     get_span_stmt,
     get_span_item,
     get_span_obj,
+    get_span_ty,
 }
 SpanStruct :: struct{file_name: string, span: Span}
 get_span_expr :: proc(id: ExprId) -> SpanStruct {
@@ -268,6 +273,14 @@ get_span_item :: proc(id: ItemId) -> SpanStruct {
 get_span_obj :: proc(id: ObjId) -> SpanStruct {
     get_ctx := get_ctx()
     s, ok := get_ctx.spans.objs_decs[id]
+    if !ok {
+        panic(fmt.tprintf("get_span_obj: no span recorded for %v", id))
+    }
+    return s
+}
+get_span_ty :: proc(id: TypeId) -> SpanStruct {
+    get_ctx := get_ctx()
+    s, ok := get_ctx.spans.ty_decs[id]
     if !ok {
         panic(fmt.tprintf("get_span_obj: no span recorded for %v", id))
     }

@@ -42,6 +42,7 @@ init_context :: proc(debug := false) -> ^Context {
     ctx.spans.items = make(map[ItemId]SpanStruct, allocator = al)
     ctx.spans.stmts = make(map[StmtId]SpanStruct, allocator = al)
     ctx.spans.objs_decs = make(map[ObjId]SpanStruct, allocator = al)
+    ctx.spans.ty_decs = make(map[TypeId]SpanStruct, allocator = al)
 
     ctx.files = make(map[string]string, allocator = al)
     ctx.parsing = make(map[string]string, allocator = al)
@@ -349,26 +350,26 @@ main :: proc() { // odins context is passed down, not up, or some shi
     context.allocator = ctx.allocator
 
     // integer types
-    new_type(&ctx.base_mod, Type{name="i8", kind=.Int_8});
-    new_type(&ctx.base_mod, Type{name="i16", kind=.Int16});
-    new_type(&ctx.base_mod, Type{name="i32", kind=.Int32});
-    new_type(&ctx.base_mod, Type{name="i64", kind=.Int64});
+    new_type(&ctx.base_mod, Type{name="i8", kind=.Int_8}, {});
+    new_type(&ctx.base_mod, Type{name="i16", kind=.Int16}, {});
+    new_type(&ctx.base_mod, Type{name="i32", kind=.Int32}, {});
+    new_type(&ctx.base_mod, Type{name="i64", kind=.Int64}, {});
 
-    new_type(&ctx.base_mod, Type{name="u8", kind=.UInt_8});
-    new_type(&ctx.base_mod, Type{name="u16", kind=.UInt16});
-    new_type(&ctx.base_mod, Type{name="u32", kind=.UInt32});
-    new_type(&ctx.base_mod, Type{name="u64", kind=.UInt64});
+    new_type(&ctx.base_mod, Type{name="u8", kind=.UInt_8 }, {});
+    new_type(&ctx.base_mod, Type{name="u16", kind=.UInt16}, {});
+    new_type(&ctx.base_mod, Type{name="u32", kind=.UInt32}, {});
+    new_type(&ctx.base_mod, Type{name="u64", kind=.UInt64}, {});
 
-    new_type(&ctx.base_mod, Type{name="f8", kind=.Flt_8});
-    new_type(&ctx.base_mod, Type{name="f16", kind=.Flt16});
-    new_type(&ctx.base_mod, Type{name="f32", kind=.Flt32});
-    new_type(&ctx.base_mod, Type{name="f64", kind=.Flt64});
-    new_type(&ctx.base_mod, Type{name="void", kind=.Void});
-    new_type(&ctx.base_mod, Type{name="any", kind=.Any});
-    new_type(&ctx.base_mod, Type{name="bool", kind=.Bool});
-    new_type(&ctx.base_mod, Type{name="byte", kind=.Byte});
-    new_type(&ctx.base_mod, Type{name="rawptr", kind=.Pointer, ptr=void_type()});
-    new_type(&ctx.base_mod, Type{name="string", kind=.String});
+    new_type(&ctx.base_mod, Type{name="f8", kind=.Flt_8}, {});
+    new_type(&ctx.base_mod, Type{name="f16", kind=.Flt16}, {});
+    new_type(&ctx.base_mod, Type{name="f32", kind=.Flt32}, {});
+    new_type(&ctx.base_mod, Type{name="f64", kind=.Flt64}, {});
+    new_type(&ctx.base_mod, Type{name="void", kind=.Void}, {});
+    new_type(&ctx.base_mod, Type{name="any", kind=.Any}, {});
+    new_type(&ctx.base_mod, Type{name="bool", kind=.Bool}, {});
+    new_type(&ctx.base_mod, Type{name="byte", kind=.Byte}, {});
+    new_type(&ctx.base_mod, Type{name="rawptr", kind=.Pointer, ptr=void_type()}, {});
+    new_type(&ctx.base_mod, Type{name="string", kind=.String}, {});
 
     ctx.program_name = cli.program_name
 

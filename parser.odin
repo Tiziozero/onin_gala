@@ -957,6 +957,7 @@ FnDecSignature :: struct {
     is_variadic: bool,
     variadic_ty: TypeSpecifier,
     variadic_arg_name: string,
+    variadic_arg_span: Span,
 }
 FnDec :: struct {
     using signature: FnDecSignature,
@@ -1146,6 +1147,7 @@ parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
             f.is_variadic = true;
             f.variadic_ty = t;
             f.variadic_arg_name = name.text;
+            f.variadic_arg_span = name.span;
             break;
         }
         ty := parse_type(p);

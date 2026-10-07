@@ -38,24 +38,45 @@ ModuleScope :: struct {
     obj_exports:   map[string]ObjId,
     ty_exports:    map[string]TypeId,
 }
-name_exists :: proc(scope: ^Scope, n: string) -> bool {
+name_exists :: proc(scope: ^Scope, n: string, error := false) -> bool {
     s := scope
     for s != nil {
-        _, ok := s.types[n];            if ok do return true
-        _, ok  = s.objects[n];          if ok do return true
-        _, ok  = s.ty_foreward[n];      if ok do return true
-        _, ok  = s.obj_foreward[n];     if ok do return true
+        tid, ok := s.types[n];
+        if ok {
+            if error { fmt.print("First declared here:"); highlight_lines(get_span(tid)); }
+            return true
+        }
+
+        oid, ok1  := s.objects[n];
+        if ok1 {
+            if error { fmt.print("First declared here:"); highlight_lines(get_span(oid)); }
+            return true
+        }
+
+        ftid, ok2  := s.ty_foreward[n];
+        if ok2 {
+            if error { fmt.print("First declared here:"); highlight_lines(get_span(ftid)); }
+            return true
+        }
+
+        foid, ok3  := s.obj_foreward[n];
+        if ok3 {
+            if error { fmt.print("First declared here:"); highlight_lines(get_span(foid)); }
+            return true
+        }
+
         s = s.parent
     }
     return false
 }
-new_object :: proc(s: ^Scope, o: Object) -> ObjId {
+new_object :: proc(s: ^Scope, o: Object, span: SpanStruct) -> ObjId {
     ctx := get_ctx()
     assert(o.kind != .Invalid);
     assert(len(o.name) > 0);
 
     // make sure they're not already declared
-    if name_exists(s, o.name) {
+    if name_exists(s, o.name, true) {
+        highlight_lines(span)
         gala_panicf("object %s already exists.", o.name);
     }
 
@@ -63,16 +84,17 @@ new_object :: proc(s: ^Scope, o: Object) -> ObjId {
     id := ObjId(len(ctx.objs)-1);
     s.objects[o.name] = id
     ctx.obj_modules[id] = get_ctx().current_module_id;
+    ctx.spans.objs_decs[id] = span
     return id
 }
 
-new_type :: proc(s: ^Scope, t: Type) -> TypeId {
+new_type :: proc(s: ^Scope, t: Type, span: SpanStruct) -> TypeId {
     ctx := get_ctx();
     assert(t.kind != .Invalid);
     assert(len(t.name) > 0);
 
     // make sure it doesn't exist
-    if name_exists(s, t.name) {
+    if name_exists(s, t.name, true) {
         gala_panicf("Name \"%s\" already declared.", t.name);
     }
 
@@ -80,15 +102,16 @@ new_type :: proc(s: ^Scope, t: Type) -> TypeId {
     id := TypeId(len(ctx.types)-1);  // allocate type
     s.types[t.name] = id
     ctx.ty_modules[id] = ctx.current_module_id;
+    ctx.spans.ty_decs[id] = span
     return id
 }
-new_object_fd :: proc(s: ^ModuleScope, o: Object) -> ObjId {
+new_object_fd :: proc(s: ^ModuleScope, o: Object, span: SpanStruct) -> ObjId {
     ctx := get_ctx()
     assert(o.kind != .Invalid);
     assert(len(o.name) > 0);
 
     // make sure it doesn't exist
-    if name_exists(s, o.name) {
+    if name_exists(s, o.name, true) {
         gala_panicf("Name \"%s\" already declared.", o.name);
     }
 
@@ -96,15 +119,16 @@ new_object_fd :: proc(s: ^ModuleScope, o: Object) -> ObjId {
     id := ObjId(len(ctx.objs)-1);
     s.obj_foreward[o.name] = id
     ctx.obj_modules[id] = ctx.current_module_id;
+    ctx.spans.objs_decs[id] = span
     return id
 }
-new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
+new_type_fd :: proc(s: ^ModuleScope, t: Type, span: SpanStruct) -> TypeId {
     ctx := get_ctx()
     assert(t.kind != .Invalid);
     assert(len(t.name) > 0);
 
     // make sure it doesn't exist
-    if name_exists(s, t.name) {
+    if name_exists(s, t.name, true) {
         gala_panicf("Name \"%s\" already declared.", t.name);
     }
 
@@ -112,6 +136,7 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type) -> TypeId {
     id := TypeId(len(ctx.types)-1); 
     s.ty_foreward[t.name] = id
     ctx.ty_modules[id] = ctx.current_module_id;
+    ctx.spans.ty_decs[id] = span
     return id
 }
 // Function literals don't capture: their body is resolved against the module
@@ -389,7 +414,7 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
         resolve_expr(s, stmt.expr);
         new_s := new_scope(s)
         // create new object with no type yet, get that in typechecking
-        get_ctx().stmt_objects[id] = new_object(&new_s, Object{kind=.Argument, name=stmt.name})
+        get_ctx().stmt_objects[id] = new_object(&new_s, Object{kind=.Argument, name=stmt.name}, get_span(id))
         b := stmt.block
         resolve_block(&new_s, &b);
     }
@@ -405,7 +430,8 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
             ty, ok := stmt.type.(TypeSpecifier); assert(ok);
             resolved_ty = resolve_type_specifier(s, ty);
         }
-        oid := new_object(s, Object{kind=.Variable, name=stmt.name, type=resolved_ty})
+        oid := new_object(s, Object{kind=.Variable,
+            name=stmt.name, type=resolved_ty}, get_span(id))
         get_ctx().stmt_objects[id] = oid;
     }
     case Return: {
@@ -534,7 +560,7 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
 
         args[i] = arg
         declared[a.name] = arg
-        new_object(&new_scope, Object{.Argument, a.name, arg_t});
+        new_object(&new_scope, Object{.Argument, a.name, arg_t}, {file_name=get_ctx().current_file, span=a.span});
     }
     fnty.fn.args = args
 
@@ -554,7 +580,8 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
         // don't apend to args, as it's not an argument in the function ig
         // but declare object for fn body
         // it's fine because extern fn doesn't make use of it either way
-        new_object(&new_scope, Object{.Argument, name, new_ty_id});
+        new_object(&new_scope, Object{.Argument, name, new_ty_id},
+            {file_name=get_ctx().current_file, span=fndec.variadic_arg_span});
         fnty.fn.is_variadic = true
         fnty.fn.variadic_ty = variadic_ty
         fnty.fn.variadic_name = name
@@ -573,6 +600,7 @@ resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 
     // intern type
     tyid := new_fn_type(fnty);
+    get_ctx().spans.ty_decs[tyid] = get_span(id)
 
     obj.type = tyid
     obj.name = fndec.name;
@@ -595,6 +623,7 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 
     // intern type
     tyid := new_fn_type(fnty);
+    get_ctx().spans.ty_decs[tyid] = get_span(id)
 
     obj.type = tyid
     obj.name = fndec.name;
@@ -660,12 +689,12 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
         }
         get_ctx().item_module[id] = modid
     }
-    case StructDec:     new_type_fd(s, Type{kind=.Struct, name=i.name})
-    case FnDec:         new_object_fd(s, Object{kind=.Variable, name=i.name});
-    case ExternFnDec:   new_object_fd(s, Object{kind=.Variable, name=i.name});
+    case StructDec:     new_type_fd(s, Type{kind=.Struct, name=i.name}, get_span(id));
+    case FnDec:         new_object_fd(s, Object{kind=.Variable, name=i.name}, get_span(id));
+    case ExternFnDec:   new_object_fd(s, Object{kind=.Variable, name=i.name}, get_span(id));
     // kind=.Variable on purpose: a global is addressable like any local, so
     // the type checker and codegen treat its uses the same way.
-    case GlobalVarDec:  new_object_fd(s, Object{kind=.Variable, name=i.name});
+    case GlobalVarDec:  new_object_fd(s, Object{kind=.Variable, name=i.name}, get_span(id));
     case:               panic("impl")
     }
 }

@@ -1,0 +1,69 @@
+import "./core.gala";
+import "./rl.gala";
+
+fn draw_poly_centre(vertecies: []Vector2, centre: Vector2) {
+    l := len(vertecies);
+    i := 0;
+    while i < l {
+        DrawTriangle(
+            centre,
+            vertecies[i],
+            vertecies[(i + 1) % l],
+            Color{r=255, g=255, b=255, a=255}
+        );
+        /* println(i, vertecies[i].x, vertecies[i].y, ":",
+            vertecies[(i + 1) % l].x, vertecies[(i + 1) % l].y); */
+        i += 1;
+    }
+}
+struct fg { g: f32, f: f32 }
+fn main() {
+    a := fg{150, 250};
+    println(a.g, a.f);
+    println(a.f, a.g);
+    r := Rectangle{x=150 + 50, y=150 + 50, w=100, h=100};
+    InitWindow(500, 500, cstr("Hello from gala!."));
+    SetTargetFPS(60);
+    t: f32 = 0;
+    v :f32 = 1.0;
+    polygon := [4]Vector2{
+        Vector2{x=0,y=450},
+        Vector2{x=500,y=500},
+        Vector2{x=450, y=250},
+        Vector2{x=100, y=100},
+    };
+    b := 1;
+    c := b | 4;
+    println(c);
+    c = b ~ 5;
+    println(c);
+    while !WindowShouldClose() {
+        if IsKeyPressed(KEY_UP) { v *= 1.2; }
+        if IsKeyPressed(KEY_DOWN) { v /= 1.2; }
+        np := polygon;
+        dt := GetFrameTime();
+        t += v*dt;
+        nr := r;
+        dx := 50 * sinf(t);
+        dy := 50 * cosf(t);
+        nr.x -= dx/2;
+        nr.w += dx;
+        nr.y -= dy/2;
+        nr.h += dy;
+        np[0].x += dy * fabsf(sinf(3*t));
+        np[0].y += dx * fabsf(cosf(2*t));
+        np[1].x += dx;
+        np[1].y += dy;
+        np[2].x += 100*cosf(1.25*t);
+        np[2].y += 50*cosf(t);
+        np[2].x += 100*(1+sinf(t));
+        np[2].y += 50*cosf(t);
+        BeginDrawing();
+        ClearBackground(Color{r=0, b=0, g=0, a=255});
+            draw_poly_centre(np[0:4], Vector2{x=150,y=150});
+            DrawRectangle(cast(i32)nr.x, cast(i32)nr.y, cast(i32)nr.w, cast(i32)nr.h,
+                    Color{r=255, g=255, b=50,a=255});
+        EndDrawing();
+    }
+    CloseWindow();
+}
