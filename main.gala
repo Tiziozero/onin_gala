@@ -31,11 +31,6 @@ fn main() {
             println("Got:", transmute(string)buffer[0:n]);
 
             tcp_send(client, buffer[0:n]);
-            printlen(buffer[0:1024]);
-            printlen(buffer[:]);
-            printlen(buffer[0:n]);
-            printlen(buffer[:n]);
-            printlen(buffer[74:]);
         }
         println("client disconnected");
         tcp_close(client);

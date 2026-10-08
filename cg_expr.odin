@@ -2,7 +2,29 @@ package main
 
 import "core:strings"
 import "core:strconv"
-import "core:mem"
+
+// ============================================================================
+// Small emit helpers
+// ============================================================================
+
+// Builds a `{ ptr, <len_ty> }` pair (slice / string / boxed `any` header)
+// from already-evaluated operands and returns the SSA value.
+cg_make_pair :: proc(c: ^CGCtx, ptr, len_ty, len: string) -> string {
+    v1 := new_tmp(c)
+    v2 := new_tmp(c)
+    cwritefln(c, "\t%s = insertvalue {{ ptr, %s }} undef, ptr %s, 0", v1, len_ty, ptr)
+    cwritefln(c, "\t%s = insertvalue {{ ptr, %s }} %s, %s %s, 1", v2, len_ty, v1, len_ty, len)
+    return v2
+}
+
+// Index of the field called `name` in struct type `ty`.
+struct_field_index :: proc(ty: ^Type, name: string) -> int {
+    for f, k in ty.structure.fields {
+        if f.name == name do return k
+    }
+    gala_panic("struct_field_index: no such field", name)
+    // return -1
+}
 
 // Boxes `val` (of concrete type `concrete_ty`) into an `any` value:
 // { ptr, i64 } = { address of a spilled copy of val, typeid_of(concrete_ty) }.
@@ -10,12 +32,9 @@ import "core:mem"
 // value directly — so we always spill to get an address, even for values
 // that would otherwise happily live in a register.
 //
-// Returns the boxed SSA value and its LLVM type string directly, rather
-// than a TypeId for a boxed_ty to run back through ty_to_llvm_str: the ABI
-// shape of a boxed `any` is a fixed, compile-time-known constant regardless
-// of which TypeId a given `any` declaration resolves to, so there is
-// nothing to look up here — no dependency on `any` being registered as a
-// named type anywhere.
+// Returns the boxed SSA value and its LLVM type string directly: the ABI
+// shape of a boxed `any` is a fixed, compile-time-known constant, so there
+// is nothing to look up and no dependency on `any` being a named type.
 cg_box_any :: proc(c: ^CGCtx, val: string, concrete_ty: TypeId) -> (string, string) {
     concrete_ty_str := ty_to_llvm_str(c, concrete_ty)
 
@@ -23,12 +42,8 @@ cg_box_any :: proc(c: ^CGCtx, val: string, concrete_ty: TypeId) -> (string, stri
     slot := new_entry_alloca(c, concrete_ty_str)
     cwritefln(c, "\tstore %s %s, ptr %s", concrete_ty_str, val, slot)
 
-    v1 := new_tmp(c)
-    v2 := new_tmp(c)
-    cwritefln(c, "\t%s = insertvalue {{ ptr, i64 }} undef, ptr %s, 0", v1, slot)
-    cwritefln(c, "\t%s = insertvalue {{ ptr, i64 }} %s, i64 %d, 1", v2, v1, typeid_of(concrete_ty))
-
-    return v2, "{ ptr, i64 }"
+    boxed := cg_make_pair(c, slot, "i64", aprintf(c, "%d", typeid_of(concrete_ty)))
+    return boxed, "{ ptr, i64 }"
 }
 
 // Function literals (lambdas) are lowered to ordinary, separate LLVM
@@ -88,7 +103,12 @@ cg_fn_lit :: proc(c: ^CGCtx, id: ExprId, e: FnLit) -> CGExprRes {
     return {kind=.Value, v=aprintf(c, "@%s", name), id=id}
 }
 
-// some expressions (fn calls with void returns) don't return so are invalid
+// ============================================================================
+// Expression results
+// ============================================================================
+
+// Collapses a CGExprRes into a single SSA operand. Returns false for
+// expressions that produce no value (void calls).
 //
 // NOTE: for a *large aggregate* (see is_memory_type) this is the slow path —
 // it materialises the whole value as one SSA value (a full `load`). Code that
@@ -96,9 +116,8 @@ cg_fn_lit :: proc(c: ^CGCtx, id: ExprId, e: FnLit) -> CGExprRes {
 // and only come here for scalars and small values.
 reduce_expr_to_single_value :: proc(c: ^CGCtx, e: CGExprRes) -> (string, bool) {
     switch e.kind {
-    case .Address: {
-        return e.v, true;
-    }
+    case .Address, .Value, .Number:
+        return e.v, true
     case .Place: {
         // value lives in memory at e.v; load it (whole thing)
         t := new_tmp(c)
@@ -106,43 +125,33 @@ reduce_expr_to_single_value :: proc(c: ^CGCtx, e: CGExprRes) -> (string, bool) {
         return t, true
     }
     case .Struct: {
-        lit := get_expr(e.id).(StructLit)
+        // cg_expr(StructLit) already evaluated every field and stored the
+        // reduced SSA values in struct_lit.fields (declaration order) —
+        // reuse them instead of generating each field expression a second
+        // time (which would also duplicate side effects).
         tid := expr_ty(e.id)
-        ty := get_type(tid);
         ty_str := ty_to_llvm_str(c, tid)
 
-        cur := "undef"   // starting aggregate — a literal LLVM keyword, not a register
-        i := 0;
-        for field in ty.structure.fields {
-            f := lit.fields[field.name]
-            // cg_expr(StructLit) already evaluated every field and stored the
-            // reduced SSA values in struct_lit.fields (declaration order) —
-            // reuse them instead of generating each field expression a
-            // second time (which also duplicated side effects).
-            fv := e.struct_lit.fields[i]
+        cur := "undef" // starting aggregate — a literal LLVM keyword, not a register
+        for field, i in get_type(tid).structure.fields {
             next := new_tmp(c)
             cwritefln(c, "\t%s = insertvalue %s %s, %s %s, %d",
-                next, ty_str, cur, ty_to_llvm_str(c, expr_ty(f.expr)), fv, i)
+                next, ty_str, cur, ty_to_llvm_str(c, field.type), e.struct_lit.fields[i], i)
             cur = next
-            i+=1;
         }
         return cur, true
     }
-    case .Invalid: gala_panic("invalid")
-    case .None: return "", false
-    case .Value: {
-        return e.v, true
-    }
-    case .Number: {
-        return e.v, true
-    }
     case .Binop: {
         t := new_tmp(c)
-        cwritefln(c, "\t%s = %s", t, e.v);
+        cwritefln(c, "\t%s = %s", t, e.v)
         return t, true
     }
+    case .None:
+        return "", false
+    case .Invalid:
+        gala_panic("reduce_expr_to_single_value: invalid expression result")
     }
-    panic("impl");
+    unreachable()
 }
 
 // Evaluates expression `id` and writes its value into memory at `dest`
@@ -259,25 +268,195 @@ cg_logical :: proc(c: ^CGCtx, e: Binop) -> CGExprRes {
     return {kind=.Value, v=t}
 }
 
-get_take_slice_end :: proc(c: ^CGCtx, id: ExprId) -> string {
-        inner, returns := reduce_expr_to_single_value(c, cg_expr(c, id));
-        assert(returns);
-        ty := get_type(expr_ty(id))
-        #partial switch ty.kind {
-        case .String, .Slice: {
-            t := new_tmp(c);
-               cwritefln(c, "\t%s = extractvalue %s %s, 1",
-                   t, ty_to_llvm_str(c, expr_ty(id)), inner);
-               return t;
+// ============================================================================
+// len / slicing
+// ============================================================================
+
+// Length of a string / slice / fixed-size array expression. Returns the
+// operand text and whether it is a compile-time constant (arrays).
+//
+// Fixed arrays never have their contents loaded: an addressable array isn't
+// evaluated at all, and a non-addressable one is evaluated (for side
+// effects) but not reduced — reducing a large array would be a whole-value
+// load.
+cg_len_of :: proc(c: ^CGCtx, target: ExprId) -> (v: string, is_const: bool) {
+    tid := expr_ty(target)
+    ty := get_type(tid)
+    #partial switch ty.kind {
+    case .String, .Slice: {
+        inner, returns := reduce_expr_to_single_value(c, cg_expr(c, target))
+        assert(returns)
+        t := new_tmp(c)
+        cwritefln(c, "\t%s = extractvalue %s %s, 1", t, ty_to_llvm_str(c, tid), inner)
+        return t, false
+    }
+    case .FixedSizeArray: {
+        if !is_addressable(c, target) {
+            _ = cg_expr(c, target)
         }
-        case .FixedSizeArray: {
-            v := aprintf(c, "%d", ty.fixed_size_array.size);
-               return v
-        }
-        case: {highlight_lines(get_span(id)); panic("can't take end slice of expr.");}
-        }
-        panic("impl");
+        return aprintf(c, "%d", ty.fixed_size_array.size), true
+    }
+    case:
+        highlight_lines(get_span(target))
+        gala_panic("can't take len of expression", ty.kind)
+    }
+    return "", false
 }
+
+// Evaluates a slice bound and converts it to the language's integer type
+// (a no-op when it already is that type).
+cg_slice_bound :: proc(c: ^CGCtx, id: ExprId) -> string {
+    v, returns := reduce_expr_to_single_value(c, cg_expr(c, id))
+    assert(returns)
+
+    int_kind := get(ty_from_name("u64")).kind
+    if get(expr_ty(id)).kind == int_kind {
+        return v
+    }
+    op, ok := ty_to_llvm_cast_op(expr_ty(id), integer_type())
+    if !ok {
+        return v
+    }
+    t := new_tmp(c)
+    cwritefln(c, "\t%s = %s %s %s to %s", t, op,
+        ty_to_llvm_str(c, expr_ty(id)), v, ty_to_llvm_str(c, integer_type()))
+    return t
+}
+
+// ============================================================================
+// Binary operators
+// ============================================================================
+
+OperandClass :: enum {
+    SignedInt,
+    UnsignedInt,
+    Float,
+    Bool,
+}
+
+operand_class :: proc(t: TypeId) -> OperandClass {
+    kind := get_type(t).kind
+    switch {
+    case is_integer_signed(t):
+        return .SignedInt
+    case is_integer_unsigned(t) || kind == .Byte || kind == .Rune:
+        return .UnsignedInt
+    case is_float(t):
+        return .Float
+    case kind == .Bool:
+        return .Bool
+    case kind == .Void:
+        gala_panic("can't binop voids")
+    }
+    debugln(kind)
+    gala_panic("operand_class: unsupported operand type")
+    // return .SignedInt
+}
+
+// LLVM opcode (incl. the icmp/fcmp predicate) for a binop on `cls`.
+binop_llvm_op :: proc(e: Binop, cls: OperandClass) -> string {
+    switch cls {
+    case .SignedInt, .UnsignedInt: {
+        signed := cls == .SignedInt
+        #partial switch e.kind {
+        case .Addition:     return "add"
+        case .Subtraction:  return "sub"
+        case .Multiply:     return "mul"
+        case .Divide:       return "sdiv" if signed else "udiv"
+        case .Modulo:       return "srem" if signed else "urem"
+        case .Equal:        return "icmp eq"
+        case .NotEqual:     return "icmp ne"
+        case .LessEqual:    return "icmp sle" if signed else "icmp ule"
+        case .GreaterEqual: return "icmp sge" if signed else "icmp uge"
+        case .Less:         return "icmp slt" if signed else "icmp ult"
+        case .Greater:      return "icmp sgt" if signed else "icmp ugt"
+        case .BitAnd:       return "and"
+        case .BitXor:       return "xor"
+        case .BitOr:        return "or"
+        }
+    }
+    case .Float: {
+        #partial switch e.kind {
+        case .Addition:     return "fadd"
+        case .Subtraction:  return "fsub"
+        case .Multiply:     return "fmul"
+        case .Divide:       return "fdiv"
+        case .Modulo:       return "frem"
+        case .Equal:        return "fcmp oeq"
+        case .NotEqual:     return "fcmp une"
+        case .LessEqual:    return "fcmp ole"
+        case .GreaterEqual: return "fcmp oge"
+        case .Less:         return "fcmp olt"
+        case .Greater:      return "fcmp ogt"
+        }
+    }
+    case .Bool: {
+        #partial switch e.kind {
+        case .Equal:      return "icmp eq"
+        case .NotEqual:   return "icmp ne"
+        case .LogicalAnd: return "and"
+        case .LogicalOr:  return "or"
+        case:
+            gala_panic("can't order booleans")
+        }
+    }
+    }
+    gala_panic("unsupported binary operation", e.kind, cls)
+    // return ""
+}
+
+// Pointers are always compared / offset as plain integers.
+ptr_cmp_op :: proc(e: Binop) -> (string, bool) {
+    #partial switch e.kind {
+    case .Equal:        return "icmp eq", true
+    case .NotEqual:     return "icmp ne", true
+    case .LessEqual:    return "icmp ule", true
+    case .GreaterEqual: return "icmp uge", true
+    case .Less:         return "icmp ult", true
+    case .Greater:      return "icmp ugt", true
+    }
+    return "", false
+}
+
+cg_ptr_to_i64 :: proc(c: ^CGCtx, res: CGExprRes) -> string {
+    v, returns := reduce_expr_to_single_value(c, res)
+    assert(returns)
+    t := new_tmp(c)
+    cwritefln(c, "\t%s = ptrtoint ptr %s to i64", t, v)
+    return t
+}
+
+// ---- pointer arithmetic / pointer comparison ----
+// Operands of a Binop always share a type, so if either side is a pointer,
+// both are. Number literals that were coerced onto a pointer type (`ptr - 1`,
+// null checks) come out of cg_expr as a real `inttoptr` value, so
+// ptrtoint on them is always valid.
+cg_pointer_binop :: proc(c: ^CGCtx, e: Binop) -> CGExprRes {
+    li := cg_ptr_to_i64(c, cg_expr(c, e.left))
+    ri := cg_ptr_to_i64(c, cg_expr(c, e.right))
+
+    if op, is_cmp := ptr_cmp_op(e); is_cmp {
+        return {kind=.Binop, v=aprintf(c, "%s i64 %s, %s", op, li, ri)}
+    }
+
+    #partial switch e.kind {
+    case .Addition, .Subtraction: {
+        arith := "add" if e.kind == .Addition else "sub"
+        res := new_tmp(c)
+        cwritefln(c, "\t%s = %s i64 %s, %s", res, arith, li, ri)
+        t := new_tmp(c)
+        cwritefln(c, "\t%s = inttoptr i64 %s to ptr", t, res)
+        return {kind=.Value, v=t}
+    }
+    }
+    gala_panic("unsupported pointer binary operation")
+    // return {}
+}
+
+// ============================================================================
+// Expressions
+// ============================================================================
+
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     switch e in get_expr(id) {
     case TypeIdOf: {
@@ -308,49 +487,24 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         cwritefln(c, "\t%s = xor i1 %s, true", t, v)
         return {kind=.Value, v=t}
     }
-    case BoolLitFalse: {
+    case BoolLitFalse:
         return {kind=.Value, v="0"}
-    }
-    case BoolLitTrue: {
+    case BoolLitTrue:
         return {kind=.Value, v="1"}
-    }
     case Len: {
-        inner, returns := reduce_expr_to_single_value(c, cg_expr(c, e.target));
-        assert(returns);
-        ty := get_type(expr_ty(e.target))
-        #partial switch ty.kind {
-        case .String, .Slice: {
-            t := new_tmp(c);
-            cwritefln(c, "\t%s = extractvalue %s %s, 1",
-                t, ty_to_llvm_str(c, expr_ty(e.target)), inner);
-            return {kind=.Value, v=t};
-        }
-        case .FixedSizeArray: {
-            v := aprintf(c, "%d", ty.fixed_size_array.size);
-            return {kind=.Number, v=v}
-        }
-        case: {debugln(get(e.target), ty.kind); panic("can't take len of it.");}
-        }
-        panic("impl");
+        v, is_const := cg_len_of(c, e.target)
+        return {kind=.Number if is_const else .Value, v=v}
     }
     case Sizeof: {
-        s := type_size(get_ctx().expr_resolution_types[id]);
-        v := aprintf(c, "%d", s);
-        return {kind=.Number, v=v}
+        s := type_size(get_ctx().expr_resolution_types[id])
+        return {kind=.Number, v=aprintf(c, "%d", s)}
     }
     case String: {
         r := c.cg_strings[e.s] // global string thingy
-        t := new_tmp(c);
+        data := new_tmp(c)
         cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i64 0, i64 0",
-            t, r.array_type, r.s);
-
-        t1 := new_tmp(c);
-        t2 := new_tmp(c);
-        cwritefln(c, "\t%s = insertvalue {{ ptr, i64 }} undef, ptr %s, 0",
-            t1, t)
-        cwritefln(c, "\t%s = insertvalue {{ ptr, i64 }} %s, i64 %d, 1       ",
-            t2, t1, r.len)
-        return {kind=.Value, v=t2}
+            data, r.array_type, r.s)
+        return {kind=.Value, v=cg_make_pair(c, data, "i64", aprintf(c, "%d", r.len))}
     }
     case Deref: {
         // NOTE: this must mirror cg_addr's Deref case in how it computes
@@ -366,7 +520,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         ptr_ty := get_type(expr_ty(e.expr))
 
         if ptr_ty.kind != .Pointer {
-            panic("cannot dereference non-pointer type")
+            gala_panic("cannot dereference non-pointer type")
         }
 
         pointee_ty := ptr_ty.ptr
@@ -376,21 +530,12 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             return {kind=.Place, v=ptr_val, id=id}
         }
 
-        pointee_llvm_ty := ty_to_llvm_str(c, pointee_ty)
-
-        loaded := new_tmp(c);
-        cwritefln(c, "\t%s = load %s, ptr %s", loaded, pointee_llvm_ty, ptr_val);
-
-        return {
-            kind = .Value,
-            v = loaded,
-        }
+        loaded := new_tmp(c)
+        cwritefln(c, "\t%s = load %s, ptr %s", loaded, ty_to_llvm_str(c, pointee_ty), ptr_val)
+        return {kind=.Value, v=loaded}
     }
-    case Reference: {
-        inner_ptr := cg_addr(c, e.expr)
-        e_ty := expr_ty(e.expr);
-        return {kind=.Value, v = inner_ptr}
-    }
+    case Reference:
+        return {kind=.Value, v=cg_addr(c, e.expr)}
     case Transmute: {
         from_ty := expr_ty(e.target)
         to_ty := expr_ty(id)
@@ -418,63 +563,30 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             cwritefln(c, "\t%s = load %s, ptr %s", t, ty_to_llvm_str(c, to_ty), slot)
             return {kind=.Value, v=t}
         }
-        panic("impl");
+        unreachable()
     }
     case TakeSlice: {
-        // if  e.empty_start || e.empty_end do panic("impl")
-        start: string
+        start := "0"
         if !e.empty_start {
-            sret: bool
-            start, sret = reduce_expr_to_single_value(c, cg_expr(c, e.start))
-            assert(sret);
-        } else {
-            start = "0"
+            start = cg_slice_bound(c, e.start)
         }
         end: string
         if !e.empty_end {
-            eret: bool
-            end, eret = reduce_expr_to_single_value(c, cg_expr(c, e.end))
-            assert(eret);
-        } else do end = get_take_slice_end(c, e.target)
-
-        // Convert the bounds to the language's integer type. When the type
-        // already IS that type (the common case, e.g. the literals in
-        // `a[0:4]`) ty_to_llvm_cast_op reports "no cast needed" — emit
-        // nothing instead of the old `bitcast u64 0 to u64`.
-        int_kind := get(ty_from_name("u64")).kind
-        if !e.empty_start && get(expr_ty(e.start)).kind != int_kind {
-            op, ok := ty_to_llvm_cast_op(expr_ty(e.start), integer_type());
-            if ok {
-                t := new_tmp(c);
-                cwritefln(c, "\t%s = %s %s %s to %s", t, op,
-                    ty_to_llvm_str(c, expr_ty(e.start)), start, ty_to_llvm_str(c, integer_type()));
-                start = t
-            }
+            end = cg_slice_bound(c, e.end)
+        } else {
+            end, _ = cg_len_of(c, e.target)
         }
-        if !e.empty_end && get(expr_ty(e.end)).kind != int_kind {
-            op, ok := ty_to_llvm_cast_op(expr_ty(e.end), integer_type());
-            if ok {
-                t := new_tmp(c);
-                cwritefln(c, "\t%s = %s %s %s to %s", t, op,
-                    ty_to_llvm_str(c, expr_ty(e.end)), end, ty_to_llvm_str(c, integer_type()));
-                end = t
-            }
-        }
-        len_s := new_tmp(c);
-        cwritefln(c, "\t%s = sub nsw nuw %s %s, %s",len_s,
-            ty_to_llvm_str(c,integer_type()), end, start);
 
         llvm_int := ty_to_llvm_str(c, integer_type())
+        len_s := new_tmp(c)
+        cwritefln(c, "\t%s = sub nsw nuw %s %s, %s", len_s, llvm_int, end, start)
+
         base_ptr, elem_ty := cg_data_ptr(c, e.target)
         elem_ptr := new_tmp(c)
         cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, %s %s",
             elem_ptr, elem_ty, base_ptr, llvm_int, start)
 
-        v1 := new_tmp(c)
-        v2 := new_tmp(c)
-        cwritefln(c, "\t%s = insertvalue {{ ptr, %s }} undef, ptr %s, 0", v1, llvm_int, elem_ptr)
-        cwritefln(c, "\t%s = insertvalue {{ ptr, %s }} %s, %s %s, 1", v2, llvm_int, v1, llvm_int, len_s)
-        return {kind=.Value, v=v2}
+        return {kind=.Value, v=cg_make_pair(c, elem_ptr, llvm_int, len_s)}
     }
     case Index: {
         ptr := cg_elem_ptr(c, e.target, e.index)
@@ -512,19 +624,11 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         return {kind=.Value, v=acc}
     }
     case FieldAccess: {
-        target_ty := expr_ty(e.target);
-        ty := get_type(target_ty);
+        target_ty := expr_ty(e.target)
+        ty := get_type(target_ty)
 
-        idx := -1;
-        for f, k in ty.structure.fields {
-            if f.name == e.field {
-                idx = k;
-                break;
-            }
-        }
-        assert(idx != -1);
-
-        field_ty := ty.structure.fields[idx].type;
+        idx := struct_field_index(ty, e.field)
+        field_ty := ty.structure.fields[idx].type
 
         // Memory-backed target (a variable / deref / index, or any large
         // aggregate rvalue): GEP to the field and load just that field.
@@ -533,69 +637,62 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         if is_addressable(c, e.target) || is_memory_type(target_ty) {
             base_ptr := cg_value_addr(c, e.target)
 
-            field_ptr := new_tmp(c);
-            cwritefln(c,
-                "\t%s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d",
-                field_ptr, ty_to_llvm_str(c, target_ty), base_ptr, idx);
+            field_ptr := new_tmp(c)
+            cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d",
+                field_ptr, ty_to_llvm_str(c, target_ty), base_ptr, idx)
 
             // large field (e.g. `t.pixels`): address only
             if is_memory_type(field_ty) {
                 return {kind=.Place, v=field_ptr, id=id}
             }
 
-            loaded := new_tmp(c);
+            loaded := new_tmp(c)
             cwritefln(c, "\t%s = load %s, ptr %s",
-                loaded, ty_to_llvm_str(c, field_ty), field_ptr);
-
-            return {kind=.Value, v=loaded};
+                loaded, ty_to_llvm_str(c, field_ty), field_ptr)
+            return {kind=.Value, v=loaded}
         }
 
         // Small rvalue target (fn call result, small struct literal, an
         // argument passed in registers, ...): it's already an SSA value.
-        value, returns := reduce_expr_to_single_value(c, cg_expr(c, e.target));
-        assert(returns);
+        value, returns := reduce_expr_to_single_value(c, cg_expr(c, e.target))
+        assert(returns)
 
-        t := new_tmp(c);
+        t := new_tmp(c)
         cwritefln(c, "\t%s = extractvalue %s %s, %d",
-            t,
-            ty_to_llvm_str(c, target_ty),
-            value,
-            idx);
-
-        return {kind=.Value, v=t};
+            t, ty_to_llvm_str(c, target_ty), value, idx)
+        return {kind=.Value, v=t}
     }
-
     case StructLit: {
         ty := get_ctx().expr_resolution_types[id]
-        fields := make([]string, len(get_type(ty).structure.fields), allocator=get_ctx().allocator)
-        for f,k in get_type(ty).structure.fields {
-            r, ok := reduce_expr_to_single_value(c, cg_expr(c, e.fields[f.name].expr));
-            assert(ok);
+        sfields := get_type(ty).structure.fields
+        fields := make([]string, len(sfields), allocator=get_ctx().allocator)
+        for f, k in sfields {
+            r, ok := reduce_expr_to_single_value(c, cg_expr(c, e.fields[f.name].expr))
+            assert(ok)
             fields[k] = r
         }
         r: CGExprRes
-        r.struct_lit.fields=fields
-        r.id=id
+        r.struct_lit.fields = fields
+        r.id = id
         r.kind = .Struct
-        return r;
+        return r
     }
-    case ZeroInit: {
-        panic("impl");
-    }
+    case ZeroInit:
+        gala_panic("cg_expr: ZeroInit is not implemented yet")
     case Cast: {
         target := cg_expr(c, e.target)
-        target_ty := expr_ty(e.target);
+        target_ty := expr_ty(e.target)
         to_ty := expr_ty(id)
-        op, ok := ty_to_llvm_cast_op(target_ty, to_ty);
+        op, ok := ty_to_llvm_cast_op(target_ty, to_ty)
         if !ok {
             return target
         }
-        reduced_target, returns := reduce_expr_to_single_value(c, target);
-        assert(returns);
-        t := new_tmp(c);
+        reduced_target, returns := reduce_expr_to_single_value(c, target)
+        assert(returns)
+        t := new_tmp(c)
         cwritefln(c, "\t%s = %s %s %s to %s", t, op,
-            ty_to_llvm_str(c, target_ty), reduced_target, ty_to_llvm_str(c, to_ty));
-        return {kind=.Value, v=t};
+            ty_to_llvm_str(c, target_ty), reduced_target, ty_to_llvm_str(c, to_ty))
+        return {kind=.Value, v=t}
     }
     case Number: {
         ty_id := expr_ty(id)
@@ -611,21 +708,18 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
                 assert(ok)
                 return {kind=.Number, v=llvm_float_const(f)}
             }
-            case: panic("impl")
+            case:
+                gala_panic("float literal of unsupported width", get_type(ty_id).kind)
             }
         }
 
         n, ok := parse_integer_literal(e.text)
         assert(ok)
         if get_type(ty_id).kind == .Pointer {
-            /* if n == 0 {
-                return {kind=.Number, v="null"}
-            } */
             t := new_tmp(c)
             cwritefln(c, "\t%s = inttoptr i64 %d to ptr", t, n)
             return {kind=.Number, v=t}
         }
-
         return {kind=.Number, v=aprintf(c, "%d", n)}
     }
     case Binop: {
@@ -633,198 +727,56 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
             return cg_logical(c, e)
         }
         left_ty := expr_ty(e.left)
-        right_ty := expr_ty(e.right)
+        assert(left_ty == expr_ty(e.right), "expressions in binop must have the same type")
 
-        left_is_ptr := is_pointer(left_ty)
-        right_is_ptr := is_pointer(right_ty)
-
-        assert(left_ty == right_ty, "expresiions in binop must have the same type")
-
-        // ---- pointer arithmetic / pointer comparison ----
-        // Operands are always the same type in a Binop, so if either side is
-        // a pointer, both are.
-        if left_is_ptr || right_is_ptr {
-            assert(left_is_ptr && right_is_ptr, "pointer binop requires both operands to be pointers")
-
-            l_res := cg_expr(c, e.left)
-            r_res := cg_expr(c, e.right)
-
-            // A side may be a raw integer literal (e.g. the `1` in `ptr - 1`,
-            // or `0` for a null check) that the type checker coerced onto a
-            // pointer-typed operand without ever materializing an actual
-            // pointer value. Number literals never went through cg_addr or a
-            // load — .v is just plain decimal text — so `ptrtoint ptr %v` on
-            // it is invalid IR (LLVM has no bare-integer ptr constant except
-            // `null`). Feed those straight into the i64 math instead;
-            // only reduce+ptrtoint values that are real pointers.
-            to_i64 :: proc(c: ^CGCtx, res: CGExprRes) -> string {
-                /* if res.kind == .Number {
-                    return res.v
-                } */
-                v, returns := reduce_expr_to_single_value(c, res)
-                assert(returns)
-                t := new_tmp(c)
-                cwritefln(c, "\t%s = ptrtoint ptr %s to i64", t, v)
-                return t
-            }
-
-            li := to_i64(c, l_res)
-            ri := to_i64(c, r_res)
-
-            #partial switch e.kind {
-            case .Addition: {
-                sum := new_tmp(c)
-                cwritefln(c, "\t%s = add i64 %s, %s", sum, li, ri)
-                t := new_tmp(c)
-                cwritefln(c, "\t%s = inttoptr i64 %s to ptr", t, sum)
-                return {kind=.Value, v=t}
-            }
-            case .Subtraction: {
-                diff := new_tmp(c)
-                cwritefln(c, "\t%s = sub i64 %s, %s", diff, li, ri)
-                t := new_tmp(c)
-                cwritefln(c, "\t%s = inttoptr i64 %s to ptr", t, diff)
-                return {kind=.Value, v=t}
-            }
-            case .Equal, .NotEqual, .LessEqual, .GreaterEqual, .Less, .Greater: {
-                op := ""
-                #partial switch e.kind {
-                case .Equal:        op = "icmp eq"
-                case .NotEqual:     op = "icmp ne"
-                case .LessEqual:    op = "icmp ule"
-                case .GreaterEqual: op = "icmp uge"
-                case .Less:         op = "icmp ult"
-                case .Greater:      op = "icmp ugt"
-                }
-                return {kind=.Binop, v=aprintf(c, "%s i64 %s, %s", op, li, ri)}
-            }
-            case: gala_panic("unsupported pointer binary operation")
-            }
+        if is_pointer(left_ty) {
+            return cg_pointer_binop(c, e)
         }
 
         l_v, returns_l := reduce_expr_to_single_value(c, cg_expr(c, e.left))
-        assert(returns_l);
+        assert(returns_l)
         r_v, returns_r := reduce_expr_to_single_value(c, cg_expr(c, e.right))
-        assert(returns_r);
+        assert(returns_r)
 
-        operand_ty := left_ty
-        op := ""
-        if is_integer_signed(operand_ty) {
-            #partial switch e.kind {
-            case .Addition:     op = "add"
-            case .Subtraction:  op = "sub"
-            case .Multiply:     op = "mul"
-            case .Divide:       op = "sdiv"
-            case .Modulo:       op = "srem"
-            case .Equal:        op = "icmp eq"
-            case .NotEqual:     op = "icmp ne"
-            case .LessEqual:    op = "icmp sle"
-            case .GreaterEqual: op = "icmp sge"
-            case .Less:         op = "icmp slt"
-            case .Greater:      op = "icmp sgt"
-            case .BitAnd:       op = "and"
-            case .BitXor:       op = "xor"
-            case .BitOr:        op = "or"
-            case: panic("impl")
-            }
-        } else if is_integer_unsigned(operand_ty) ||
-                  get_type(operand_ty).kind == .Byte ||
-                  get_type(operand_ty).kind == .Rune {
-            #partial switch e.kind {
-            case .Addition:     op = "add"
-            case .Subtraction:  op = "sub"
-            case .Multiply:     op = "mul"
-            case .Divide:       op = "udiv"
-            case .Modulo:       op = "urem"
-            case .Equal:        op = "icmp eq"
-            case .NotEqual:     op = "icmp ne"
-            case .LessEqual:    op = "icmp ule"
-            case .GreaterEqual: op = "icmp uge"
-            case .Less:         op = "icmp ult"
-            case .Greater:      op = "icmp ugt"
-            case .BitAnd:       op = "and"
-            case .BitXor:       op = "xor"
-            case .BitOr:        op = "or"
-            case: panic("impl")
-            }
-        } else if is_float(operand_ty) {
-            #partial switch e.kind {
-            case .Addition:     op = "fadd"
-            case .Subtraction:  op = "fsub"
-            case .Multiply:     op = "fmul"
-            case .Divide:       op = "fdiv"
-            case .Modulo:       op = "frem"
-            case .Equal:        op = "fcmp oeq"
-            case .NotEqual:     op = "fcmp une"
-            case .LessEqual:    op = "fcmp ole"
-            case .GreaterEqual: op = "fcmp oge"
-            case .Less:         op = "fcmp olt"
-            case .Greater:      op = "fcmp ogt"
-            case: panic("impl")
-            }
-        } else if get_type(operand_ty).kind == .Bool {
-            #partial switch e.kind {
-            case .Equal:
-                op = "icmp eq"
-            case .NotEqual:
-                op = "icmp ne"
-            case .LogicalAnd:
-                op = "and"
-            case .LogicalOr:
-                op = "or"
-            case:
-                gala_panic("can't order booleans")
-            }
-        } else if get_type(operand_ty).kind == .Void {
-            gala_panic("can't binop voids")
-        } else {
-            debugln(get_type(operand_ty).kind)
-            debugln(get_expr(id))
-            panic("handle")
-        }
-
+        op := binop_llvm_op(e, operand_class(left_ty))
         return {kind=.Binop,
-            v=aprintf(c, "%s %s %s, %s", op, ty_to_llvm_str(c, operand_ty), l_v, r_v)}
+            v=aprintf(c, "%s %s %s, %s", op, ty_to_llvm_str(c, left_ty), l_v, r_v)}
     }
     case Symbol: {
-        v := cgscope_get(&c.scope, e.name);
+        v := cgscope_get(&c.scope, e.name)
 
         switch v.kind {
-        case .Symbol: {
+        case .Symbol:
             return {kind=.Address, v=v.name}
-        }
-
         case .Variable: {
             // large aggregate variable: give back its address, don't load it
             if is_memory_type(expr_ty(id)) {
                 return {kind=.Place, v=v.name, id=id}
             }
             t := new_tmp(c)
-            cwritefln(c, "\t%s = load %s, ptr %s",
-                t, ty_to_llvm_str(c, expr_ty(id)), v.name);
-            return {kind=.Value, v=t};
+            cwritefln(c, "\t%s = load %s, ptr %s", t, ty_to_llvm_str(c, expr_ty(id)), v.name)
+            return {kind=.Value, v=t}
         }
-
-        case .Argument: {
-            return {kind=.Value, v=v.name};
-        }
-
+        case .Argument:
+            return {kind=.Value, v=v.name}
         case .Invalid: {
-            debugln("Invalid object for:", e, id);
-            gala_panic("invalid object");
+            debugln("Invalid object for:", e, id)
+            gala_panic("invalid object")
         }
         }
-        panic("impl")
+        unreachable()
     }
-    case FnCall: {
+    case FnCall:
         return cg_fn_call(c, id, e)
-    }
-    case FnLit: {
+    case FnLit:
         return cg_fn_lit(c, id, e)
     }
-    case: panic("impl");
-    }
+    unreachable()
 }
+
+// ============================================================================
+// Calls
+// ============================================================================
 
 // Internal (Gala) variadics are lowered to an ordinary function whose last
 // parameter is the `[]T` slice (fn.gala_abi_ty, named fn.variadic_name).
@@ -954,23 +906,23 @@ cg_pack_variadic_slice :: proc(c: ^CGCtx, tail: []FnCallArg, elem_ty: TypeId) ->
         }
     }
 
-    v1 := new_tmp(c)
-    v2 := new_tmp(c)
-    cwritefln(c, "\t%s = insertvalue {{ ptr, %s }} undef, ptr %s, 0", v1, llvm_int, base)
-    cwritefln(c, "\t%s = insertvalue {{ ptr, %s }} %s, %s %d, 1", v2, llvm_int, v1, llvm_int, n)
-    return v2
+    return cg_make_pair(c, base, llvm_int, aprintf(c, "%d", n))
 }
 
 // Writes "(a, b, c)\n" for an already-built call operand list.
 cg_write_call_args :: proc(c: ^CGCtx, call_args: [dynamic]string) {
     cwrite(c, "(")
     for a, i in call_args {
+        if i > 0 do cwrite(c, ", ")
         cwritef(c, "%s", a)
-        if i < len(call_args) - 1 {
-            cwritef(c, ", ")
-        }
     }
     cwriteln(c, ")")
+}
+
+// Writes `<head><variadic_prefix><target>(args)\n`.
+cg_write_call :: proc(c: ^CGCtx, head, variadic_prefix, target: string, call_args: [dynamic]string) {
+    cwritef(c, "%s%s%s", head, variadic_prefix, target)
+    cg_write_call_args(c, call_args)
 }
 
 // Emits the `call` instruction itself and produces the call's result.
@@ -984,10 +936,7 @@ cg_write_call_args :: proc(c: ^CGCtx, call_args: [dynamic]string) {
 cg_emit_call :: proc(c: ^CGCtx, id: ExprId, sig: AbiSignature, target: string,
         call_args: [dynamic]string, variadic_prefix: string, sret_slot: string) -> CGExprRes {
     if sig.ret.mode == .Indirect {
-        cwritef(c, "\tcall void ")
-        cwritef(c, "%s", variadic_prefix)
-        cwritef(c, "%s", target)
-        cg_write_call_args(c, call_args)
+        cg_write_call(c, "\tcall void ", variadic_prefix, target, call_args)
 
         if is_memory_type(sig.ret.orig_type) {
             return {kind=.Place, v=sret_slot, id=id}
@@ -995,34 +944,46 @@ cg_emit_call :: proc(c: ^CGCtx, id: ExprId, sig: AbiSignature, target: string,
         loaded := new_tmp(c)
         cwritefln(c, "\t%s = load %s, ptr %s", loaded, ty_to_llvm_str(c, sig.ret.orig_type), sret_slot)
         return {kind=.Value, v=loaded, id=id}
-    } else if sig.ret.coerced_type == "void" {
-        cwritef(c, "\tcall void ")
-        cwritef(c, "%s", variadic_prefix)
-        cwritef(c, "%s", target)
-        cg_write_call_args(c, call_args)
-        return {kind=.None, id=id}
-    } else {
-        new_t := new_tmp(c)
-        // `call zeroext i1 @f(...)` — the return attribute goes BEFORE the type
-        ret_ext := ""
-        if sig.ret.ext != "" {
-            ret_ext = aprintf(c, "%s ", sig.ret.ext)
-        }
-        cwritef(c, "\t%s = call %s%s ", new_t, ret_ext, sig.ret.coerced_type)
-        cwritef(c, "%s", variadic_prefix)
-        cwritef(c, "%s", target)
-        cg_write_call_args(c, call_args)
-
-        if sig.ret.needs_coercion {
-            real_ty_str := ty_to_llvm_str(c, sig.ret.orig_type)
-            slot := new_entry_alloca(c, real_ty_str)
-            cwritefln(c, "\tstore %s %s, ptr %s", sig.ret.coerced_type, new_t, slot)
-            loaded := new_tmp(c)
-            cwritefln(c, "\t%s = load %s, ptr %s", loaded, real_ty_str, slot)
-            return {kind=.Value, v=loaded, id=id}
-        }
-        return {kind=.Value, v=new_t, id=id}
     }
+
+    if sig.ret.coerced_type == "void" {
+        cg_write_call(c, "\tcall void ", variadic_prefix, target, call_args)
+        return {kind=.None, id=id}
+    }
+
+    result := new_tmp(c)
+    // `call zeroext i1 @f(...)` — the return attribute goes BEFORE the type
+    ret_ext := ""
+    if sig.ret.ext != "" {
+        ret_ext = aprintf(c, "%s ", sig.ret.ext)
+    }
+    cg_write_call(c, aprintf(c, "\t%s = call %s%s ", result, ret_ext, sig.ret.coerced_type),
+        variadic_prefix, target, call_args)
+
+    if sig.ret.needs_coercion {
+        real_ty_str := ty_to_llvm_str(c, sig.ret.orig_type)
+        slot := new_entry_alloca(c, real_ty_str)
+        cwritefln(c, "\tstore %s %s, ptr %s", sig.ret.coerced_type, result, slot)
+        loaded := new_tmp(c)
+        cwritefln(c, "\t%s = load %s, ptr %s", loaded, real_ty_str, slot)
+        return {kind=.Value, v=loaded, id=id}
+    }
+    return {kind=.Value, v=result, id=id}
+}
+
+// The sret operand shared by both call paths. Uses `dest` directly when the
+// caller supplied one (no temporary, no copy), else a fresh entry-block slot.
+// Returns "" when the callee doesn't return through sret.
+cg_prepare_sret :: proc(c: ^CGCtx, sig: AbiSignature, dest: string, call_args: ^[dynamic]string) -> string {
+    if sig.ret.mode != .Indirect do return ""
+
+    slot := dest
+    if slot == "" {
+        slot = new_entry_alloca(c, ty_to_llvm_str(c, sig.ret.orig_type))
+    }
+    append(call_args, aprintf(c, "ptr sret(%s) align %d %s",
+        ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align, slot))
+    return slot
 }
 
 // Call to an internal variadic: fixed args are evaluated as usual, the tail
@@ -1031,24 +992,14 @@ cg_emit_call :: proc(c: ^CGCtx, id: ExprId, sig: AbiSignature, target: string,
 cg_fn_call_internal_variadic :: proc(c: ^CGCtx, id: ExprId, e: FnCall, target: string, dest := "") -> CGExprRes {
     fn_type_id := expr_ty(e.target)
     fn_ty := get_type(fn_type_id)
-    lowered_id := lower_internal_variadic(fn_type_id)
-    sig := cg_abi_lower_signature(c, lowered_id, .SysV)
+    sig := cg_abi_lower_signature(c, lower_internal_variadic(fn_type_id), .SysV)
 
     n_fixed := len(fn_ty.fn.args)
     assert(len(e.args) >= n_fixed, "not enough arguments for variadic call")
     assert(len(sig.args) == n_fixed + 1)
 
     call_args := make([dynamic]string, allocator=get_ctx().allocator)
-
-    sret_slot := ""
-    if sig.ret.mode == .Indirect {
-        sret_slot = dest
-        if sret_slot == "" {
-            sret_slot = new_entry_alloca(c, ty_to_llvm_str(c, sig.ret.orig_type))
-        }
-        append(&call_args, aprintf(c, "ptr sret(%s) align %d %s",
-            ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align, sret_slot))
-    }
+    sret_slot := cg_prepare_sret(c, sig, dest, &call_args)
 
     // fixed args, then the packed slice as the last lowered parameter
     for k in 0 ..< n_fixed {
@@ -1058,6 +1009,28 @@ cg_fn_call_internal_variadic :: proc(c: ^CGCtx, id: ExprId, e: FnCall, target: s
     cg_emit_abi_arg(c, sig, n_fixed, slice_v, &call_args)
 
     return cg_emit_call(c, id, sig, target, call_args, "", sret_slot)
+}
+
+// LLVM requires the full fixed-parameter TYPE list between the callee's
+// return type and "..." at a variadic call site: "(T, U, ...)".
+cg_c_variadic_prefix :: proc(c: ^CGCtx, sig: AbiSignature, fixed_arg_count: int) -> string {
+    vb: strings.Builder
+    strings.builder_init(&vb, get_ctx().allocator)
+    strings.write_string(&vb, "(")
+    if sig.ret.mode == .Indirect {
+        strings.write_string(&vb, aprintf(c, "ptr sret(%s), ", ty_to_llvm_str(c, sig.ret.orig_type)))
+    }
+    for al in sig.args[:fixed_arg_count] {
+        if al.mode == .ByVal {
+            strings.write_string(&vb, aprintf(c, "ptr byval(%s) align %d",
+                ty_to_llvm_str(c, al.orig_type), al.byval_align))
+        } else {
+            strings.write_string(&vb, al.coerced_type)
+        }
+        strings.write_string(&vb, ", ")
+    }
+    strings.write_string(&vb, "...)")
+    return strings.to_string(vb)
 }
 
 // `dest`: if non-empty and the call returns through sret, the callee is
@@ -1077,16 +1050,7 @@ cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall, dest := "") -> CGExprRes {
     sig := cg_abi_lower_signature(c, fn_type_id, .SysV)
 
     call_args := make([dynamic]string, allocator=get_ctx().allocator)
-
-    sret_slot := ""
-    if sig.ret.mode == .Indirect {
-        sret_slot = dest
-        if sret_slot == "" {
-            sret_slot = new_entry_alloca(c, ty_to_llvm_str(c, sig.ret.orig_type))
-        }
-        append(&call_args, aprintf(c, "ptr sret(%s) align %d %s",
-            ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align, sret_slot))
-    }
+    sret_slot := cg_prepare_sret(c, sig, dest, &call_args)
 
     // Only the true fixed prefix goes through sig.args — the trailing
     // C-variadic placeholder slot in fn_ty.fn.args (and its corresponding
@@ -1103,12 +1067,12 @@ cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall, dest := "") -> CGExprRes {
         cg_emit_call_arg(c, e.args[k], sig, k, &call_args)
     }
 
-    // ---- trailing C-variadic arguments ----
+    // ---- trailing C-variadic arguments (extern `...`) ----
     // Each gets C's default argument promotions applied (see
     // c_variadic_promote), never the boxing or slice-packing that a Gala
-    // `..T` tail would need — there is no such tail here, only extern
-    // `...`.
-    if fn_ty.fn.is_variadic && fn_ty.fn.is_external { // and is external
+    // `..T` tail would need.
+    variadic_prefix := ""
+    if fn_ty.fn.is_variadic { // (always external here, see early return above)
         for k in fixed_arg_count ..< len(e.args) {
             a := e.args[k]
             v, returns := reduce_expr_to_single_value(c, cg_expr(c, a.expr))
@@ -1117,33 +1081,12 @@ cg_fn_call :: proc(c: ^CGCtx, id: ExprId, e: FnCall, dest := "") -> CGExprRes {
             promoted_v, promoted_ty_str := cg_variadic_promote(c, v, expr_ty(a.expr))
             append(&call_args, aprintf(c, "%s %s", promoted_ty_str, promoted_v))
         }
-    }
-
-    // LLVM requires the full fixed-parameter TYPE list between the
-    // callee's return type and "..." for a variadic call site.
-    variadic_prefix := ""
-    if fn_ty.fn.is_variadic {
-        vb: strings.Builder
-        strings.builder_init(&vb, get_ctx().allocator)
-        strings.write_string(&vb, "(")
-        if sig.ret.mode == .Indirect {
-            strings.write_string(&vb, aprintf(c, "ptr sret(%s), ", ty_to_llvm_str(c, sig.ret.orig_type)))
-        }
-        for al in sig.args[:fixed_arg_count] {
-            if al.mode == .ByVal {
-                strings.write_string(&vb, aprintf(c, "ptr byval(%s) align %d",
-                    ty_to_llvm_str(c, al.orig_type), al.byval_align))
-            } else {
-                strings.write_string(&vb, al.coerced_type)
-            }
-            strings.write_string(&vb, ", ")
-        }
-        strings.write_string(&vb, "...)")
-        variadic_prefix = strings.to_string(vb)
+        variadic_prefix = cg_c_variadic_prefix(c, sig, fixed_arg_count)
     }
 
     return cg_emit_call(c, id, sig, t, call_args, variadic_prefix, sret_slot)
 }
+
 // Emits the C-variadic default-argument-promotion conversion for an
 // already-reduced value `v` of static type `type_id`, if one applies.
 // Pure passthrough (same value, same type string) otherwise.

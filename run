@@ -2,7 +2,7 @@
 set -e
 set -x
 odin build . -out=galac -debug
-./galac main.gala -d -l ./libtestlib.so -l /lib/x86_64-linux-gnu/libm.so -l ./lib/libraylib.so
+./galac main.gala -d -l /lib/x86_64-linux-gnu/libm.so -l ./lib/libraylib.so
 # #  galac a.gala -l ./libtestlib.so -d
 export LD_LIBRARY_PATH=./ && ./main
 echo "ret $?"

@@ -7,41 +7,45 @@ import "core:fmt"
 import "core:strings"
 import "core:strconv"
 import "core:mem"
-parse_integer_literal :: proc(s: string) -> (i64, bool) {
-    if len(s) >= 2 && s[0] == '0' &&
-        (s[1] == 'x' || s[1] == 'X') {
+import "core:path/filepath"
 
+// Name of the hidden sret pointer parameter of a function that returns
+// through memory (see cg_fn_header / the Return statement).
+SRET_PARAM :: "%.sret"
+
+parse_integer_literal :: proc(s: string) -> (i64, bool) {
+    if len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
         if len(s) == 2 {
             return 0, false
         }
 
         value: i64 = 0
-
-        for c in s[2:] {
-            d := hex_digit_val(cast(byte)c)
+        for i in 2 ..< len(s) {
+            d := hex_digit_val(s[i])
             if d < 0 {
                 return 0, false
             }
-
             value = value * 16 + i64(d)
         }
-
         return value, true
     }
 
     v, ok := strconv.parse_int(s)
     return cast(i64)v, ok
 }
+
+CGResKind :: enum {Invalid, Address, Value, Binop, Number, Struct, None, Place}
+
 CGExprRes :: struct {
     id: ExprId,
     // .Place: the value lives in memory at `v` (a pointer operand) and has
     // the type of expression `id`. Nothing has been loaded yet; reducing it
     // loads the whole value, cg_expr_into memcpy's it.
-    kind: enum {Invalid, Address, Value, Binop, Number, Struct, None, Place},
+    kind: CGResKind,
     v: string,
     struct_lit: struct {
         fields: []string, // string of results
-    }
+    },
 }
 
 // A global variable whose LLVM definition line hasn't been written yet.
@@ -61,10 +65,10 @@ CGCtx :: struct {
     cur_fn_ret: AbiRetLowering, // ABI lowering of the return value of the function currently being emitted
     break_labels: map[StmtId]string,    // loop (or if/else passthrough) StmtId -> label to jump to on `break`
     continue_labels: map[StmtId]string, // loop (or if/else passthrough) StmtId -> label to jump to on `continue`
-    // "currently active" loop targets, saved/restored around each WhileLoop's
-    // (and ForLoop's) body so that any IfElse nested inside (however deeply)
-    // can register itself as pointing at the same targets — see cg_stmt's
-    // IfElse case.
+    // "currently active" loop targets, saved/restored around each loop body
+    // (see cg_enter_loop / cg_leave_loop) so that any IfElse nested inside
+    // (however deeply) can register itself as pointing at the same targets —
+    // see cg_stmt's IfElse case.
     cur_break_label: string,
     cur_continue_label: string,
     // Finished `define` texts for function literals. A lambda is generated
@@ -99,6 +103,7 @@ CGCtx :: struct {
     // __init_globals functions in this order.
     init_mods: [dynamic]ModId,
 }
+
 CGObjectKind :: enum {
     Invalid,
     Argument,
@@ -107,7 +112,7 @@ CGObjectKind :: enum {
 }
 CGObj :: struct {
     kind: CGObjectKind,
-    name: string
+    name: string,
 }
 CGScope :: struct {
     vars : map[string]CGObj,
@@ -115,13 +120,14 @@ CGScope :: struct {
 }
 new_gcscope :: proc(parent: ^CGScope) -> CGScope {
     s := CGScope{}
-    s.vars = make(map[string]CGObj, allocator=get_ctx().allocator);
+    s.vars = make(map[string]CGObj, allocator=get_ctx().allocator)
     s.parent = parent
-    return s;
+    return s
 }
 free_cgscope :: proc(s: ^CGScope) {
-    // delete(s.vars);
+    // delete(s.vars)
 }
+
 cwritef :: proc(c: ^CGCtx, format: string, data: ..any) {
     fmt.sbprintf(c.b, format, ..data)
 }
@@ -129,10 +135,10 @@ cwrite :: proc(c: ^CGCtx, format: string) {
     fmt.sbprint(c.b, format)
 }
 cwriteln :: proc(c: ^CGCtx, format: string) {
-    fmt.sbprintln(c.b, format);
+    fmt.sbprintln(c.b, format)
 }
 cwritefln :: proc(c: ^CGCtx, format: string, data: ..any) {
-    fmt.sbprintfln(c.b, format, ..data);
+    fmt.sbprintfln(c.b, format, ..data)
 }
 
 // ---- large aggregates ----
@@ -271,120 +277,72 @@ is_signed :: proc(k: TypeKind) -> bool {
     }
 }
 
-
+// LLVM type text for a gala type. Scalars come straight from
+// scalar_llvm_str (cg_abi.odin) so there is exactly one scalar table in the
+// compiler; only aggregates are worth caching.
 ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
-    t, ok := get_ctx().llvm_ty[id];
-    if ok { /*debugln("type found for:", id);*/ return t }
+    if t, ok := get_ctx().llvm_ty[id]; ok {
+        return t
+    }
     ty := get_type(id)
     #partial switch ty.kind {
-    case .UntypedInteger: fallthrough
-    case .UntypedFloat: 
-        panic("bug")
-    case .Pointer: {
-        s := fmt.aprintf("ptr", allocator=c.arena.block_allocator )
-        get_ctx().llvm_ty[id]=s
-        return s
-    }
-    case .Flt64: {
-        get_ctx().llvm_ty[id]="double";
-        return get_ctx().llvm_ty[id]
-    }
-    case .Flt32: {
-        get_ctx().llvm_ty[id]="float";
-        return get_ctx().llvm_ty[id]
-    }
-    case .Int64: {
-        get_ctx().llvm_ty[id]="i64";
-        return get_ctx().llvm_ty[id]
-    }
-    case .Int32: {
-        get_ctx().llvm_ty[id]="i32";
-        return get_ctx().llvm_ty[id]
-    }
-    case .Int16: {
-        get_ctx().llvm_ty[id]="i16";
-        return get_ctx().llvm_ty[id]
-    }
-    case .Int_8: {
-        get_ctx().llvm_ty[id] = "i8";
-        return get_ctx().llvm_ty[id]
-    }
-    case .UInt64: {
-        get_ctx().llvm_ty[id] = "i64";
-        return get_ctx().llvm_ty[id]
-    }
-    case .UInt32: {
-        get_ctx().llvm_ty[id] = "i32";
-        return get_ctx().llvm_ty[id]
-    }
-    case .UInt16: {
-        get_ctx().llvm_ty[id] = "i16";
-        return get_ctx().llvm_ty[id]
-    }
-    case .UInt_8: {
-        get_ctx().llvm_ty[id] = "i8";
-        return get_ctx().llvm_ty[id]
-    }
-    case .Void: {
-        get_ctx().llvm_ty[id]="void";
-        return get_ctx().llvm_ty[id]
-    }
-    case .Byte: return "i8";
-    case .Bool: return "i1";
-    case .Function: return "ptr"; // functions are just pointers
-    case .Struct: {
-        if ty.name != "" {
-            n := aprintf(c, "%%%s", ty.name);
-            get_ctx().llvm_ty[id]=n;
-            return get_ctx().llvm_ty[id]
-        } else {
-            debugln(ty);
-            panic("impl")
-        }
-    }
-    case .FixedSizeArray: {
-            n := aprintf(c, "[%d x %s]", ty.fixed_size_array.size,
-                   ty_to_llvm_str(c, ty.fixed_size_array.type));
-            get_ctx().llvm_ty[id]=n;
-            return get_ctx().llvm_ty[id]
-    }
-    case .Slice, .String, .Any: {
+    case .UntypedInteger, .UntypedFloat:
+        gala_panic("ty_to_llvm_str: untyped literal type reached codegen")
+    case .Void:
+        return "void"
+    case .Slice, .String, .Any:
         // "any" is boxed as { data ptr, typeid } — same two-word shape as
         // a slice/string header, just with the second field reinterpreted
         // as a runtime type tag instead of a length. See cg_box_any.
-        return "{ ptr, i64 }";
+        return "{ ptr, i64 }"
+    case .Struct: {
+        if ty.name == "" {
+            debugln(ty)
+            gala_panic("ty_to_llvm_str: anonymous struct has no LLVM name")
+        }
+        n := aprintf(c, "%%%s", ty.name)
+        get_ctx().llvm_ty[id] = n
+        return n
     }
+    case .FixedSizeArray: {
+        n := aprintf(c, "[%d x %s]", ty.fixed_size_array.size,
+            ty_to_llvm_str(c, ty.fixed_size_array.type))
+        get_ctx().llvm_ty[id] = n
+        return n
     }
-    debugln(ty);
-    panic("impl")
+    case:
+        return scalar_llvm_str(id)
+    }
+    unreachable()
 }
+
 // eg "%t1"
-new_tmp::proc(c: ^CGCtx, p:="",symbol:=false) -> string {
+new_tmp :: proc(c: ^CGCtx, p := "", symbol := false) -> string {
     if symbol {
-        return fmt.aprintf("@%s%d", p, next_tmp_index(c), allocator=c.arena.block_allocator);
+        return fmt.aprintf("@%s%d", p, next_tmp_index(c), allocator=c.arena.block_allocator)
     }
-    return fmt.aprintf("%%%s%d", p, next_tmp_index(c), allocator=c.arena.block_allocator);
+    return fmt.aprintf("%%%s%d", p, next_tmp_index(c), allocator=c.arena.block_allocator)
 }
 aprintf :: proc(c: ^CGCtx, format: string, data: ..any) -> string {
-    res := fmt.aprintf(format, ..data, allocator=get_ctx().allocator)
-    return res
+    return fmt.aprintf(format, ..data, allocator=get_ctx().allocator)
 }
+
+// `extractvalue { ptr, i64 } v, idx` — field 0 (data) or 1 (len) of a
+// slice / string header.
+cg_pair_field :: proc(c: ^CGCtx, v: string, idx: int, prefix := "") -> string {
+    t := new_tmp(c, prefix)
+    cwritefln(c, "\t%s = extractvalue {{ ptr, i64 }} %s, %d", t, v, idx)
+    return t
+}
+
 // returns value
 cg_fn_call_target :: proc(c: ^CGCtx, id: ExprId) -> string {
-    v, ok := reduce_expr_to_single_value(c, cg_expr(c,id));
+    v, ok := reduce_expr_to_single_value(c, cg_expr(c, id))
     if !ok {
-        highlight_lines(get_span(id));
-        gala_panic("Expression can't be void/must return.");
-    } else {
-        return v;
+        highlight_lines(get_span(id))
+        gala_panic("Expression can't be void/must return.")
     }
-    /* v, ok := reduce_expr_to_single_value(c, cg_expr(c,id));
-    if !ok {
-        highlight_lines(get_span(id).span);
-        gala_panic("Expression can't be void/must return.");
-    }
-    debugln("this:", get(id));
-    panic("no"); */
+    return v
 }
 
 // Stable per-TypeId integer used as the runtime tag inside a boxed `any`
@@ -397,65 +355,110 @@ typeid_of :: proc(t: TypeId) -> i64 {
     return i64(t)
 }
 
-
-// LLVM textual IR: a `float`-typed constant that doesn't round-trip exactly
-// through decimal must be printed as hex bits of the *double* representation
-// of the value (not the float's raw bits) — this is LLVM's own quirk, not
-// a bug in our lowering.
+// LLVM textual IR: a `float`-typed constant is written as the hex bits of
+// the *double* representation of the value (not the float's raw bits) —
+// this is LLVM's own quirk, not a bug in our lowering.
+// (Allocated from the compiler allocator, not the temp one: the text lives
+// in a CGExprRes until the surrounding expression is emitted.)
 llvm_float_const :: proc(v: f32) -> string {
-    as_f64 := f64(v)
-    bits := transmute(u64)as_f64
-    return fmt.tprintf("0x%016X", bits)
+    bits := transmute(u64)f64(v)
+    return fmt.aprintf("0x%016X", bits, allocator=get_ctx().allocator)
 }
 
+// Always printed as hex bits, so doubles never lose precision to decimal.
 llvm_double_const :: proc(v: f64) -> string {
-    // f64 constants print fine in decimal as long as they round-trip;
-    // easiest to just always go through the same hex path to avoid the
-    // same class of bug for doubles with more precision than %f gives you.
     bits := transmute(u64)v
-    return fmt.tprintf("0x%016X", bits)
+    return fmt.aprintf("0x%016X", bits, allocator=get_ctx().allocator)
 }
+
+// ============================================================================
+// Statements
+// ============================================================================
+
+// Does every branch of this if/else-if/else chain end in a terminator?
+// (Requires an `else`; otherwise control can fall past the whole chain.)
+if_returns_everywhere :: proc(s: IfElse) -> bool {
+    if !s.has_else_block do return false
+    if !check_rets(s.base_block) || !check_rets(s.else_block) do return false
+    for a in s.alt {
+        if !check_rets(a.block) do return false
+    }
+    return true
+}
+
 stmt_ends_block :: proc(stmt: StmtId) -> bool {
     switch s in get(stmt) {
     // both are unconditional jumps (`br label ...`) — an LLVM basic-block
     // terminator, exactly like Return, so nothing may follow either in
     // the same block.
-    case BreakStmt, ContinueStmt: return true;
-    case WhileLoop: {
-        return check_rets(s.block);
+    case BreakStmt, ContinueStmt, Return:
+        return true
+    // Loops can run zero times (and `break` can leave them early), so
+    // control can always fall through to whatever follows — even if the
+    // body itself ends in a terminator.
+    case WhileLoop, ForLoop:
+        return false
+    case IfElse:
+        return if_returns_everywhere(s)
+    case VarDec, Assignment, ExprId:
+        return false
+    case:
+        gala_panic("stmt_ends_block: unhandled statement kind")
     }
-    // A for loop can run zero times, so control can always fall through
-    // to whatever follows it — it never ends the block, even if its body
-    // returns.
-    case ForLoop: return false
-    case IfElse: {
-        has_all_returns := s.has_else_block
-        if !check_rets(s.base_block) do has_all_returns = false;
-        for a in s.alt {
-            if !check_rets(a.block) do has_all_returns = false;
-        }
-        if s.has_else_block {
-            if !check_rets(s.else_block) do has_all_returns = false;
-        }
-        return has_all_returns
-    }
-    case Return: return true
-    case VarDec: return false
-    case Assignment: return false
-    case ExprId: return false;
-    case: panic("impl");
-    }
-    panic("impl");
+    unreachable()
 }
+
 next_tmp_index :: proc(c: ^CGCtx) -> int {
-    c.tmp_id += 1;
-    return c.tmp_id;
+    c.tmp_id += 1
+    return c.tmp_id
 }
+
+// Emits `block` in a fresh child scope, optionally pre-binding one name
+// (the `for` loop variable). Rejects statements after a terminator.
+cg_scoped_block :: proc(c: ^CGCtx, block: Block, bind_name := "", bind_obj := CGObj{}) {
+    old := c.scope
+    c.scope = new_gcscope(&old)
+    if bind_name != "" {
+        c.scope.vars[bind_name] = bind_obj
+    }
+
+    last := len(block.stmts) - 1
+    for statement, i in block.stmts {
+        cg_stmt(c, statement)
+        if stmt_ends_block(statement) && i != last {
+            gala_panic("nothing past will be executed")
+        }
+    }
+
+    free_cgscope(&c.scope)
+    c.scope = old
+}
+
+LoopTargets :: struct {
+    brk, cont: string,
+}
+
+// Registers loop `id`'s break/continue labels (keyed by its own StmtId —
+// this is what get_ctx().break_lables[break/continue id] resolves to) and
+// makes them the "current" targets so any IfElse nested in the body, at any
+// depth, can register the same targets under its own StmtId too.
+// Returns the previous targets for cg_leave_loop.
+cg_enter_loop :: proc(c: ^CGCtx, id: StmtId, brk, cont: string) -> LoopTargets {
+    c.break_labels[id] = brk
+    c.continue_labels[id] = cont
+
+    prev := LoopTargets{c.cur_break_label, c.cur_continue_label}
+    c.cur_break_label = brk
+    c.cur_continue_label = cont
+    return prev
+}
+
+cg_leave_loop :: proc(c: ^CGCtx, prev: LoopTargets) {
+    c.cur_break_label = prev.brk
+    c.cur_continue_label = prev.cont
+}
+
 cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
-    span := get_span(id).span
-    data := get_file_lines(get_ctx().current_file, span)
-    // cwritefln(c, "\t; cg_stmt \"%s\"",
-        // string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
     switch s in get_stmt(id) {
     case BreakStmt: {
         // get_ctx().break_lables maps this break's own StmtId to the
@@ -479,71 +482,39 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         cwritefln(c, "\tbr label %%%s", label)
     }
     case WhileLoop: {
-        
         id_suffix := next_tmp_index(c)
 
-        cond_label := aprintf(c, "while_cond_label%d", id_suffix);
-        body_label := aprintf(c, "while_body_label%d", id_suffix);
-        end_label  := aprintf(c, "while_end_label%d", id_suffix);
+        cond_label := aprintf(c, "while_cond_label%d", id_suffix)
+        body_label := aprintf(c, "while_body_label%d", id_suffix)
+        end_label  := aprintf(c, "while_end_label%d", id_suffix)
 
-        // register this loop's break/continue targets, keyed by its own
-        // StmtId (this is what get_ctx().break_lables[break/continue id]
-        // resolves to), and set them as "current" so any IfElse nested in
-        // the body — at any depth — can register the same targets under
-        // its own StmtId too.
-        c.break_labels[id] = end_label
-        c.continue_labels[id] = cond_label
-
-        old_break := c.cur_break_label
-        old_continue := c.cur_continue_label
-        c.cur_break_label = end_label
-        c.cur_continue_label = cond_label
+        prev := cg_enter_loop(c, id, end_label, cond_label)
 
         // jump into condition check
-        cwritefln(c, "\tbr label %%%s", cond_label);
+        cwritefln(c, "\tbr label %%%s", cond_label)
 
         // condition block
-        cwritefln(c, "%s:", cond_label);
-
-        cond, returns := reduce_expr_to_single_value(c, cg_expr(c, s.cond));
-        assert(returns);
+        cwritefln(c, "%s:", cond_label)
+        cond, returns := reduce_expr_to_single_value(c, cg_expr(c, s.cond))
+        assert(returns)
 
         // type checker guarantees this, but keep this assertion in codegen
-        assert(get_type(expr_ty(s.cond)).kind == .Bool);
+        assert(get_type(expr_ty(s.cond)).kind == .Bool)
 
-        cwritefln(c, "\tbr i1 %s, label %%%s, label %%%s",
-            cond, body_label, end_label);
-
+        cwritefln(c, "\tbr i1 %s, label %%%s, label %%%s", cond, body_label, end_label)
 
         // body
-        cwritefln(c, "%s:", body_label);
-
-        old := c.scope;
-        c.scope = new_gcscope(&old);
-
-        for statement, i in s.block.stmts {
-            cg_stmt(c, statement);
-
-            if stmt_ends_block(statement) && i != len(s.block.stmts)-1 {
-                gala_panic("nothing past will be executed");
-            }
-        }
-
-        free_cgscope(&c.scope);
-        c.scope = old;
-
+        cwritefln(c, "%s:", body_label)
+        cg_scoped_block(c, s.block)
 
         // only loop back if body doesn't terminate
         if !check_rets(s.block) {
-            cwritefln(c, "\tbr label %%%s", cond_label);
+            cwritefln(c, "\tbr label %%%s", cond_label)
         }
 
-
         // exit
-        cwritefln(c, "%s:", end_label);
-
-        c.cur_break_label = old_break
-        c.cur_continue_label = old_continue
+        cwritefln(c, "%s:", end_label)
+        cg_leave_loop(c, prev)
     }
     case ForLoop: {
         // `for name in expr { body }` lowers to:
@@ -582,14 +553,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         var_slot := aprintf(c, "%%%s.for%d", s.name, id_suffix)
         cg_alloca_named(c, var_slot, elem_ty)
 
-        // break/continue registration (same scheme as WhileLoop)
-        c.break_labels[id] = end_label
-        c.continue_labels[id] = step_label
-
-        old_break := c.cur_break_label
-        old_continue := c.cur_continue_label
-        c.cur_break_label = end_label
-        c.cur_continue_label = step_label
+        prev := cg_enter_loop(c, id, end_label, step_label)
 
         cwritefln(c, "\tbr label %%%s", cond_label)
 
@@ -615,19 +579,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             cwritefln(c, "\tstore %s %s, ptr %s", elem_ty, elem_val, var_slot)
         }
 
-        old := c.scope
-        c.scope = new_gcscope(&old)
-        c.scope.vars[s.name] = {.Variable, var_slot}
-
-        for statement, i in s.block.stmts {
-            cg_stmt(c, statement)
-            if stmt_ends_block(statement) && i != len(s.block.stmts) - 1 {
-                gala_panic("nothing past will be executed")
-            }
-        }
-
-        free_cgscope(&c.scope)
-        c.scope = old
+        cg_scoped_block(c, s.block, s.name, CGObj{.Variable, var_slot})
 
         // fall into step unless the body already ended in a terminator
         if !check_rets(s.block) {
@@ -645,25 +597,23 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
 
         // --- end ---
         cwritefln(c, "%s:", end_label)
-
-        c.cur_break_label = old_break
-        c.cur_continue_label = old_continue
+        cg_leave_loop(c, prev)
     }
     case ExprId: {
         r := cg_expr(c, s)
         // a discarded large-aggregate result (e.g. `make_terrain();`) is
         // just an address — don't load the whole thing to throw it away
         if r.kind != .Place {
-            reduce_expr_to_single_value(c, r);
+            _, _ = reduce_expr_to_single_value(c, r)
         }
     }
     case IfElse: {
         id_suffix := next_tmp_index(c)
-        end_label := aprintf(c, "end_label%d", id_suffix);
+        end_label := aprintf(c, "end_label%d", id_suffix)
 
         // Passthrough registration: if this IfElse sits inside an
         // enclosing loop (tracked via c.cur_break_label/cur_continue_label,
-        // set by WhileLoop/ForLoop around its body), register the SAME
+        // set by cg_enter_loop around its body), register the SAME
         // targets under this IfElse's own StmtId. This makes a
         // break/continue resolve correctly regardless of whether the
         // resolution phase pointed it directly at the loop or at this
@@ -681,7 +631,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
 
         // Precompute all labels we'll need up front so branch targets
         // can reference "the next check" before that block is emitted.
-        base_block := aprintf(c, "base_block_label%d", id_suffix);
+        base_block := aprintf(c, "base_block_label%d", id_suffix)
 
         alt_cond_labels := make([dynamic]string, get_ctx().allocator)
         alt_body_labels := make([dynamic]string, get_ctx().allocator)
@@ -689,112 +639,64 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             append(&alt_cond_labels, aprintf(c, "alt_cond_label%d_%d", id_suffix, i))
             append(&alt_body_labels, aprintf(c, "alt_block_label%d_%d", id_suffix, i))
         }
-        has_else := s.has_else_block;
-        else_label := aprintf(c, "else_block_label%d", id_suffix);
+        has_else := s.has_else_block
+        else_label := aprintf(c, "else_block_label%d", id_suffix)
 
-        // what to jump to if the base condition is false
-        next_after_base := end_label
-        if len(s.alt) > 0 {
-            next_after_base = alt_cond_labels[0]
-        } else if has_else {
-            next_after_base = else_label
+        // Where control goes when the condition at position `i` of the
+        // chain (0 = base, 1.. = alts) is false.
+        next_after :: proc(i: int, alts: int, has_else: bool, alt_conds: [dynamic]string,
+                else_label, end_label: string) -> string {
+            if i < alts do return alt_conds[i]
+            if has_else do return else_label
+            return end_label
+        }
+
+        // emits `br i1 cond, body, next` for a boolean condition expression
+        branch_on :: proc(c: ^CGCtx, cond_id: ExprId, body, next: string) {
+            cond, returns := reduce_expr_to_single_value(c, cg_expr(c, cond_id))
+            assert(returns)
+            assert(get_type(expr_ty(cond_id)).kind == .Bool)
+            cwritefln(c, "\tbr i1 %s, label %%%s, label %%%s", cond, body, next)
         }
 
         // --- base condition ---
-        {
-            cond, returns := reduce_expr_to_single_value(c, cg_expr(c, s.base_con));
-            assert(returns);
-            ty := get_type(expr_ty(s.base_con));
-            assert(ty.kind == .Bool);
-            cwritefln(c, "\tbr i1 %s, label %%%s, label %%%s", cond, base_block, next_after_base);
-
-            cwritefln(c, "%s:", base_block);
-            old := c.scope;
-            c.scope = new_gcscope(&old);
-            for statement, i in s.base_block.stmts {
-                cg_stmt(c, statement);
-                if stmt_ends_block(statement) && i != len(s.base_block.stmts) - 1 {
-                    gala_panic("nothing past will be executed");
-                }
-            }
-            free_cgscope(&c.scope)
-            c.scope = old;
-            if !check_rets(s.base_block) {
-                cwritefln(c, "\tbr label %%%s", end_label);
-            }
+        branch_on(c, s.base_con, base_block,
+            next_after(0, len(s.alt), has_else, alt_cond_labels, else_label, end_label))
+        cwritefln(c, "%s:", base_block)
+        cg_scoped_block(c, s.base_block)
+        if !check_rets(s.base_block) {
+            cwritefln(c, "\tbr label %%%s", end_label)
         }
 
         // --- else-if chain ---
         for a, i in s.alt {
-            next := end_label
-            if i < len(s.alt) - 1 {
-                next = alt_cond_labels[i + 1]
-            } else if has_else {
-                next = else_label
-            }
-
-            cwritefln(c, "%s:", alt_cond_labels[i]);
-            cond, returns := reduce_expr_to_single_value(c, cg_expr(c, a.cond));
-            assert(returns);
-            ty := get_type(expr_ty(a.cond));
-            assert(ty.kind == .Bool);
-            cwritefln(c, "\tbr i1 %s, label %%%s, label %%%s", cond, alt_body_labels[i], next);
-
-            cwritefln(c, "%s:", alt_body_labels[i]);
-            old := c.scope;
-            c.scope = new_gcscope(&old);
-            for statement, i in a.block.stmts {
-                cg_stmt(c, statement);
-                // fixed: was comparing against len(s.base_block.stmts) —
-                // must check this alt branch's own block length.
-                if stmt_ends_block(statement) && i != len(a.block.stmts) - 1 {
-                    gala_panic("nothing past will be executed");
-                }
-            }
-            free_cgscope(&c.scope)
-            c.scope = old;
+            cwritefln(c, "%s:", alt_cond_labels[i])
+            branch_on(c, a.cond, alt_body_labels[i],
+                next_after(i + 1, len(s.alt), has_else, alt_cond_labels, else_label, end_label))
+            cwritefln(c, "%s:", alt_body_labels[i])
+            cg_scoped_block(c, a.block)
             if !check_rets(a.block) {
-                cwritefln(c, "\tbr label %%%s", end_label);
+                cwritefln(c, "\tbr label %%%s", end_label)
             }
         }
 
         // --- else ---
         if has_else {
-            cwritefln(c, "%s:", else_label);
-            old := c.scope;
-            c.scope = new_gcscope(&old);
-            for statement, i in s.else_block.stmts {
-                cg_stmt(c, statement);
-                // fixed: was comparing against len(s.base_block.stmts) —
-                // must check the else block's own length.
-                if stmt_ends_block(statement) && i != len(s.else_block.stmts) - 1 {
-                    gala_panic("nothing past will be executed");
-                }
-            }
-            free_cgscope(&c.scope)
-            c.scope = old;
+            cwritefln(c, "%s:", else_label)
+            cg_scoped_block(c, s.else_block)
             if !check_rets(s.else_block) {
-                cwritefln(c, "\tbr label %%%s", end_label);
+                cwritefln(c, "\tbr label %%%s", end_label)
             }
         }
 
-        has_all_returns := has_else
-        if !check_rets(s.base_block) do has_all_returns = false;
-        for a in s.alt {
-            if !check_rets(a.block) do has_all_returns = false;
-        }
-        if has_else {
-            if !check_rets(s.else_block) do has_all_returns = false;
-        }
         // returns in every branch, so never needs end label
-        if !has_all_returns {
-            cwritefln(c, "%s:", end_label);
+        if !if_returns_everywhere(s) {
+            cwritefln(c, "%s:", end_label)
         }
     }
-    case VarDec:{
-        // get object
+    case VarDec: {
         obj_id := get_ctx().stmt_objects[id]
-        obj := get_obj(obj_id);
+        obj := get_obj(obj_id)
         var_tid := obj.type.(TypeId)
         var_ty_str := ty_to_llvm_str(c, var_tid)
         name := aprintf(c, "%%%s.%d", s.name, obj_id)
@@ -806,13 +708,11 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
             cg_alloca_named(c, name, var_ty_str)
             cg_expr_into(c, s.value, name)
         } else {
-            v := cg_expr(c, s.value)
-            value, returns := reduce_expr_to_single_value(c, v);
-            assert(returns);
+            value, returns := reduce_expr_to_single_value(c, cg_expr(c, s.value))
+            assert(returns)
             // allocate (entry block, so loops don't grow the stack)
             cg_alloca_named(c, name, var_ty_str)
-            // init
-            cwritefln(c, "\tstore %s %s, ptr %s", var_ty_str, value, name);
+            cwritefln(c, "\tstore %s %s, ptr %s", var_ty_str, value, name)
         }
 
         // write name to scope (after the initialiser, so `x := x` still
@@ -820,40 +720,40 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         c.scope.vars[s.name] = {.Variable, name}
     }
     case Return: {
-        if e, ok := s.expr.(ExprId); ok {
-            ret_tid := expr_ty(e)
+        e, has_value := s.expr.(ExprId)
+        if !has_value {
+            cwriteln(c, "\tret void")
+            break
+        }
 
-            if c.cur_fn_ret.mode == .Indirect && is_memory_type(ret_tid) {
+        ret_tid := expr_ty(e)
+        ret_ty_str := ty_to_llvm_str(c, ret_tid)
+
+        if c.cur_fn_ret.mode == .Indirect {
+            if is_memory_type(ret_tid) {
                 // Large aggregate return: construct directly into the
                 // caller's sret slot (or memcpy from a local) — no SSA copy.
-                cg_expr_into(c, e, "%.sret")
-                cwriteln(c, "\tret void")
+                cg_expr_into(c, e, SRET_PARAM)
             } else {
-                r, returns := reduce_expr_to_single_value(c, cg_expr(c, e));
-                assert(returns);
-                ret_ty_str := ty_to_llvm_str(c, ret_tid)
-
-                switch c.cur_fn_ret.mode {
-                case .Indirect: {
-                    // caller-allocated slot, already passed in as %.sret
-                    cwritefln(c, "\tstore %s %s, ptr %s", ret_ty_str, r, "%.sret")
-                    cwriteln(c, "\tret void")
-                }
-                case .Direct: {
-                    if c.cur_fn_ret.needs_coercion {
-                        slot := new_entry_alloca(c, ret_ty_str)
-                        cwritefln(c, "\tstore %s %s, ptr %s", ret_ty_str, r, slot)
-                        coerced := new_tmp(c)
-                        cwritefln(c, "\t%s = load %s, ptr %s", coerced, c.cur_fn_ret.coerced_type, slot)
-                        cwritefln(c, "\tret %s %s", c.cur_fn_ret.coerced_type, coerced)
-                    } else {
-                        cwritefln(c, "\tret %s %s", ret_ty_str, r)
-                    }
-                }
-                }
+                r, returns := reduce_expr_to_single_value(c, cg_expr(c, e))
+                assert(returns)
+                // caller-allocated slot, already passed in as %.sret
+                cwritefln(c, "\tstore %s %s, ptr %s", ret_ty_str, r, SRET_PARAM)
             }
-        } else {
             cwriteln(c, "\tret void")
+            break
+        }
+
+        r, returns := reduce_expr_to_single_value(c, cg_expr(c, e))
+        assert(returns)
+        if c.cur_fn_ret.needs_coercion {
+            slot := new_entry_alloca(c, ret_ty_str)
+            cwritefln(c, "\tstore %s %s, ptr %s", ret_ty_str, r, slot)
+            coerced := new_tmp(c)
+            cwritefln(c, "\t%s = load %s, ptr %s", coerced, c.cur_fn_ret.coerced_type, slot)
+            cwritefln(c, "\tret %s %s", c.cur_fn_ret.coerced_type, coerced)
+        } else {
+            cwritefln(c, "\tret %s %s", ret_ty_str, r)
         }
     }
     case Assignment: {
@@ -883,10 +783,12 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
                 ty_to_llvm_str(c, expr_ty(s.target)), value, target_ptr)
         }
     }
-    case:panic("impl");
+    case:
+        gala_panic("cg_stmt: unhandled statement kind")
     }
-    cwriteln(c, "");
+    cwriteln(c, "")
 }
+
 // Evaluates an iterable expression (for `for x in <expr>`) EXACTLY ONCE and
 // returns everything the loop needs:
 //   data_ptr  - pointer to element 0
@@ -903,38 +805,28 @@ cg_iter_parts :: proc(c: ^CGCtx, id: ExprId) -> (data_ptr: string, len_v: string
         // pointer, the length is a compile-time constant. (An rvalue array,
         // e.g. `for x in make_arr()`, is written to a temporary first.)
         return cg_value_addr(c, id),
-               fmt.aprintf("%d", ty.fixed_size_array.size, allocator = get_ctx().allocator),
+               aprintf(c, "%d", ty.fixed_size_array.size),
                ty.fixed_size_array.type
 
-    case .Slice:
-        v, ok := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(ok)
-        p := new_tmp(c, "for_data")
-        cwritefln(c, "\t%s = extractvalue {{ ptr, i64 }} %s, 0", p, v)
-        l := new_tmp(c, "for_len")
-        cwritefln(c, "\t%s = extractvalue {{ ptr, i64 }} %s, 1", l, v)
-        return p, l, ty.slice.type
-
-    case .String:
-        v, ok := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(ok)
-        p := new_tmp(c, "for_data")
-        cwritefln(c, "\t%s = extractvalue {{ ptr, i64 }} %s, 0", p, v)
-        l := new_tmp(c, "for_len")
-        cwritefln(c, "\t%s = extractvalue {{ ptr, i64 }} %s, 1", l, v)
-        return p, l, byte_type()
+    case .Slice, .String:
+        v, ok := reduce_expr_to_single_value(c, cg_expr(c, id))
+        assert(ok)
+        elem := ty.slice.type if ty.kind == .Slice else byte_type()
+        return cg_pair_field(c, v, 0, "for_data"), cg_pair_field(c, v, 1, "for_len"), elem
 
     case:
         highlight_lines(get_span(id))
         gala_panic("for: expression is not iterable (expected array, slice or string)")
     }
 }
+
 // Resolves ANY indexable expression down to a pointer that already points at
 // element 0, plus that element's LLVM type string. This is the one place
 // that needs to know how array/slice/pointer differ — everything downstream
-// (Index, TakeSlice, and later `for x in ...`) is a uniform single-index GEP
-// off the result.
+// (Index, TakeSlice, `for x in ...`) is a uniform single-index GEP off the
+// result.
 cg_data_ptr :: proc(c: ^CGCtx, id: ExprId) -> (ptr: string, elem_ty_str: string) {
     ty := get_type(expr_ty(id))
-    // cwritefln(c, "\t; cg_data_ptr expr tye: %s", tts(expr_ty(id)));
     #partial switch ty.kind {
     case .FixedSizeArray:
         // arrays always live in memory, never SSA values — get its address,
@@ -942,40 +834,34 @@ cg_data_ptr :: proc(c: ^CGCtx, id: ExprId) -> (ptr: string, elem_ty_str: string)
         // An rvalue array (e.g. `make_arr()[3]`) is spilled to a temporary.
         return cg_value_addr(c, id), ty_to_llvm_str(c, ty.fixed_size_array.type)
 
-    case .Slice: {
-        // slices are a small by-value {ptr, i64} — get the value however it
-        // naturally arises (load, extractvalue, straight from TakeSlice,
-        // a function return, whatever cg_expr already knows how to do) and
-        // pull the data pointer straight out of it
-        v, ok := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(ok)
-        p := new_tmp(c)
-        cwritefln(c, "\t%s = extractvalue {{ ptr, i64 }} %s, 0", p, v)
-        return p, ty_to_llvm_str(c, ty.slice.type) // check your real field name
+    case .Slice, .String: {
+        // small by-value {ptr, i64} — get the value however it naturally
+        // arises (load, extractvalue, straight from TakeSlice, a function
+        // return, whatever cg_expr already knows how to do) and pull the
+        // data pointer straight out of it
+        v, ok := reduce_expr_to_single_value(c, cg_expr(c, id))
+        assert(ok)
+        elem := ty.slice.type if ty.kind == .Slice else byte_type()
+        return cg_pair_field(c, v, 0), ty_to_llvm_str(c, elem)
     }
-    case .String: {
-        // same as slice but base is just "byte"
-        v, ok := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(ok)
-        p := new_tmp(c)
-        cwritefln(c, "\t%s = extractvalue {{ ptr, i64 }} %s, 0", p, v)
-        return p, ty_to_llvm_str(c, byte_type()) // check your real field name
-    }
-
     case .Pointer: {
         // already IS a pointer to element 0
-        v, ok := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(ok)
-        return v, ty_to_llvm_str(c, ty.ptr) // check your real field name
+        v, ok := reduce_expr_to_single_value(c, cg_expr(c, id))
+        assert(ok)
+        return v, ty_to_llvm_str(c, ty.ptr)
     }
-
-    case: gala_panic("cg_data_ptr: not indexable")
+    case:
+        gala_panic("cg_data_ptr: not indexable")
     }
+    unreachable()
 }
 
 // Address of target[index]. Used by both cg_expr's Index (which loads
 // afterward) and cg_addr's Index (which just returns this).
 cg_elem_ptr :: proc(c: ^CGCtx, target: ExprId, index: ExprId) -> string {
-    // cwritefln(c, "\t; get_elem_ptr gens:");
     base_ptr, elem_ty := cg_data_ptr(c, target)
-    idx_v, ok := reduce_expr_to_single_value(c, cg_expr(c, index)); assert(ok)
+    idx_v, ok := reduce_expr_to_single_value(c, cg_expr(c, index))
+    assert(ok)
     idx_ty := ty_to_llvm_str(c, expr_ty(index))
 
     t := new_tmp(c)
@@ -983,86 +869,68 @@ cg_elem_ptr :: proc(c: ^CGCtx, target: ExprId, index: ExprId) -> string {
         t, elem_ty, base_ptr, idx_ty, idx_v)
     return t
 }
+
 cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
-    span := get_span(id).span
-    data := get_file_lines(get_ctx().current_file, span)
-    // cwritefln(c, "\t; cg_addr \"%s\"",
-        // string(get_ctx().files[get_ctx().current_file][span.start:span.end]))
     #partial switch e in get_expr(id) {
     case Symbol: {
         v := cgscope_get(&c.scope, e.name)
-        if v.kind == .Variable do return v.name
-        if v.kind == .Argument do panic("arguments can't have an address.");// return v.name
-
-        panic("impl");
-        // args aren't addressable — can't assign to a by-value param
-        // can however if args is a ptr/array
+        #partial switch v.kind {
+        case .Variable:
+            return v.name
+        case .Argument:
+            // can't assign to a by-value param (pointer/array args are
+            // reached through Deref / Index, not through their own address)
+            gala_panic("arguments can't have an address:", e.name)
+        }
+        gala_panic("cg_addr: symbol has no address:", e.name)
     }
     case FieldAccess: {
         // cg_value_addr: for a real lvalue this is just cg_addr; an rvalue
         // struct (`make_terrain().pixels[3]`) is spilled to a temporary.
         base_ptr := cg_value_addr(c, e.target)
         base_ty := expr_ty(e.target)
-        ty := get_type(base_ty)
-
-        idx := -1
-        for f, k in ty.structure.fields {
-            if f.name == e.field {
-                idx = k
-                break
-            }
-        }
-        assert(idx != -1)
+        idx := struct_field_index(get_type(base_ty), e.field)
 
         t := new_tmp(c)
         cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d",
             t, ty_to_llvm_str(c, base_ty), base_ptr, idx)
         return t
     }
-    case Index: {
-        // cwritefln(c, "\t; for index addr, cg_elem_ptr");
+    case Index:
         return cg_elem_ptr(c, e.target, e.index)
-    }
     case Deref: {
         // generate expression, as that would already be a pointer, otherwise
-        // dereferencing wouldn't make sense
-        ptr_val, returns := reduce_expr_to_single_value(c, cg_expr(c, e.expr));
-        assert(returns);
-        ptr_ty := get_type(expr_ty(e.expr))
-
-        if ptr_ty.kind != .Pointer {
-            panic("cannot dereference non-pointer type")
+        // dereferencing wouldn't make sense; the pointer VALUE is the address
+        ptr_val, returns := reduce_expr_to_single_value(c, cg_expr(c, e.expr))
+        assert(returns)
+        if get_type(expr_ty(e.expr)).kind != .Pointer {
+            gala_panic("cannot dereference non-pointer type")
         }
-        t := new_tmp(c);
-
-        /* cwritefln(c, "\t%s = load %s, ptr %s",
-            t, ty_to_llvm_str(c, expr_ty(e.expr)), ptr_val)*/
-
-        // return t;
-        return ptr_val;
+        return ptr_val
     }
     case Cast, Transmute: {
-            v, returns := reduce_expr_to_single_value(c, cg_expr(c, id)); assert(returns);
-            return v;
+        v, returns := reduce_expr_to_single_value(c, cg_expr(c, id))
+        assert(returns)
+        return v
     }
-    case:
-        debugln(get(id))
-        highlight_lines(get_span(id));
-        panic("not an lvalue")
     }
+    debugln(get(id))
+    highlight_lines(get_span(id))
+    gala_panic("not an lvalue")
 }
-// Declarations go through the same cg_abi_lower_signature as
-// definitions and calls — no more separate hand-rolled C ABI path.
+
+// ============================================================================
+// Functions
+// ============================================================================
+
 // Writes the signature line for a function — `declare` for a prototype
 // (extern, or a forward-declared import), `define` for the header of an
 // actual definition. Both extern and gala (non-extern) forms go through
-// the same ABI lowering and the same parameter-writing loop; the only
-// per-kind divergence is:
+// the same ABI lowering (cg_abi_lower_signature, shared with calls) and the
+// same parameter-writing loop; the only per-kind divergence is:
 //   - is_extern: only extern C functions get a literal `...` for a
 //     trailing variadic — a gala function's trailing variadic parameter
-//     has already been lowered to an ordinary Slice(variadic_type) arg
-//     by this point, so it just falls through the normal ByVal/Direct
-//     path like any other parameter.
+//     has already been lowered to an ordinary slice arg by this point.
 //   - define: whether we're opening a definition (needs real parameter
 //     names to bind and reference in the body, and binds them into
 //     c.scope) or just declaring a prototype (types only, no names,
@@ -1080,25 +948,28 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
 cg_fn_header :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string,
         is_extern := false, define := false, internal := false) -> (sig: AbiSignature, param_raw_names: [dynamic]string) {
     fn_ty := get_type(fn_type_id)
-
     sig = cg_abi_lower_signature(c, fn_type_id, .SysV)
 
-    cwrite(c, define ? "define " : "declare ")
+    cwrite(c, "define " if define else "declare ")
     if internal {
         cwrite(c, "internal ")
     }
-    cwritef(c, "%s ", sig.ret.mode == .Indirect ? "void" : sig.ret.coerced_type)
+    cwritef(c, "%s ", "void" if sig.ret.mode == .Indirect else sig.ret.coerced_type)
     cwritef(c, "@%s ", name)
     cwrite(c, "(")
 
     wrote_any := false
+    sep :: proc(c: ^CGCtx, wrote_any: ^bool) {
+        if wrote_any^ do cwrite(c, ", ")
+        wrote_any^ = true
+    }
+
     if sig.ret.mode == .Indirect {
+        sep(c, &wrote_any)
+        cwritef(c, "ptr sret(%s) align %d", ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align)
         if define {
-            cwritef(c, "ptr sret(%s) align %d %%.sret", ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align)
-        } else {
-            cwritef(c, "ptr sret(%s) align %d", ty_to_llvm_str(c, sig.ret.orig_type), sig.ret.sret_align)
+            cwritef(c, " %s", SRET_PARAM)
         }
-        wrote_any = true
     }
 
     if define {
@@ -1106,53 +977,52 @@ cg_fn_header :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string,
     }
 
     for a, k in fn_ty.fn.args {
-        if wrote_any { cwritef(c, ", ") }
-        wrote_any = true
+        sep(c, &wrote_any)
 
         al := sig.args[k]
         switch al.mode {
         case .ByVal:
+            cwritef(c, "ptr byval(%s) align %d", ty_to_llvm_str(c, al.orig_type), al.byval_align)
             if define {
                 // already an address — the parameter itself IS the pointer,
                 // no local alloca needed; bind as .Variable (load-on-read,
                 // same as any other addressable local)
                 pname := aprintf(c, "%%%s", a.name)
-                cwritef(c, "ptr byval(%s) align %d %s", ty_to_llvm_str(c, al.orig_type), al.byval_align, pname)
+                cwritef(c, " %s", pname)
                 append(&param_raw_names, pname)
                 c.scope.vars[a.name] = {.Variable, pname}
-            } else {
-                cwritef(c, "ptr byval(%s) align %d", ty_to_llvm_str(c, al.orig_type), al.byval_align)
             }
         case .Direct:
+            cwrite(c, al.coerced_type)
             if define {
                 if al.needs_coercion {
                     // raw coerced value comes in under a temp name; the
                     // real binding is reconstructed in the prologue
                     pname := aprintf(c, "%%%s.abi", a.name)
-                    cwritef(c, "%s %s", al.coerced_type, pname)
+                    cwritef(c, " %s", pname)
                     append(&param_raw_names, pname)
                 } else {
                     pname := aprintf(c, "%%%s", a.name)
-                    cwritef(c, "%s %s", al.coerced_type, pname)
+                    cwritef(c, " %s", pname)
                     append(&param_raw_names, pname)
                     c.scope.vars[a.name] = {.Argument, pname}
                 }
-            } else {
-                cwritef(c, "%s", al.coerced_type)
             }
         }
     }
+
     if fn_ty.fn.is_variadic {
-        if wrote_any { cwritef(c, ", ") }
+        sep(c, &wrote_any)
         if is_extern { // extern just use "..."
             cwrite(c, "...")
-        } else { // gala functions write arg name as "[]ty"
-            vty := fn_ty.fn.gala_abi_ty;
-            vname := fn_ty.fn.variadic_name;
-            sty := ty_to_llvm_str(c, vty)
-            pname := aprintf(c, "%%%s.gala_variadic", vname)
-            c.scope.vars[vname] = {kind=.Argument, name=pname}
-            cwritef(c, "%s %s", sty, pname)
+        } else { // gala functions take the packed `[]ty` as an ordinary last arg
+            cwrite(c, ty_to_llvm_str(c, fn_ty.fn.gala_abi_ty))
+            if define {
+                vname := fn_ty.fn.variadic_name
+                pname := aprintf(c, "%%%s.gala_variadic", vname)
+                c.scope.vars[vname] = {kind=.Argument, name=pname}
+                cwritef(c, " %s", pname)
+            }
         }
     }
 
@@ -1163,22 +1033,20 @@ cg_fn_header :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string,
     }
     return
 }
+
 // Item-based wrapper: declarations for extern functions and for functions
 // pulled in via imports. (Definitions of named functions go through
 // cg_fn_definition, see cg_item.)
-cg_fn_declaration :: proc(c: ^CGCtx, i: Item, id: ItemId, is_extern := false, define := false) -> (sig: AbiSignature, param_raw_names: [dynamic]string) {
-    objid := get_ctx().item_objects[id]
-    obj := get_ctx().objs[objid]
+cg_fn_declaration :: proc(c: ^CGCtx, id: ItemId, is_extern := false) {
+    obj := get_ctx().objs[get_ctx().item_objects[id]]
     fn_type_id := obj.type.(TypeId)
 
-    name: string
-    if is_extern {
-        name = obj.name
-    } else {
-        name = get_ctx().cg_item_names[id] // use compilers cg item name
-    }
-    return cg_fn_header(c, fn_type_id, name, is_extern, define)
+    // extern C functions keep their own symbol name; everything else uses
+    // the compiler's per-item name
+    name := obj.name if is_extern else get_ctx().cg_item_names[id]
+    _, _ = cg_fn_header(c, fn_type_id, name, is_extern)
 }
+
 // Emits a complete function definition — header, entry block, argument
 // prologue, body statements, implicit trailing `ret void` — into the
 // current builder. Shared by named functions (cg_item's FnDec) and
@@ -1230,34 +1098,25 @@ cg_fn_definition :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string, block: Blo
     c.allocas = &alloca_b
 
     block_ends := false
-
     for statement, index in block.stmts {
         cg_stmt(c, statement)
 
         if stmt_ends_block(statement) {
             block_ends = true
-
             if index != len(block.stmts) - 1 {
                 gala_panic("nothing past will be executed")
             }
-
             break
         }
     }
 
     if !block_ends {
-        switch sig.ret.mode {
-        case .Direct:
-            if sig.ret.coerced_type == "void" {
-                cwriteln(c, "\tret void")
-            } else {
-                gala_panic("Function does not return a value")
-            }
-
-        case .Indirect:
-            // sret functions have an ABI return of void, so reaching
-            // the end still needs `ret void`.
+        // sret functions have an ABI return of void too, so reaching the
+        // end of either kind still needs `ret void`.
+        if sig.ret.mode == .Indirect || sig.ret.coerced_type == "void" {
             cwriteln(c, "\tret void")
+        } else {
+            gala_panic("Function does not return a value")
         }
     }
 
@@ -1271,11 +1130,11 @@ cg_fn_definition :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string, block: Blo
 
     c.cur_fn_ret = old_ret
 }
+
 cg_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
     case Import: {} // ok
-    case StructDec: {
-    }
+    case StructDec: {}
     case GlobalVarDec: {
         // declared by cg_globals_dec, initialised by cg_globals_init
     }
@@ -1284,12 +1143,9 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
         // an import; LLVM rejects a second `declare` of the same name.
         if c.emitted_externs[i.name] do return
         c.emitted_externs[i.name] = true
-        cg_fn_declaration(c, i, id, is_extern = true)
+        cg_fn_declaration(c, id, is_extern = true)
     }
     case FnDec: {
-        // double check type is a function
-        // assert(check_fn(i))
-
         old_scope := c.scope
         c.scope = new_gcscope(&old_scope)
 
@@ -1299,36 +1155,43 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
         // reset scope
         c.scope = old_scope
     }
-    case: panic("impl")
+    case:
+        gala_panic("cg_item: unhandled item kind")
     }
 }
+
 cg_ast :: proc(c: ^CGCtx, ast: ^AST) {
     for id in ast.items {
         cg_item(c, id)
     }
 }
+
 check_rets :: proc(b: Block) -> bool {
     if len(b.stmts) < 1 { return false }
-    last := b.stmts[len(b.stmts)-1];
-    return stmt_ends_block(last); // check if last statement ends block
+    return stmt_ends_block(b.stmts[len(b.stmts)-1]) // does the last statement end the block?
 }
+
 check_fn :: proc(f: FnDec) -> bool {
     if !check_rets(f.block) {
-        highlight_lines(get_ctx().current_file, f.span);
+        highlight_lines(get_ctx().current_file, f.span)
         gala_panic("function must return at all branches")
     }
     return true
 }
+
 cgscope_get :: proc(scope: ^CGScope, v: string) -> CGObj {
     s := scope
     for s != nil {
-        n, ok := s.vars[v];
-        if ok do return n
+        if n, ok := s.vars[v]; ok do return n
         s = s.parent
     }
     debugln(v, "doesn't exist cg scope get")
     return CGObj{kind=.Invalid}
 }
+
+// ============================================================================
+// String constants
+// ============================================================================
 
 // Escapes a byte for LLVM's c"..." string-constant syntax.
 // LLVM requires every byte outside printable, non-special ASCII
@@ -1344,7 +1207,7 @@ llvm_escape_byte :: proc(sb: ^strings.Builder, b: byte) {
             // printable ASCII, safe to emit directly
             strings.write_byte(sb, b)
         } else {
-            strings.write_string(sb, fmt.tprintf("\\%02X", b))
+            fmt.sbprintf(sb, "\\%02X", b)
         }
     }
 }
@@ -1360,20 +1223,14 @@ emit_string_global :: proc(name: string, content: string) -> StringGlobalResult 
     sb: strings.Builder
     strings.builder_init(&sb, get_ctx().allocator)
 
-    logical_len := len(content)       // length WITHOUT null term (this is what you store as `i64` len)
-    total_len   := logical_len + 1    // actual array size WITH null term
+    logical_len := len(content) // length WITHOUT null term (this is what you store as `i64` len)
+    array_type := fmt.aprintf("[%d x i8]", logical_len + 1, allocator=get_ctx().allocator)
 
-    array_type := fmt.tprintf("[%d x i8]", total_len)
-
-    strings.write_string(&sb, fmt.tprintf(
-        "%s = private unnamed_addr constant %s c\"",
-        name, array_type,
-    ))
-    for i := 0; i < len(content); i += 1 {
+    fmt.sbprintf(&sb, "%s = private unnamed_addr constant %s c\"", name, array_type)
+    for i in 0 ..< len(content) {
         llvm_escape_byte(&sb, content[i])
     }
-    strings.write_string(&sb, "\\00\"") // trailing null terminator
-    strings.write_string(&sb, ", align 1\n")
+    strings.write_string(&sb, "\\00\", align 1\n") // trailing null terminator
 
     return StringGlobalResult{
         ir          = strings.to_string(sb),
@@ -1383,7 +1240,9 @@ emit_string_global :: proc(name: string, content: string) -> StringGlobalResult 
     }
 }
 
-// ---- global variables ----
+// ============================================================================
+// Global variables
+// ============================================================================
 //
 // A top-level `x := expr;` / `x: T = expr;` becomes an LLVM global
 // `@<mod prefix>.x = global T zeroinitializer` in the module that defines it
@@ -1402,15 +1261,19 @@ items_have_globals :: proc(items: []ItemId) -> bool {
     return false
 }
 
+// Cached "gala.mod_src_foo" prefix for a module.
+module_prefix :: proc(mid: ModId) -> string {
+    if p, ok := get_ctx().cg_module_prefix[mid]; ok {
+        return p
+    }
+    p := mod_prefix_from_path(get_ctx().mods[mid].path, prefix="gala.mod")
+    get_ctx().cg_module_prefix[mid] = p
+    return p
+}
+
 // "@gala.mod_src_foo.__init_globals"
 mod_init_name :: proc(c: ^CGCtx, mid: ModId) -> string {
-    mod_prefix, ok := get_ctx().cg_module_prefix[mid]
-    if !ok {
-        module := get_ctx().mods[mid]
-        mod_prefix = mod_prefix_from_path(module.path, prefix="gala.mod")
-        get_ctx().cg_module_prefix[mid] = mod_prefix
-    }
-    return aprintf(c, "@%s.__init_globals", mod_prefix)
+    return aprintf(c, "@%s.__init_globals", module_prefix(mid))
 }
 
 // Writes the `@global = [external] global T` lines. Runs after cg_items_dec
@@ -1468,6 +1331,10 @@ cg_globals_init :: proc(c: ^CGCtx, mid: ModId, items: []ItemId) {
     c.cur_fn_ret = old_ret
 }
 
+// ============================================================================
+// Declarations / modules
+// ============================================================================
+
 // Writes the type definitions and function prototypes this module needs,
 // including everything reachable through its imports.
 //
@@ -1489,7 +1356,7 @@ cg_globals_init :: proc(c: ^CGCtx, mid: ModId, items: []ItemId) {
 // Skipping an already-handled item is safe for name lookup too: the
 // `ctx.scope.vars` binding is made the first time the item is seen, and
 // there is one scope for the whole output file.
-cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
+cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import := false) {
     for id in items {
         switch i in get_item(id) {
         case Import: {
@@ -1500,8 +1367,8 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
                 continue
             }
             ctx.declared_mods[mid] = true // mark before recursing so cycles terminate
-            m := get_ctx().mods[mid];
-            cg_items_dec(ctx, m.ast.items, true); // gen items into this
+            m := get_ctx().mods[mid]
+            cg_items_dec(ctx, m.ast.items, true) // gen items into this
 
             // Post-order: this module's own imports were appended during the
             // recursion above, so they run before it.
@@ -1515,19 +1382,14 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
             if ctx.declared_items[id] do continue
             ctx.declared_items[id] = true
 
-            item := i;
-            c := ctx;
-            name := mod_item_type_name(c, id);
-            cwritef(c, "%%%s = ", name);
-            cwrite(c, "type {")
-            ty :=get_type(get_ctx().item_types[id])
-            for f, i in ty.structure.fields {
-                cwritef(c, "%s", ty_to_llvm_str(c,f.type));
-                if i != len(get_type(get_ctx().item_types[id]).structure.fields) -1 {
-                    cwrite(c, ",");
-                }
+            name := mod_item_type_name(ctx, id)
+            cwritef(ctx, "%%%s = ", name)
+            cwrite(ctx, "type {")
+            for f, k in get_type(get_ctx().item_types[id]).structure.fields {
+                if k > 0 do cwrite(ctx, ",")
+                cwrite(ctx, ty_to_llvm_str(ctx, f.type))
             }
-            cwriteln(c, "}")
+            cwriteln(ctx, "}")
         }
         case GlobalVarDec: {
             if ctx.declared_items[id] do continue
@@ -1541,35 +1403,33 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import:=false) {
             ctx.scope.vars[i.name] = {.Variable, aprintf(ctx, "@%s", name)}
             append(&ctx.pending_globals, PendingGlobal{id = id, external = is_import})
         }
-        case FnDec: { 
+        case FnDec: {
             if ctx.declared_items[id] do continue
             ctx.declared_items[id] = true
 
-            name := mod_item_obj_name(ctx, id);
-            // declare first;
-            // it's a function , so use "@main" instead of "%main"
-            ctx.scope.vars[i.name] = {.Symbol, aprintf(ctx, "@%s", name)};
+            // it's a function, so use "@main" instead of "%main"
+            name := mod_item_obj_name(ctx, id)
+            ctx.scope.vars[i.name] = {.Symbol, aprintf(ctx, "@%s", name)}
             if is_import {
-                cg_fn_declaration(ctx, i, id, is_extern=false);
+                cg_fn_declaration(ctx, id)
             }
         }
-        case ExternFnDec: { 
+        case ExternFnDec: {
             if ctx.declared_items[id] do continue
             ctx.declared_items[id] = true
 
             name := i.name // use normal name here since it's external
             get_ctx().cg_item_names[id] = name
-            // declare first;
-            // it's a function , so use "@main" instead of "%main"
-            ctx.scope.vars[i.name] = {.Symbol, aprintf(ctx, "@%s", name)};
+            ctx.scope.vars[i.name] = {.Symbol, aprintf(ctx, "@%s", name)}
             if is_import && !ctx.emitted_externs[name] {
                 ctx.emitted_externs[name] = true
-                cg_fn_declaration(ctx, i, id, is_extern = true);
+                cg_fn_declaration(ctx, id, is_extern = true)
             }
         }
         }
     }
 }
+
 // Finds the top-level `main` function item in this module's AST (not one
 // pulled in via an import — entry point must be declared directly in the
 // entry file). Returns its ItemId so the caller can resolve its name
@@ -1586,58 +1446,118 @@ find_main_item :: proc(ast: ^AST) -> (ItemId, bool) {
     }
     return {}, false
 }
+
+// Runs an external tool to completion, panicking (with the full command
+// line) if it can't be started or exits non-zero.
+run_tool :: proc(what: string, cmd: []string) {
+    line := strings.join(cmd, " ", get_ctx().allocator)
+
+    p, err := os.process_start({command = cmd})
+    if err != .NONE {
+        debugln(line)
+        gala_panic("Failed to start", what, "process:", err)
+    }
+
+    state, werr := os.process_wait(p)
+    if werr != .NONE {
+        gala_panic("Failed to wait for", what, "process:", werr)
+    }
+    if state.exit_code != 0 {
+        debugln(line)
+        gala_panic("Failed to run", what, "- exit code:", state.exit_code)
+    }
+    debugln(what, "exit code:", state.exit_code)
+}
+
+// Writes the C `main` wrapper: runs global initialisers (imported modules
+// first, post-order, then this module's own) and calls gala `main`.
+// The wrapper has to match gala main's real return type — calling a `void`
+// gala main as `i32` would leave the process exit status as whatever
+// happened to be in eax. void -> exit 0; i32 -> pass it through.
+cg_entry_wrapper :: proc(c: ^CGCtx, m: ModId, ast: ^AST, has_globals: bool) {
+    main_id, found := find_main_item(ast)
+    if !found {
+        gala_panic("entry file has no `main` function")
+    }
+    entry := aprintf(c, "@%s", get_ctx().cg_item_names[main_id])
+
+    main_obj := get_ctx().objs[get_ctx().item_objects[main_id]]
+    ret_kind := get_type(get_type(main_obj.type.(TypeId)).fn.ret_ty).kind
+
+    call_line, ret_line: string
+    #partial switch ret_kind {
+    case .Void:
+        call_line = aprintf(c, "call void %s()", entry)
+        ret_line = "ret i32 0"
+    case .Int32:
+        call_line = aprintf(c, "%%result = call i32 %s()", entry)
+        ret_line = "ret i32 %result"
+    case:
+        gala_panic("`main` must return void or i32")
+    }
+
+    cwritefln(c, "define i32 @main(i32 %%argc, ptr %%argv) {{")
+    for mid in c.init_mods {
+        cwritefln(c, "\tcall void %s()", mod_init_name(c, mid))
+    }
+    if has_globals {
+        cwritefln(c, "\tcall void %s()", mod_init_name(c, m))
+    }
+    cwritefln(c, "\t%s", call_line)
+    cwritefln(c, "\t%s", ret_line)
+    cwritefln(c, "}")
+}
+
 cg_module :: proc(m: ModId) {
     module := get_ctx().mods[m]
-    ast := &module.ast;
-    is_entry := false
-    if module.path == get_ctx().entry_file {
-        is_entry = true
-    }
+    ast := &module.ast
+    is_entry := module.path == get_ctx().entry_file
+
     cgctx := CGCtx{}
-    arena : mem.Dynamic_Arena;
+    arena: mem.Dynamic_Arena
     mem.dynamic_arena_init(&arena)
-    defer mem.dynamic_arena_free_all(&arena);
+    defer mem.dynamic_arena_free_all(&arena)
     cgctx.arena = &arena
-    sb : strings.Builder
+    sb: strings.Builder
     strings.builder_init(&sb)
     defer strings.builder_destroy(&sb)
     cgctx.b = &sb
-    cgctx.cg_strings = make(map[string]StringGlobalResult, allocator=get_ctx().allocator);
-    cgctx.break_labels = make(map[StmtId]string, allocator=get_ctx().allocator);
-    cgctx.continue_labels = make(map[StmtId]string, allocator=get_ctx().allocator);
-    cgctx.lambdas = make([dynamic]string, allocator=get_ctx().allocator);
-    cgctx.declared_items = make(map[ItemId]bool, allocator=get_ctx().allocator);
-    cgctx.declared_mods = make(map[ModId]bool, allocator=get_ctx().allocator);
-    cgctx.emitted_externs = make(map[string]bool, allocator=get_ctx().allocator);
-    cgctx.pending_globals = make([dynamic]PendingGlobal, allocator=get_ctx().allocator);
-    cgctx.init_mods = make([dynamic]ModId, allocator=get_ctx().allocator);
-    cgctx.scope = new_gcscope(nil);
 
+    alloc := get_ctx().allocator
+    cgctx.cg_strings      = make(map[string]StringGlobalResult, allocator=alloc)
+    cgctx.break_labels    = make(map[StmtId]string, allocator=alloc)
+    cgctx.continue_labels = make(map[StmtId]string, allocator=alloc)
+    cgctx.lambdas         = make([dynamic]string, allocator=alloc)
+    cgctx.declared_items  = make(map[ItemId]bool, allocator=alloc)
+    cgctx.declared_mods   = make(map[ModId]bool, allocator=alloc)
+    cgctx.emitted_externs = make(map[string]bool, allocator=alloc)
+    cgctx.pending_globals = make([dynamic]PendingGlobal, allocator=alloc)
+    cgctx.init_mods       = make([dynamic]ModId, allocator=alloc)
+    cgctx.scope = new_gcscope(nil)
 
     // boilerplate + garbage
-    fmt.sbprintfln(cgctx.b, "; target info")
-    fmt.sbprintfln(cgctx.b, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"");
-    fmt.sbprintfln(cgctx.b, "target triple = \"x86_64-pc-linux-gnu\" ");
+    cwritefln(&cgctx, "; target info")
+    cwritefln(&cgctx, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"")
+    cwritefln(&cgctx, "target triple = \"x86_64-pc-linux-gnu\" ")
 
     // memory intrinsics used by cg_memcpy / cg_memmove / cg_memset.
     // Declared unconditionally: an unused `declare` costs nothing, and one
     // can't be emitted lazily from inside a function body.
-    fmt.sbprintfln(cgctx.b, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)")
-    fmt.sbprintfln(cgctx.b, "declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)")
-    fmt.sbprintfln(cgctx.b, "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)")
+    cwritefln(&cgctx, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)")
+    cwritefln(&cgctx, "declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)")
+    cwritefln(&cgctx, "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)")
 
-
-    // structs need to be declared first??
-    cg_items_dec(&cgctx, ast.items);
+    // struct types (and prototypes) first: everything below refers to them
+    cg_items_dec(&cgctx, ast.items)
 
     // globals go after all type definitions (see cg_globals_dec)
     cg_globals_dec(&cgctx)
 
     for s in get_ctx().data {
-        t := new_tmp(&cgctx,p="string", symbol=true)
-        v := emit_string_global(t, s);
-        cwritefln(&cgctx, "%s", v.ir);
-        cgctx.cg_strings[s] = v;
+        t := new_tmp(&cgctx, p="string", symbol=true)
+        v := emit_string_global(t, s)
+        cwritefln(&cgctx, "%s", v.ir)
+        cgctx.cg_strings[s] = v
     }
 
     // gen
@@ -1657,128 +1577,36 @@ cg_module :: proc(m: ModId) {
     }
 
     if is_entry {
-        main_id, found := find_main_item(ast)
-        if !found {
-            gala_panic("entry file has no `main` function")
-        }
-        name := get_ctx().cg_item_names[main_id];
-        entry := aprintf(&cgctx, "@%s", name)
-
-        // Global initialisers: imported modules first (post-order), then ours.
-        init_sb: strings.Builder
-        strings.builder_init(&init_sb, get_ctx().allocator)
-        for mid in cgctx.init_mods {
-            fmt.sbprintfln(&init_sb, "            call void %s()", mod_init_name(&cgctx, mid))
-        }
-        if has_globals {
-            fmt.sbprintfln(&init_sb, "            call void %s()", mod_init_name(&cgctx, m))
-        }
-        init_calls := strings.to_string(init_sb)
-
-        // The C `main` wrapper has to match gala main's real return type.
-        // Calling a `void` gala main as `i32` leaves the process exit status
-        // as whatever happened to be in eax (this used to exit with the last
-        // computed value). void -> exit 0; i32 -> pass it through.
-        main_obj := get_ctx().objs[get_ctx().item_objects[main_id]]
-        main_fn := get_type(main_obj.type.(TypeId))
-        main_ret_kind := get_type(main_fn.fn.ret_ty).kind
-        #partial switch main_ret_kind {
-        case .Void:
-            fmt.sbprintfln(cgctx.b,` define i32 @main(i32 %%argc, ptr %%argv) {{
-%s            call void %s()
-            ret i32 0
-        }`, init_calls, entry);
-        case .Int32:
-            fmt.sbprintfln(cgctx.b,` define i32 @main(i32 %%argc, ptr %%argv) {{
-%s            %%result = call i32 %s()
-            ret i32 %%result
-        }`, init_calls, entry);
-        case:
-            gala_panic("`main` must return void or i32")
-        }
+        cg_entry_wrapper(&cgctx, m, ast, has_globals)
     }
 
-    // write
-    dir_err := os.make_directory(".gala_build")
-    if dir_err != io.Error.None {
-        if dir_err != .Exist {
-            gala_panic("Failed make .gala_build directory:", dir_err);
-        }
+    // ---- write + compile ----
+    if dir_err := os.make_directory(".gala_build"); dir_err != io.Error.None && dir_err != .Exist {
+        gala_panic("Failed make .gala_build directory:", dir_err)
     }
 
-    c := &cgctx;
-    name := mod_prefix_from_path(get_ctx().current_file, "gala.mod");
+    name := mod_prefix_from_path(get_ctx().current_file, "gala.mod")
+    ll_name  := aprintf(&cgctx, ".gala_build/%s.ll", name)
+    opt_name := aprintf(&cgctx, ".gala_build/%s.opt.ll", name)
+    o_name   := aprintf(&cgctx, ".gala_build/%s.o", name)
 
-    ll_name := aprintf(c, ".gala_build/%s.ll", name)
-    opt_name := aprintf(c, ".gala_build/%s.opt.ll", name)
-
-    e := os.write_entire_file_from_string(ll_name, strings.to_string(sb))
-    if e != io.Error.None {
-        gala_panic("Failed to write to file:", e);
+    if e := os.write_entire_file_from_string(ll_name, strings.to_string(sb)); e != io.Error.None {
+        gala_panic("Failed to write to file:", e)
     }
 
-    {
-        // mem2reg
-        p, err := os.process_start({command={
-            "opt", "-passes=mem2reg", ll_name, "-S", "-o", opt_name, }});
+    // mem2reg: promotes the entry-block allocas to SSA registers
+    run_tool("opt", {"opt", "-passes=mem2reg", ll_name, "-S", "-o", opt_name})
 
-        if err != .NONE {
-            debugln( "opt", "-passes=mem2reg", ll_name, "-S", "-o", opt_name,)
-            gala_panic("Failed to start LLVM opt process:", err);
-        }
+    debugln("compiling:", name)
+    run_tool("llc", {"llc", "-filetype=obj", "-O2", opt_name, "-o", o_name})
 
-        p_state, werr := os.process_wait(p)
-        if werr != .NONE {
-            gala_panic("Failed to wait for LLVM opt process:", werr);
-        }
-
-        if p_state.exit_code != 0 {
-            debugln( "opt", "-passes=mem2reg", ll_name, "-S", "-o", opt_name,)
-            gala_panic( "Failed to optimise LLVM IR. exit code:",
-                p_state.exit_code, "for:", opt_name);
-        }
-
-        debugln("opt exit code:", p_state.exit_code);
-    }
-
-    {
-        debugln("compiling:", name);
-        o_name := aprintf(c, ".gala_build/%s.o", name)
-
-        // compile optimised LLVM IR
-        p, err := os.process_start({command={
-            "llc",
-            "-filetype=obj",
-            "-O2",
-            opt_name,
-            "-o", o_name,
-        }});
-        debugln("started:", name);
-
-        if err != .NONE {
-            debugln( "llc", "-filetype=obj", "-O2", opt_name, "-o", o_name,)
-            gala_panic("Failed to start llc process:", err);
-        }
-
-        debugln("waiting:", name);
-        debugln( "llc", "-filetype=obj", "-O2", opt_name, "-o", o_name,)
-        p_state, werr := os.process_wait(p)
-        if werr != .NONE {
-            gala_panic("Failed to wait for llc process:", werr);
-        }
-
-        debugln("finished:", name);
-        if p_state.exit_code != 0 {
-            gala_panic(
-                "Failed to compile llvm ir. exit code:",
-                p_state.exit_code,
-            );
-        }
-
-        debugln("llc exit code:", p_state.exit_code);
-        append(&get_ctx().o_files, o_name)
-    }
+    append(&get_ctx().o_files, o_name)
 }
+
+// ============================================================================
+// Names
+// ============================================================================
+
 // eg src/some/folder_file -> src_some_folder_file
 files_prefixes: map[string]string
 path_to_file_prefix :: proc(c: ^CGCtx, path: string) -> string {
@@ -1791,13 +1619,8 @@ path_to_file_prefix :: proc(c: ^CGCtx, path: string) -> string {
     base := path[:len(path)-len(".gala")]
 
     buf := make([]byte, len(base), allocator=c.arena.block_allocator)
-
     for ch, i in base {
-        if ch == '/' {
-            buf[i] = '_'
-        } else {
-            buf[i] = byte(ch)
-        }
+        buf[i] = '_' if ch == '/' else byte(ch)
     }
 
     out := string(buf)
@@ -1807,83 +1630,70 @@ path_to_file_prefix :: proc(c: ^CGCtx, path: string) -> string {
 
 mod_item_type_name :: proc(c: ^CGCtx, id: ItemId) -> string {
     tid := get_ctx().item_types[id]
-    name, ok := get_ctx().cg_ty_names[tid];
+    name, ok := get_ctx().cg_ty_names[tid]
     if !ok {
         mid, mid_ok := get_ctx().ty_modules[tid]
         if !mid_ok {
             debugln("MODULE:", id)
-            panic("type has no module associated with it.");
+            gala_panic("type has no module associated with it.")
         }
-        mod_prefix, mok := get_ctx().cg_module_prefix[mid];
-        if !mok {
-            module := get_ctx().mods[mid];
-            mod_prefix = mod_prefix_from_path(module.path, prefix="gala.mod");
-            get_ctx().cg_module_prefix[mid] = mod_prefix
-        }
-        name = aprintf(c, "%s.%s", mod_prefix, get(tid).name);
+        name = aprintf(c, "%s.%s", module_prefix(mid), get(tid).name)
         get_ctx().cg_ty_names[tid] = name
-        get_ctx().llvm_ty[tid] = aprintf(c, "%%%s", name); // set llvm ty as well
+        get_ctx().llvm_ty[tid] = aprintf(c, "%%%s", name) // set llvm ty as well
     }
     return name
 }
+
 mod_item_obj_name :: proc(c: ^CGCtx, id: ItemId) -> string {
     oid := get_ctx().item_objects[id]
-    name, ok := get_ctx().cg_item_names[id];
+    name, ok := get_ctx().cg_item_names[id]
     if !ok {
-        mid, mok2 := get_ctx().obj_modules[oid]
-        if !mok2 {
+        mid, mid_ok := get_ctx().obj_modules[oid]
+        if !mid_ok {
             debugln("OBJ MODULE:", oid, id)
-            panic("item has no module associated with it.");
+            gala_panic("item has no module associated with it.")
         }
-        mod_prefix, mok := get_ctx().cg_module_prefix[mid];
-        if !mok {
-            module := get_ctx().mods[mid];
-            mod_prefix = mod_prefix_from_path(module.path, prefix="gala.mod");
-            get_ctx().cg_module_prefix[mid] = mod_prefix
-        }
-        name = aprintf(c, "%s.%s", mod_prefix, get(oid).name);
+        name = aprintf(c, "%s.%s", module_prefix(mid), get(oid).name)
         get_ctx().cg_item_names[id] = name
     }
     return name
 }
 
-import "core:path/filepath"
-
 // "abc/efg/abc.txt" -> "myprefix_abc_efg_abc"
 mod_prefix_from_path :: proc(path: string, prefix: string = "prefix") -> string {
-    dir_all := filepath.dir(path); // "abc/efg"
+    dir_all := filepath.dir(path) // "abc/efg"
 
-    dir, err := filepath.clean(dir_all);
+    dir, err := filepath.clean(dir_all)
     assert(err == .None)
 
-    normalized, was_allocated := strings.replace_all(dir, "\\", "/");
+    normalized, was_allocated := strings.replace_all(dir, "\\", "/")
     defer if was_allocated {
-        delete(normalized);
+        delete(normalized)
     }
 
-    parts := strings.split(normalized, "/");
-    defer delete(parts);
+    parts := strings.split(normalized, "/")
+    defer delete(parts)
 
-    sb := strings.builder_make();
-    strings.write_string(&sb, prefix);
+    sb := strings.builder_make()
+    strings.write_string(&sb, prefix)
 
     for part in parts {
         if part == "" || part == "." {
-            continue;
+            continue
         }
-        strings.write_string(&sb, "_");
-        strings.write_string(&sb, part);
+        strings.write_string(&sb, "_")
+        strings.write_string(&sb, part)
     }
 
     // Append the filename (without extension).
-    base := filepath.base(path); // "abc.txt"
-    ext := filepath.ext(base);   // ".txt"
-    stem := base[:len(base)-len(ext)]; // "abc"
+    base := filepath.base(path)        // "abc.txt"
+    ext := filepath.ext(base)          // ".txt"
+    stem := base[:len(base)-len(ext)]  // "abc"
 
     if stem != "" {
-        strings.write_string(&sb, "_");
-        strings.write_string(&sb, stem);
+        strings.write_string(&sb, "_")
+        strings.write_string(&sb, stem)
     }
 
-    return strings.to_string(sb);
+    return strings.to_string(sb)
 }
