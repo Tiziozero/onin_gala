@@ -258,6 +258,26 @@ cg_logical :: proc(c: ^CGCtx, e: Binop) -> CGExprRes {
     cwritefln(c, "\t%s = load i1, ptr %s", t, slot)
     return {kind=.Value, v=t}
 }
+
+get_take_slice_end :: proc(c: ^CGCtx, id: ExprId) -> string {
+        inner, returns := reduce_expr_to_single_value(c, cg_expr(c, id));
+        assert(returns);
+        ty := get_type(expr_ty(id))
+        #partial switch ty.kind {
+        case .String, .Slice: {
+            t := new_tmp(c);
+               cwritefln(c, "\t%s = extractvalue %s %s, 1",
+                   t, ty_to_llvm_str(c, expr_ty(id)), inner);
+               return t;
+        }
+        case .FixedSizeArray: {
+            v := aprintf(c, "%d", ty.fixed_size_array.size);
+               return v
+        }
+        case: {highlight_lines(get_span(id)); panic("can't take end slice of expr.");}
+        }
+        panic("impl");
+}
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     switch e in get_expr(id) {
     case TypeIdOf: {
@@ -299,7 +319,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         assert(returns);
         ty := get_type(expr_ty(e.target))
         #partial switch ty.kind {
-        case .String, .Slice, .Struct: {
+        case .String, .Slice: {
             t := new_tmp(c);
             cwritefln(c, "\t%s = extractvalue %s %s, 1",
                 t, ty_to_llvm_str(c, expr_ty(e.target)), inner);
@@ -401,17 +421,28 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         panic("impl");
     }
     case TakeSlice: {
-        start, sret := reduce_expr_to_single_value(c, cg_expr(c, e.start))
-        assert(sret);
-        end, eret := reduce_expr_to_single_value(c, cg_expr(c, e.end))
-        assert(eret);
+        // if  e.empty_start || e.empty_end do panic("impl")
+        start: string
+        if !e.empty_start {
+            sret: bool
+            start, sret = reduce_expr_to_single_value(c, cg_expr(c, e.start))
+            assert(sret);
+        } else {
+            start = "0"
+        }
+        end: string
+        if !e.empty_end {
+            eret: bool
+            end, eret = reduce_expr_to_single_value(c, cg_expr(c, e.end))
+            assert(eret);
+        } else do end = get_take_slice_end(c, e.target)
 
         // Convert the bounds to the language's integer type. When the type
         // already IS that type (the common case, e.g. the literals in
         // `a[0:4]`) ty_to_llvm_cast_op reports "no cast needed" — emit
-        // nothing instead of the old `bitcast i64 0 to i64`.
-        int_kind := get_type(integer_type()).kind
-        if get(expr_ty(e.start)).kind != int_kind {
+        // nothing instead of the old `bitcast u64 0 to u64`.
+        int_kind := get(ty_from_name("u64")).kind
+        if !e.empty_start && get(expr_ty(e.start)).kind != int_kind {
             op, ok := ty_to_llvm_cast_op(expr_ty(e.start), integer_type());
             if ok {
                 t := new_tmp(c);
@@ -420,7 +451,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
                 start = t
             }
         }
-        if get(expr_ty(e.end)).kind != int_kind {
+        if !e.empty_end && get(expr_ty(e.end)).kind != int_kind {
             op, ok := ty_to_llvm_cast_op(expr_ty(e.end), integer_type());
             if ok {
                 t := new_tmp(c);
@@ -779,6 +810,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         }
 
         case .Invalid: {
+            debugln("Invalid object for:", e, id);
             gala_panic("invalid object");
         }
         }

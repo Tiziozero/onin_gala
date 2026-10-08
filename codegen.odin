@@ -1326,7 +1326,7 @@ cgscope_get :: proc(scope: ^CGScope, v: string) -> CGObj {
         if ok do return n
         s = s.parent
     }
-    debugln(v, "doesn't exist")
+    debugln(v, "doesn't exist cg scope get")
     return CGObj{kind=.Invalid}
 }
 

@@ -110,6 +110,7 @@ Index :: struct {
 }
 TakeSlice :: struct {
     target, start, end: ExprId,
+    empty_start, empty_end: bool,
 }
 FixedSizeArray :: struct {
     size: int,
@@ -828,26 +829,67 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
             t = id
         } else if is_symbol(current_token(p), "[") {
             start := consume_token(p); // "["
-            index := parse_expr(p);
-
-            if is_symbol(current_token(p), "]") {
-                end := expect_symbol(p, "]");
-                id := new_expr(Index{target=t, index=index});
-                get_ctx().spans.exprs[id] = {
-                    file_name=get_ctx().current_file,
-                    span={start=get_span(t).span.start,end=end.span.end}
-                }
-                t = id
-            } else if is_symbol(current_token(p), ":") {
+            // "slice[:..]"
+            if is_symbol(current_token(p), ":") {
                 consume_token(p); // ":"
-                end_index := parse_expr(p);
-                end := expect_symbol(p, "]");
-                id := new_expr(TakeSlice{target=t, start=index, end=end_index});
-                get_ctx().spans.exprs[id] = {
-                    file_name=get_ctx().current_file,
-                    span={start=get_span(t).span.start,end=end.span.end}
+                // "slice[:]"
+                if is_symbol(current_token(p), "]") {
+                    end := consume_token(p); // "]"
+                    id := new_expr(TakeSlice{
+                        target=t,
+                        empty_start=true,
+                        empty_end=true});
+                    get_ctx().spans.exprs[id] = {
+                        file_name=get_ctx().current_file,
+                        span={start=get_span(t).span.start,end=end.span.end}
+                    }
+                    t = id
+                } else {
+                    e := parse_expr(p);
+                    end := expect_symbol(p, "]"); // "]"
+                    id := new_expr(TakeSlice{
+                        target=t,
+                        empty_start=true,
+                        end=e});
+                    get_ctx().spans.exprs[id] = {
+                        file_name=get_ctx().current_file,
+                        span={start=get_span(t).span.start,end=end.span.end}
+                    }
+                    t = id
                 }
-                t = id
+            } else {
+                index := parse_expr(p);
+
+                if is_symbol(current_token(p), "]") {
+                    end := expect_symbol(p, "]");
+                    id := new_expr(Index{target=t, index=index});
+                    get_ctx().spans.exprs[id] = {
+                        file_name=get_ctx().current_file,
+                        span={start=get_span(t).span.start,end=end.span.end}
+                    }
+                    t = id
+                } else if is_symbol(current_token(p), ":") {
+                    consume_token(p); // ":"
+                    if is_symbol(current_token(p), "]") {
+                        end := expect_symbol(p, "]");
+                        id := new_expr(TakeSlice{target=t,
+                            start=index, empty_end=true});
+                        get_ctx().spans.exprs[id] = {
+                            file_name=get_ctx().current_file,
+                            span={start=get_span(t).span.start,end=end.span.end}
+                        }
+                        t = id
+                    } else {
+                        end_index := parse_expr(p);
+                        end := expect_symbol(p, "]");
+                        id := new_expr(TakeSlice{target=t, start=index, end=end_index});
+                        get_ctx().spans.exprs[id] = {
+                            file_name=get_ctx().current_file,
+                            span={start=get_span(t).span.start,end=end.span.end}
+                        }
+                        t = id
+                    }
+                }
             }
         } else if is_symbol(current_token(p), "^") {
             token := consume_token(p); // "^"

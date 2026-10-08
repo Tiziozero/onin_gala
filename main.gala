@@ -1,16 +1,16 @@
 import "./core.gala";
 import "./net.gala";
 
+fn printlen(data: []byte) {
+    println("Len data:", len(data));
+}
 fn main() {
     server := tcp_listen(9000, 16);
-
     if server.fd < 0 {
         println("failed to start server");
         return;
     }
-
     println("echo server listening on port 9000");
-
     while true {
         client := tcp_accept(server);
 
@@ -24,19 +24,21 @@ fn main() {
         buffer:=[1024]byte{};
 
         while true {
-            n := tcp_recv(client, buffer[0:1024]);
-
+            n := tcp_recv(client, buffer[:]);
             if n <= 0 {
                 break;
             }
+            println("Got:", transmute(string)buffer[0:n]);
 
             tcp_send(client, buffer[0:n]);
+            printlen(buffer[0:1024]);
+            printlen(buffer[:]);
+            printlen(buffer[0:n]);
+            printlen(buffer[:n]);
+            printlen(buffer[74:]);
         }
-
         println("client disconnected");
-
         tcp_close(client);
     }
-
     tcp_close(server);
 }

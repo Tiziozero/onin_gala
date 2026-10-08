@@ -1,6 +1,5 @@
 // net.gala
 
-import "./core.gala";
 import "./cfunctions.gala";
 
 
@@ -61,7 +60,7 @@ fn make_address(address: string, port: u16): SockAddrIn {
 
     a.family = cast(u16)AF_INET;
     a.port = htons(port);
-    a.address = inet_addr(cstr(address));
+    a.address = inet_addr(&(address)[0]);
 
     return a;
 }

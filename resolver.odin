@@ -185,8 +185,8 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     }
     case TakeSlice: {
         resolve_expr(s, e.target);
-        resolve_expr(s, e.start);
-        resolve_expr(s, e.end);
+        if !e.empty_start do resolve_expr(s, e.start);
+        if !e.empty_end do   resolve_expr(s, e.end);
     }
     case Index: {
         resolve_expr(s, e.target);

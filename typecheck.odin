@@ -301,36 +301,40 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             gala_panic("can't index type:", tts(target_ty))
         }
 
-        tc_expr(tc, e.start)
-        s_ty := expr_ty(e.start)
-        tc_expr(tc, e.end)
-        e_ty := expr_ty(e.end)
+        if !e.empty_start {
+            tc_expr(tc, e.start)
+            s_ty := expr_ty(e.start)
 
 
-        if is_untyped(s_ty) {
-            if get(s_ty).kind == .UntypedInteger {
-                s_ty = integer_type()
-                get_ctx().expr_types[e.start] = s_ty
-            } else {
-                gala_panic("array index must be an integer")
+            if is_untyped(s_ty) {
+                if get(s_ty).kind == .UntypedInteger {
+                    s_ty = integer_type()
+                    get_ctx().expr_types[e.start] = s_ty
+                } else {
+                    gala_panic("array index must be an integer")
+                }
+            }
+
+            if !is_valid_index_type(s_ty) {
+                highlight_lines(get_span(id))
+                gala_panic("can't use type:", tts(s_ty), "to index an array")
             }
         }
-        if is_untyped(e_ty) {
-            if get(e_ty).kind == .UntypedInteger {
-                e_ty = integer_type()
-                get_ctx().expr_types[e.end] = e_ty
-            } else {
-                gala_panic("array index must be an integer")
+        if !e.empty_end {
+            tc_expr(tc, e.end)
+            e_ty := expr_ty(e.end)
+            if is_untyped(e_ty) {
+                if get(e_ty).kind == .UntypedInteger {
+                    e_ty = integer_type()
+                    get_ctx().expr_types[e.end] = e_ty
+                } else {
+                    gala_panic("array index must be an integer")
+                }
             }
-        }
-
-        if !is_valid_index_type(s_ty) {
-            highlight_lines(get_span(id))
-            gala_panic("can't use type:", tts(e_ty), "to index an array")
-        }
-        if !is_valid_index_type(e_ty) {
-            highlight_lines(get_span(id))
-            gala_panic("can't use type:", tts(e_ty), "to index an array")
+            if !is_valid_index_type(e_ty) {
+                highlight_lines(get_span(id))
+                gala_panic("can't use type:", tts(e_ty), "to index an array")
+            }
         }
 
         ty, ok := get_array_base_type(target_ty)
