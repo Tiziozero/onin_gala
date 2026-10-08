@@ -517,6 +517,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         cg_leave_loop(c, prev)
     }
     case ForLoop: {
+        if true do unreachable()
         // `for name in expr { body }` lowers to:
         //
         //     <evaluate expr ONCE -> data ptr + length>
