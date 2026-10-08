@@ -136,7 +136,9 @@ handle_file :: proc(file_name: string) -> string {
     ast := parse_tokens(resolved, tokens[:])
     mid := resolve_module_ast(&ast, resolved)
     typecheck_module(&ast)
+    lower_module(&ast)        // <-- new
     cg_module(mid)
+
     get_ctx().modules[resolved] = mid
     delete_key(&get_ctx().parsing, resolved)
 
