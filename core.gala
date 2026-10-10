@@ -7,6 +7,8 @@
 // C STDIO
 // ============================================================
 
+@link("/lib/x86_64-linux-gnu/libc.so.6")
+@link("/lib/x86_64-linux-gnu/libm.so.6")
 extern fn printf(fmt: ^byte, data: ..any): i32;
 extern fn fprintf(file: rawptr, fmt: ^byte, data: ..any): i32;
 extern fn snprintf(buffer: ^byte, size: u64, fmt: ^byte, data: ..any): i32;

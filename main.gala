@@ -1,5 +1,5 @@
-import "./core.gala";
-import "./net.gala";
+import "core.gala";
+import "net.gala";
 
 fn printlen(data: []byte) {
     println("Len data:", len(data));

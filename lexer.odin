@@ -11,6 +11,7 @@ TokenKind :: enum {
     Symbol,
     Number,
     String,
+    Link,
     Transmute,
     TypeIdOf,
     Keyword,
@@ -192,6 +193,12 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
                 append(&tokens, Token{
                     span = Span{start, i},
                     kind = .Keyword,
+                    kw   = .Extern,
+                })
+            }else if ident == "link" {
+                append(&tokens, Token{
+                    span = Span{start, i},
+                    kind = .Link,
                     kw   = .Extern,
                 })
             }else if ident == "break" {

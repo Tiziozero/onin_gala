@@ -70,6 +70,7 @@ Context :: struct {
     cg_item_names:                          map[ItemId]string,
     cg_ty_names:                            map[TypeId]string,
     cg_module_prefix:                       map[ModId]string,
+    links:                                  [dynamic]string,
     current_module_id:                      ModId,
     entry_file:                             string,
 }

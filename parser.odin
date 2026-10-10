@@ -1400,9 +1400,26 @@ parse_tokens :: proc(file_name: string, tokens: []Token) -> AST {
             id = parse_global_var_dec(p)
         }
         case:
-            debugln(current_token(p));
-            highlight_lines(get_ctx().current_file, current_token(p).span);
-            panic("impl");
+            if is_symbol(current_token(p), "@") {
+                start := consume_token(p);
+                if current_token(p).kind == .Link {
+                    link := consume_token(p);
+                    expect_symbol(p, "(");
+                    if current_token(p).kind != .String {
+                        panic("epected string for link path");
+                    }
+                    s := consume_token(p);
+                    expect_symbol(p, ")");
+                    append(&get_ctx().links, s.text);
+                    continue;
+                } else {
+                    highlight_lines(get_ctx().current_file, current_token(p).span)
+                    gala_panic("Unexpected token. want compiler directive");
+                }
+            } else {
+                highlight_lines(get_ctx().current_file, current_token(p).span);
+                panic("impl");
+            }
         }
 
         // hidden default-value functions created while parsing this item go

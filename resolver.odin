@@ -43,25 +43,25 @@ name_exists :: proc(scope: ^Scope, n: string, error := false) -> bool {
     for s != nil {
         tid, ok := s.types[n];
         if ok {
-            if error { fmt.print("First declared here:"); highlight_lines(get_span(tid)); }
+            if error { fmt.println("First declared here:"); highlight_lines(get_span(tid)); }
             return true
         }
 
         oid, ok1  := s.objects[n];
         if ok1 {
-            if error { fmt.print("First declared here:"); highlight_lines(get_span(oid)); }
+            if error { fmt.println("First declared here:"); highlight_lines(get_span(oid)); }
             return true
         }
 
         ftid, ok2  := s.ty_foreward[n];
         if ok2 {
-            if error { fmt.print("First declared here:"); highlight_lines(get_span(ftid)); }
+            if error { fmt.println("First declared here:"); highlight_lines(get_span(ftid)); }
             return true
         }
 
         foid, ok3  := s.obj_foreward[n];
         if ok3 {
-            if error { fmt.print("First declared here:"); highlight_lines(get_span(foid)); }
+            if error { fmt.println("First declared here:"); highlight_lines(get_span(foid)); }
             return true
         }
 
@@ -95,6 +95,7 @@ new_type :: proc(s: ^Scope, t: Type, span: SpanStruct) -> TypeId {
 
     // make sure it doesn't exist
     if name_exists(s, t.name, true) {
+        highlight_lines(span);
         gala_panicf("Name \"%s\" already declared.", t.name);
     }
 
@@ -112,7 +113,8 @@ new_object_fd :: proc(s: ^ModuleScope, o: Object, span: SpanStruct) -> ObjId {
 
     // make sure it doesn't exist
     if name_exists(s, o.name, true) {
-        gala_panicf("Name \"%s\" already declared.", o.name);
+        highlight_lines(span);
+        gala_panicf("Name \"%s\" already declared in object fd.", o.name);
     }
 
     append(&ctx.objs, o);
@@ -129,6 +131,7 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type, span: SpanStruct) -> TypeId {
 
     // make sure it doesn't exist
     if name_exists(s, t.name, true) {
+        highlight_lines(span);
         gala_panicf("Name \"%s\" already declared.", t.name);
     }
 
@@ -594,7 +597,7 @@ resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     oid, ook := s.obj_foreward[fndec.name]; assert(ook); // make sure fd exists
     obj := get(oid); // gets pointer, so modify that
 
-    fnty, scope := resolve_fn_dec_signature(s, fndec);
+    fnty, scope := resolve_fn_dec_signature(s, fndec, extern=true);
     fnty.fn.is_external = true;
     free_scope(&scope);
 

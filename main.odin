@@ -1,5 +1,6 @@
 package main
 
+import "core:c"
 import "core:fmt"
 import "core:path/filepath"
 import "core:strings"
@@ -52,32 +53,53 @@ init_context :: proc(debug := false) -> ^Context {
     ctx.llvm_ty = make(map[TypeId]string, allocator=ctx.allocator);
     ctx.cg_item_names = make(map[ItemId]string, allocator=ctx.allocator);
     ctx.cg_module_prefix =  make(map[ModId]string, allocator=ctx.allocator);
+    ctx.links = make([dynamic]string, allocator=ctx.allocator);
 
     return ctx
 }
 
-// Resolves `import_path` (as written in source) to a canonical absolute
-// path, relative to whoever is doing the importing (`importer_path`) rather
-// than the process's current working directory. This is what makes
-// "src/a.gala" containing `import "../b.gala"` correctly resolve to a path
-// next to "src/", instead of relative to wherever the compiler was invoked.
+// Resolves `import_path` (as written in source) to a canonical path
+// relative to the process's working directory.
 //
-// `importer_path` may be "" (no importer yet — i.e. a top-level file passed
-// on the command line), in which case resolution falls back to cwd.
+//   "./x.gala", "../x.gala"  -> relative to the importing file's directory
+//   "x.gala", "lib/x.gala"   -> working directory, then the directory the
+//                               compiler executable lives in (stdlib)
+//   "/abs/x.gala"            -> used as is
+//
+// `importer_path` may be "" (top-level file from the command line), in
+// which case only the working directory is considered.
 resolve_import_path :: proc(importer_path: string, import_path: string) -> string {
     joined: string
 
+    is_relative := strings.has_prefix(import_path, "./") ||
+                   strings.has_prefix(import_path, "../")
+
     if filepath.is_abs(import_path) {
         joined = import_path
-    } else {
-        importer_dir := len(importer_path) > 0 ? filepath.dir(importer_path) : "."
+    } else if is_relative && len(importer_path) > 0 {
+        importer_dir := filepath.dir(importer_path)
         joined, _ = filepath.join({importer_dir, import_path}, allocator=get_ctx().allocator)
+    } else {
+        // plain path: working directory first
+        joined = import_path
+
+        // not the entry file, and not found in cwd: try next to the compiler
+        if len(importer_path) > 0 && !os.exists(import_path) {
+            exe_dir, eerr := os.get_executable_directory(get_ctx().allocator)
+            if eerr == nil {
+                candidate, _ := filepath.join({exe_dir, import_path}, allocator=get_ctx().allocator)
+                if os.exists(candidate) {
+                    joined = candidate
+                }
+            }
+        }
     }
 
     abs_path, abs_ok := filepath.abs(joined)
     if abs_ok != .NONE {
         abs_path = joined
     }
+    debugln("abs_path", abs_path);
 
     cleaned, cerr := filepath.clean(abs_path, allocator=get_ctx().allocator)
     assert(cerr == .None)
@@ -86,23 +108,17 @@ resolve_import_path :: proc(importer_path: string, import_path: string) -> strin
 
     rel, rerr := filepath.rel(cwd, cleaned, allocator=get_ctx().allocator)
     if rerr != .None {
-        // Can't be made relative (e.g. different drive on Windows) — fall
-        // back to the absolute path.
+        // Can't be made relative (e.g. different drive on Windows)
         return cleaned
     }
 
     return rel
 }
 
-// `file_name` is the raw path as written (either a CLI arg or the string
-// literal from an `import` statement). It gets resolved relative to
-// `ctx.current_file` (the file doing the importing), then that resolved,
-// canonical absolute path is used as the key everywhere (ctx.files,
-// ctx.parsing, ctx.modules) and is what's now passed to resolve_module_ast.
-//
-// Returns the resolved path, so callers (e.g. import-handling code in the
-// resolver) can use it too — e.g. to record which module an import refers
-// to.
+// `file_name` is the raw path as written (CLI arg or `import` string).
+// It's resolved with resolve_import_path against `ctx.current_file`, and
+// the resolved path is the key everywhere (ctx.files, ctx.parsing,
+// ctx.modules). Returns the resolved path.
 handle_file :: proc(file_name: string) -> string {
     resolved := resolve_import_path(get_ctx().current_file, file_name)
 
@@ -123,10 +139,8 @@ handle_file :: proc(file_name: string) -> string {
     get_ctx().files[resolved] = string(data)
     get_ctx().parsing[resolved] = string(data)
 
-    // Save/restore get_ctx().current_file around this (possibly nested) call so
-    // that once this imported file is fully handled, whoever imported it
-    // goes back to resolving *its own* further imports relative to itself,
-    // not to whatever file we just finished.
+    // Save/restore current_file so that once this imported file is done,
+    // the importer resolves its own further imports relative to itself.
     prev_file := get_ctx().current_file
     get_ctx().current_file = resolved
 
@@ -289,8 +303,11 @@ link_executable :: proc(ctx: ^Context, extra_libs: []string) {
         append(&command, "-L/usr/lib/x86_64-linux-gnu")
     }
 
-    append(&command, "-lc")
-    append(&command, "-lm")
+    // append(&command, "-lc")
+    // append(&command, "-lm")
+    for f in ctx.links { // extra links
+        append(&command, f)
+    }
 
     for f in ctx.o_files {
         append(&command, f)
@@ -389,5 +406,5 @@ main :: proc() { // odins context is passed down, not up, or some shi
     destroy_context(ctx, heap);
     free_all(context.temp_allocator);
     debugln("Finished compiling");
-    // gala_info("Finished parsing");
+    // gala_info("Finished parsed");
 }
