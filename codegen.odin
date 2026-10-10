@@ -1267,7 +1267,7 @@ module_prefix :: proc(mid: ModId) -> string {
     if p, ok := get_ctx().cg_module_prefix[mid]; ok {
         return p
     }
-    p := mod_prefix_from_path(get_ctx().mods[mid].path, prefix="gala.mod")
+    p := mod_prefix_from_path(get_ctx().mods[mid].path, prefix="gala_")
     get_ctx().cg_module_prefix[mid] = p
     return p
 }
@@ -1586,7 +1586,7 @@ cg_module :: proc(m: ModId) {
         gala_panic("Failed make .gala_build directory:", dir_err)
     }
 
-    name := mod_prefix_from_path(get_ctx().current_file, "gala.mod")
+    name := mod_prefix_from_path(get_ctx().current_file, "gala_")
     ll_name  := aprintf(&cgctx, ".gala_build/%s.ll", name)
     opt_name := aprintf(&cgctx, ".gala_build/%s.opt.ll", name)
     o_name   := aprintf(&cgctx, ".gala_build/%s.o", name)
@@ -1660,8 +1660,20 @@ mod_item_obj_name :: proc(c: ^CGCtx, id: ItemId) -> string {
     return name
 }
 
+hash_string :: proc(s: string) -> u64 {
+    hash: u64 = 14695981039346656037
+    for c in s {
+        hash = (hash ~ u64(c)) * 1099511628211
+    }
+    return hash
+}
+mod_prefix_from_path :: proc(path: string, prefix: string = "") -> string {
+    hash := fmt.aprintf("{}", hash_string(path));
+    if len(hash) > 6 do hash = hash[:6];
+    return fmt.aprintf("{}{}", prefix, hash);
+}
 // "abc/efg/abc.txt" -> "myprefix_abc_efg_abc"
-mod_prefix_from_path :: proc(path: string, prefix: string = "prefix") -> string {
+mod_prefix_from_path_old :: proc(path: string, prefix: string = "") -> string {
     dir_all := filepath.dir(path) // "abc/efg"
 
     dir, err := filepath.clean(dir_all)
