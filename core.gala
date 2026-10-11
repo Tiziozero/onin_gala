@@ -253,24 +253,3 @@ fn println(data: ..any) {
 
     printf(&("\n")[0]);
 }
-
-
-// ============================================================
-// ALLOCATOR
-// ============================================================
-
-struct Allocator {
-    allocate: fn(n: u64, allocator: Allocator): rawptr,
-    data: rawptr,
-}
-
-default_allocator := Allocator {
-    allocate = fn(n: u64, allocator: Allocator): rawptr {
-        return calloc(1, n);
-    },
-    data = 0,
-};
-
-fn alloc(n: u64, allocator: Allocator = default_allocator): rawptr {
-    return allocator.allocate(n, allocator);
-}

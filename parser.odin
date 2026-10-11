@@ -125,10 +125,15 @@ FnCall :: struct {
     target: ExprId,
     args: [dynamic]FnCallArg,
 }
+// `name` is set for `f(x = 1)` style arguments. The type checker reorders
+// everything into parameter order and clears the names, so later passes
+// (codegen) only ever see plain positional, full-arity calls.
 FnCallArg :: struct{
     expr: ExprId,
     needs_boxing: bool,
     box_type: TypeId,
+    name: string,
+    name_span: Span,
 };
 BaseType :: struct { ident: string, span: Span };
 // can't have ptr to itself
@@ -802,10 +807,23 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
         if is_symbol(current_token(p), "(") {
             start := consume_token(p); // "("
             args := make([dynamic]FnCallArg, allocator=get_ctx().allocator);
+            seen_named := false
             // "until it meets a ")"
             for !is_symbol(current_token(p), ")") {
-                e := parse_expr(p);
-                append(&args, FnCallArg{expr=e})
+                arg := FnCallArg{}
+                // `name = expr`; positional args must all come before these
+                if current_token(p).kind == .Ident && is_symbol(next_token(p), "=") {
+                    n := consume_token(p) // name
+                    consume_token(p) // "="
+                    arg.name = n.text
+                    arg.name_span = n.span
+                    seen_named = true
+                } else if seen_named {
+                    highlight_lines(get_ctx().current_file, current_token(p).span)
+                    gala_panic("Positional arguments can't come after named arguments.")
+                }
+                arg.expr = parse_expr(p)
+                append(&args, arg)
                 if is_symbol(current_token(p), ",") {
                     consume_token(p); // ","
                 } else do break
@@ -988,10 +1006,21 @@ parse_block :: proc(p: ^Parser) -> Block{
     return Block{stmts=stmts[:]}
 }
 
-// `default` is set for `name: type = <expr>` parameters. The parser never
-// stores the written expression here directly: it is moved into a hidden
-// function and `default` is a call to that function (see make_default_thunk).
-FnDecArg :: struct{name: string, t: TypeSpecifier, span: Span, default: Maybe(ExprId)}
+// A parameter is `name: type`, `name: type = default` or `name := default`
+// (type inferred from the default, like a local `x := ...`).
+//
+// `default` is never the written expression itself: it is moved into a hidden
+// function and `default` is a call to it (see make_default_thunk). For the
+// inferred form `inferred` is set, `t` is a placeholder and `default_src` is
+// the written expression, so the type checker can infer the type from it.
+FnDecArg :: struct{
+    name: string,
+    t: TypeSpecifier,
+    span: Span,
+    default: Maybe(ExprId),
+    inferred: bool,
+    default_src: Maybe(ExprId),
+}
 FnDecSignature :: struct {
     name: string,
     args: []FnDecArg, 
@@ -1118,25 +1147,19 @@ ArgSpecs :: struct {
 default_thunk_counter: int
 
 // A parameter default can be any expression, so it can't be re-evaluated at
-// the call site: it might name a global (which a local in the caller could
-// shadow), contain a function literal (which would be emitted once per call
-// site), or need the declaring module's scope. Instead it is moved into a
-// hidden top-level function
+// the call site (it might name a global a caller's local shadows, or contain
+// a function literal). Instead it is moved into a hidden top-level function
 //
 //     fn __default_N(): <param type> { return <expr>; }
 //
-// and the parameter's default becomes the call `__default_N()`. Everything
-// downstream then treats it like any other call:
-//   - the resolver resolves the expression once, in module scope (so it can
-//     see globals and functions, but not parameters or locals),
-//   - typing the call only needs the thunk's signature, never its body, so
-//     checking defaults doesn't depend on globals having been typed yet,
-//   - codegen emits one function per default and a plain call per omitted
-//     argument. The default is re-evaluated on every call that omits it.
+// and the parameter's default becomes the call `__default_N()`, which every
+// later pass treats like any other call. The default is re-evaluated on every
+// call that omits it. `ty` is nil for `name := expr` parameters: the thunk is
+// declared without a return type and the type checker fills it in.
 //
 // The thunk item is queued in p.extra_items; parse_tokens inserts it ahead of
 // the item that contains the signature.
-make_default_thunk :: proc(p: ^Parser, ty: TypeSpecifier, expr: ExprId) -> ExprId {
+make_default_thunk :: proc(p: ^Parser, ty: Maybe(TypeSpecifier), expr: ExprId) -> ExprId {
     span := get_span(expr).span
     file := get_ctx().current_file
 
@@ -1167,12 +1190,19 @@ make_default_thunk :: proc(p: ^Parser, ty: TypeSpecifier, expr: ExprId) -> ExprI
     return call
 }
 
-// Parameters are positional, so once one has a default every parameter after
-// it must too (otherwise a call couldn't leave the earlier one out).
-// Defaults can't be combined with a variadic tail: the tail would have to
-// come after the defaulted params, and there'd be no way to skip them.
-// `any` parameters can't have a default: the hidden function would have to
-// return `any`, and `any` is only accepted as a parameter type.
+// The written default expression. Inside the parens a struct literal is
+// unambiguous even if the signature sits in an `if`/`while` condition.
+parse_default_expr :: proc(p: ^Parser) -> ExprId {
+    prev_ignore_struct_lit := p.ignore_struct_lit
+    p.ignore_struct_lit = false
+    e := parse_expr(p)
+    p.ignore_struct_lit = prev_ignore_struct_lit
+    return e
+}
+
+// Once a parameter has a default every parameter after it must too, and
+// defaults can't be combined with a variadic tail. `any` parameters can't have
+// a default (the hidden function would have to return `any`).
 parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
     f := FnDecSignature{};
     args := make([dynamic]FnDecArg, allocator=get_ctx().allocator)
@@ -1180,44 +1210,64 @@ parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
     expect_symbol(p, "(");
     for !is_symbol(current_token(p), ")") {
         name := expect_ident(p);
-        expect_symbol(p, ":")
-        if is_symbol(current_token(p), ".") &&
-            is_symbol(next_token(p), ".") {
-            token := consume_token(p); // "."
-            consume_token(p); // "."
-            t := parse_type(p);
-            f.is_variadic = true;
-            f.variadic_ty = t;
-            f.variadic_arg_name = name.text;
-            f.variadic_arg_span = name.span;
-            break;
+
+        ty: TypeSpecifier
+        written: ExprId
+        has_written := false
+        inferred := false
+
+        if is_symbol(current_token(p), ":=") {
+            // `name := expr`
+            consume_token(p); // ":="
+            inferred = true
+            ty = TypeSpecifier(BaseType{ident="", span=name.span}) // placeholder
+            written = parse_default_expr(p)
+            has_written = true
+        } else {
+            expect_symbol(p, ":")
+            if is_symbol(current_token(p), ".") &&
+                is_symbol(next_token(p), ".") {
+                token := consume_token(p); // "."
+                consume_token(p); // "."
+                t := parse_type(p);
+                f.is_variadic = true;
+                f.variadic_ty = t;
+                f.variadic_arg_name = name.text;
+                f.variadic_arg_span = name.span;
+                break;
+            }
+            ty = parse_type(p);
+
+            // `name: type = expr`
+            if is_symbol(current_token(p), "=") {
+                consume_token(p); // "="
+
+                if _, is_any := ty.(AnySpecifier); is_any {
+                    highlight_lines(get_ctx().current_file, name.span)
+                    gala_panic("Default values aren't supported for `any` parameters.")
+                }
+                written = parse_default_expr(p)
+                has_written = true
+            }
         }
-        ty := parse_type(p);
 
         default: Maybe(ExprId) = nil
-        if is_symbol(current_token(p), "=") {
-            consume_token(p); // "="
-
-            if _, is_any := ty.(AnySpecifier); is_any {
-                highlight_lines(get_ctx().current_file, name.span)
-                gala_panic("Default values aren't supported for `any` parameters.")
-            }
-
-            // inside the parens, so a struct literal is unambiguous even if
-            // this signature sits in an `if`/`while` condition
-            prev_ignore_struct_lit := p.ignore_struct_lit
-            p.ignore_struct_lit = false
-            written := parse_expr(p)
-            p.ignore_struct_lit = prev_ignore_struct_lit
-
-            default = make_default_thunk(p, ty, written)
+        default_src: Maybe(ExprId) = nil
+        if has_written {
+            thunk_ret: Maybe(TypeSpecifier) // stays nil when inferred
+            if !inferred do thunk_ret = ty
+            default = make_default_thunk(p, thunk_ret, written)
+            if inferred do default_src = written
             seen_default = true
         } else if seen_default {
             highlight_lines(get_ctx().current_file, name.span)
             gala_panic("A parameter without a default value can't come after one with a default.")
         }
 
-        append(&args, FnDecArg{name=name.text, t=ty, span=name.span, default=default})
+        append(&args, FnDecArg{
+            name=name.text, t=ty, span=name.span,
+            default=default, inferred=inferred, default_src=default_src,
+        })
         if is_symbol(current_token(p), ",") {
             consume_token(p);
         } else {

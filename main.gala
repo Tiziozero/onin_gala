@@ -1,5 +1,6 @@
 import "core.gala";
 import "net.gala";
+import "mem.gala";
 
 fn printlen(data: []byte) {
     println("Len data:", len(data));

@@ -6,14 +6,22 @@ Field :: struct {
     type: TypeId,
     span: Span,
 }
-// `default` is the (already resolved) constant expression a call falls back to
-// when it omits this argument. See resolve_fn_dec_signature.
+// `default` is the (already resolved) call to the hidden default function a
+// call falls back to when it omits this argument.
+//
+// For `name := expr` parameters `inferred` is set: `type` is a placeholder
+// (void) until tc_default_args infers it from `default_src` (the written
+// expression), and `obj` is the parameter's object so its type can be patched
+// too.
 Arg :: struct {
     name: string,
     type: TypeId,
     span: Span,
     is_variadic: bool,
     default: Maybe(ExprId),
+    inferred: bool,
+    default_src: Maybe(ExprId),
+    obj: ObjId,
 }
 ObjectKind :: enum {
     Invalid,
@@ -543,27 +551,36 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
     declared := make(map[string]Arg)
     variadic_ty: TypeId
     for a, i in fndec.args {
-        t := resolve_type_specifier(&new_scope, a.t)
+        // `name := expr` has no written type yet: use void as a placeholder
+        // and leave the object untyped until tc_default_args infers it.
+        t: TypeId
+        if a.inferred {
+            t = void_type()
+        } else {
+            t = resolve_type_specifier(&new_scope, a.t)
+        }
         if da, ok := declared[a.name]; ok {
             // print declared arg
             print_lines(get_file_lines(get_ctx().current_file, da.span), da.span)
             gala_panic("Duplicate argument. Arg already declared here.")
         }
         arg_t := t;
-        arg := Arg{name=a.name, type=arg_t, span=a.span}
+        arg := Arg{name=a.name, type=arg_t, span=a.span, inferred=a.inferred}
 
-        // Default value: must be a constant expression (checked first so
-        // e.g. naming another parameter gives this message instead of a
-        // confusing "couldn't find in scope"), and is resolved against the
-        // *outer* scope `s`, not `new_scope`, so it can't see parameters.
+        // Default value: resolved against the *outer* scope `s`, not
+        // `new_scope`, so it can't see parameters.
         if def, has_default := a.default.(ExprId); has_default {
             resolve_expr(s, def)
             arg.default = def
+            arg.default_src = a.default_src
         }
+
+        obj_ty: Maybe(TypeId) = arg_t
+        if a.inferred do obj_ty = nil
+        arg.obj = new_object(&new_scope, Object{.Argument, a.name, obj_ty}, {file_name=get_ctx().current_file, span=a.span});
 
         args[i] = arg
         declared[a.name] = arg
-        new_object(&new_scope, Object{.Argument, a.name, arg_t}, {file_name=get_ctx().current_file, span=a.span});
     }
     fnty.fn.args = args
 

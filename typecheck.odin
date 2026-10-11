@@ -212,26 +212,59 @@ mark_arg :: proc(arg: ^FnCallArg, param_ty: TypeId, r: TypeId) {
     }
 }
 
-// Type-checks every parameter default of a function type against that
-// parameter's declared type, so a bad default is reported at the declaration
-// rather than at some far-away call site.
+// Function types whose parameter defaults have already been checked.
+// tc_default_args is reached from several places (the module pre-pass, a
+// FnLit, every call), so it must only do the work once per function.
+default_args_done: map[TypeId]bool
+
+// Type-checks the parameter defaults of a function type, so a bad default is
+// reported at the declaration rather than at some far-away call site.
 //
-// A default can be any expression, but the parser never leaves it as one:
-// make_default_thunk moves it into a hidden top-level function
-// (`fn __default_N(): T { return <expr>; }`) and the default stored on the
-// parameter is the call `__default_N()`. Typing a call only needs the callee's
-// signature, never its body, so this doesn't depend on globals having been
-// typed yet — the written expression itself is checked later, as the body of
-// the hidden function, after the globals pass.
+// A default is stored as a call to a hidden function (see make_default_thunk),
+// and typing a call only needs the callee's signature, so this doesn't depend
+// on globals having been typed yet.
 //
-// Must run for a function BEFORE any call to it is checked — typecheck_module
-// does that for module-level fns in a first pass, and FnLit does it right
-// before checking its own body.
+// For `name := expr` parameters the type isn't written anywhere, so it is
+// inferred here from the written expression (untyped literals take their
+// default type, like a local `x := 1`), then patched into the parameter, the
+// parameter's object (so the body sees it) and the hidden function's return
+// type. This is why it has to run before anything that uses the function:
+// typecheck_module runs it for module-level fns in a first pass, FnLit runs it
+// before checking its body, and FnCall runs it on its callee.
 tc_default_args :: proc(tc: ^TcContext, fn_type_id: TypeId) {
+    if default_args_done[fn_type_id] do return
+    default_args_done[fn_type_id] = true
+
     fn_ty := get_type(fn_type_id)
-    for a in fn_ty.fn.args {
+    for a, i in fn_ty.fn.args {
         def, has_default := a.default.(ExprId)
         if !has_default do continue
+
+        if a.inferred {
+            src := a.default_src.(ExprId)
+            tc_expr(tc, src)
+
+            t := expr_ty(src)
+            if is_untyped(t) {
+                t = get_untyped_default(t)
+                propagate_type(t, src)
+            }
+            kind := get_type(t).kind
+            if kind == .ZeroInit || kind == .Void {
+                highlight_lines(get_span(src))
+                gala_panicf("Can't infer the type of parameter \"%s\" from its default value.", a.name)
+            }
+
+            call := get_expr(def).(FnCall)
+            thunk_obj := get_obj(get_ctx().expr_objects[call.target])
+            get_ctx().types[thunk_obj.type.(TypeId)].fn.ret_ty = t
+            get_ctx().types[fn_type_id].fn.args[i].type = t
+            get_obj(a.obj).type = t
+
+            // type the call only now that the hidden function returns `t`
+            tc_expr(tc, def)
+            continue
+        }
 
         tc_expr(tc, def)
         _, ok, err := compare_and_reduce_types(a.type, expr_ty(def))
@@ -241,6 +274,55 @@ tc_default_args :: proc(tc: ^TcContext, fn_type_id: TypeId) {
                 a.name, err, tts(a.type), tts(expr_ty(def)))
         }
     }
+}
+
+// Puts a call's arguments into parameter order, for non-variadic callees.
+// Positional arguments fill parameters from the left, `name = expr` ones fill
+// the parameter with that name, and anything left over takes its default.
+// The result has one entry per parameter and no names, so everything
+// downstream (including codegen) sees an ordinary full-arity positional call.
+order_call_args :: proc(id: ExprId, args: [dynamic]FnCallArg, params: []Arg) -> [dynamic]FnCallArg {
+    ordered := make([dynamic]FnCallArg, len(params), allocator=get_ctx().allocator)
+    filled := make([]bool, len(params), allocator=get_ctx().allocator)
+
+    for a, i in args {
+        idx := i
+        if len(a.name) > 0 {
+            idx = -1
+            for p, j in params {
+                if p.name == a.name {
+                    idx = j
+                    break
+                }
+            }
+            if idx < 0 {
+                highlight_lines(get_ctx().current_file, a.name_span)
+                gala_panicf("Function has no parameter named \"%s\".", a.name)
+            }
+            if filled[idx] {
+                highlight_lines(get_ctx().current_file, a.name_span)
+                gala_panicf("Parameter \"%s\" is given more than once.", a.name)
+            }
+        } else if i >= len(params) {
+            highlight_lines(get_span(id))
+            gala_panicf("args count for function don't match (expected at most %d, got %d).",
+                len(params), len(args))
+        }
+        ordered[idx] = a
+        ordered[idx].name = ""
+        filled[idx] = true
+    }
+
+    for p, i in params {
+        if filled[i] do continue
+        def, has_default := p.default.(ExprId)
+        if !has_default {
+            highlight_lines(get_span(id))
+            gala_panicf("Missing argument \"%s\" (it has no default value).", p.name)
+        }
+        ordered[i] = FnCallArg{expr = def}
+    }
+    return ordered
 }
 
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
@@ -638,56 +720,41 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     }
     case FnCall: {
         tc_expr(tc, e.target);
-        ty := get_type(expr_ty(e.target));
-        assert(ty.kind == .Function)
+        fn_tid := expr_ty(e.target)
+        assert(get_type(fn_tid).kind == .Function)
+
+        // make sure inferred parameter types are known before reading them
+        tc_default_args(tc, fn_tid)
+
+        ty := get_type(fn_tid);
         fargs := ty.fn.args;
 
-        // The caller must supply every parameter before the first one that
-        // has a default (the parser guarantees defaults are a suffix).
-        required := len(fargs)
-        for fa, i in fargs {
-            if fa.default != nil {
-                required = i
-                break
-            }
+        has_named := false
+        for a in e.args {
+            if len(a.name) > 0 do has_named = true
         }
 
+        for a in e.args {
+            tc_expr(tc, a.expr);
+        }
+
+        call_args := e.args
         if ty.fn.is_variadic {
             // defaults and variadics can't be combined (see parse_args_dec),
-            // so required == len(fargs) here
+            // so every fixed parameter has to be passed positionally
+            if has_named {
+                highlight_lines(get_span(id));
+                gala_panic("Named arguments can't be used when calling a variadic function.")
+            }
             if len(e.args) < len(fargs) {
                 highlight_lines(get_span(id));
                 gala_panicf("args count for function don't match (expected at least %d, got %d).",
                     len(fargs), len(e.args));
             }
         } else {
-            if len(e.args) < required || len(e.args) > len(fargs) {
-                highlight_lines(get_span(id));
-                if required == len(fargs) {
-                    gala_panicf("args count for function don't match (expected %d, got %d).",
-                        len(fargs), len(e.args));
-                } else {
-                    gala_panicf("args count for function don't match (expected %d to %d, got %d).",
-                        required, len(fargs), len(e.args));
-                }
-            }
-        }
-        for a in e.args {
-            tc_expr(tc, a.expr);
-        }
-
-        // Fill in omitted trailing arguments with the parameters' default
-        // expressions, so everything downstream (including codegen) just sees
-        // an ordinary full-arity call. `e` is a copy of the union payload, so
-        // the grown arg list has to be written back into the expression table.
-        // Each default is a call to a hidden function (see tc_default_args),
-        // already typed by tc_default_args, so sharing one ExprId between the
-        // declaration and every call site is fine.
-        call_args := e.args
-        if !ty.fn.is_variadic && len(call_args) < len(fargs) {
-            for i in len(call_args)..<len(fargs) {
-                append(&call_args, FnCallArg{expr = fargs[i].default.(ExprId)})
-            }
+            // reorder named args and fill in defaults, then write the
+            // full-arity call back (`e` is a copy of the union payload)
+            call_args = order_call_args(id, e.args, fargs)
             get_ctx().exprs[id] = Expr(FnCall{target=e.target, args=call_args})
         }
 
@@ -963,12 +1030,10 @@ typecheck_module :: proc(ast: ^AST) {
     tc := TcContext{fn_ret_ty=nil, in_function=false}
 
     // First pass: check parameter defaults of every module-level function
-    // (extern ones included) before any body is checked. A call to a function
-    // declared further down the file is checked before that function's own
-    // item is reached, and filling in its omitted arguments needs the
-    // defaults' types to already exist. A default is just a call to a hidden
-    // function (see make_default_thunk), so this needs nothing but function
-    // signatures — it doesn't matter that no global has a type yet.
+    // (extern ones included) before any body is checked, so inferred
+    // parameter types and hidden-function return types exist by the time a
+    // call needs them. Needs nothing but signatures, so it doesn't matter
+    // that no global has a type yet.
     for i in ast.items {
         #partial switch _ in get_item(i) {
         case FnDec, ExternFnDec: {
@@ -979,11 +1044,9 @@ typecheck_module :: proc(ast: ^AST) {
     }
 
     // Second pass: globals, in declaration order, before any function body.
-    // A `:=` global only gets its type here, and functions (including the
-    // hidden default-value functions) may use globals declared further down
-    // the file, so all of them must be typed before the first body is
-    // checked. A global initialiser can call functions that have default
-    // arguments, because the defaults were already checked above.
+    // A `:=` global only gets its type here, and functions may use globals
+    // declared further down the file, so all of them must be typed before
+    // the first body is checked.
     for i in ast.items {
         if _, is_global := get_item(i).(GlobalVarDec); is_global {
             tc_global_var_dec(&tc, i)
