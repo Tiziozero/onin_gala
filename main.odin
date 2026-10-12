@@ -305,11 +305,14 @@ link_executable :: proc(ctx: ^Context, extra_libs: []string) {
 
     // append(&command, "-lc")
     // append(&command, "-lm")
-    for f in ctx.links { // extra links
+
+    // Objects first: ld only pulls archive members for symbols that are
+    // already undefined, so .a files have to come after the .o files.
+    for f in ctx.o_files {
         append(&command, f)
     }
 
-    for f in ctx.o_files {
+    for f in ctx.links { // @link libs
         append(&command, f)
     }
 

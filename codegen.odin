@@ -458,6 +458,40 @@ cg_leave_loop :: proc(c: ^CGCtx, prev: LoopTargets) {
     c.cur_continue_label = prev.cont
 }
 
+// `target op= rhs` with the target's address computed exactly once.
+// s.value is the Binop the parser built (left is the target, which we skip).
+cg_compound_assign :: proc(c: ^CGCtx, s: Assignment) {
+    bin := get_expr(s.value).(Binop)
+    tid := expr_ty(s.target)
+    ty_str := ty_to_llvm_str(c, tid)
+    assert(tid == expr_ty(bin.right), "expressions in binop must have the same type")
+
+    ptr := cg_addr(c, s.target)
+    cur := new_tmp(c)
+    cwritefln(c, "\t%s = load %s, ptr %s", cur, ty_str, ptr)
+
+    rhs, returns := reduce_expr_to_single_value(c, cg_expr(c, bin.right))
+    assert(returns)
+
+    result := new_tmp(c)
+    if is_pointer(tid) {
+        if bin.kind != .Addition && bin.kind != .Subtraction {
+            gala_panic("unsupported pointer compound assignment")
+        }
+        ci := new_tmp(c)
+        cwritefln(c, "\t%s = ptrtoint ptr %s to i64", ci, cur)
+        ri := new_tmp(c)
+        cwritefln(c, "\t%s = ptrtoint ptr %s to i64", ri, rhs)
+        arith := "add" if bin.kind == .Addition else "sub"
+        sum := new_tmp(c)
+        cwritefln(c, "\t%s = %s i64 %s, %s", sum, arith, ci, ri)
+        cwritefln(c, "\t%s = inttoptr i64 %s to ptr", result, sum)
+    } else {
+        op := binop_llvm_op(bin, operand_class(tid))
+        cwritefln(c, "\t%s = %s %s %s, %s", result, op, ty_str, cur, rhs)
+    }
+    cwritefln(c, "\tstore %s %s, ptr %s", ty_str, result, ptr)
+}
 cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     switch s in get_stmt(id) {
     case BreakStmt: {
@@ -758,6 +792,10 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
         }
     }
     case Assignment: {
+        if s.compound {
+            cg_compound_assign(c, s)
+            break
+        }
         target_tid := expr_ty(s.target)
         if is_memory_type(target_tid) {
             size := int(type_size(target_tid))

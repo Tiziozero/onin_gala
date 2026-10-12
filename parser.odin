@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:strconv"
+import "core:strings"
 
 BinopKind :: enum {
     Addition,
@@ -20,6 +21,8 @@ BinopKind :: enum {
     BitAnd,
     BitOr,
     BitXor,
+    ShiftLeft,
+    ShiftRight,
 };
 Binop :: struct {
     kind: BinopKind,
@@ -157,6 +160,7 @@ VarDec :: struct {
 }
 Assignment :: struct {
     kind: BinopKind,
+    compound: bool,
     target, value: ExprId,
 }
 Return :: struct {
@@ -213,6 +217,8 @@ op_kind :: proc(t: Token) -> (kind: BinopKind, ok: bool) {
     case "&":  return .BitAnd,       true
     case "~":  return .BitXor,       true
     case "|":  return .BitOr,        true
+    case "<<": return .ShiftLeft,    true
+    case ">>": return .ShiftRight,   true
     }
     return {}, false
 }
@@ -231,10 +237,12 @@ op_precedence :: proc(t: Token) -> int {
         return 5
     case "==", "!=", "<=", ">=", "<", ">":
         return 6
-    case "+", "-":
+    case "<<", ">>":
         return 7
-    case "*", "/", "%":
+    case "+", "-":
         return 8
+    case "*", "/", "%":
+        return 9
     }
     return -1
 }
@@ -666,13 +674,16 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
             }
             return id;
         } else if is_symbol(current_token(p), "+=") ||
-                  is_symbol(current_token(p), "-=") ||
-                  is_symbol(current_token(p), "*=") ||
-                  is_symbol(current_token(p), "/=") ||
-                  is_symbol(current_token(p), "%=") ||
-                  is_symbol(current_token(p), "&=") ||
-                  is_symbol(current_token(p), "|=") ||
-                  is_symbol(current_token(p), "~=") {
+                is_symbol(current_token(p), "-=") ||
+                is_symbol(current_token(p), "*=") ||
+                is_symbol(current_token(p), "/=") ||
+                is_symbol(current_token(p), "%=") ||
+                is_symbol(current_token(p), "&=") ||
+                is_symbol(current_token(p), "|=") ||
+                is_symbol(current_token(p), "~=") ||
+                is_symbol(current_token(p), "~=") ||
+                is_symbol(current_token(p), "<<=") ||
+                is_symbol(current_token(p), ">>=") {
             token := consume_token(p);
 
             kind : BinopKind;
@@ -692,6 +703,12 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
                 kind = .BitOr;
             } else if token.text == "~=" {
                 kind = .BitXor;
+            } else if token.text == "~=" {
+                kind = .BitXor;
+            } else if token.text == "<<=" {
+                kind = .ShiftLeft;
+            } else if token.text == ">>=" {
+                kind = .ShiftRight;
             }
 
             v := parse_expr(p);
@@ -709,6 +726,7 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
                 target=expr,
                 value=value,
                 kind=kind,
+                compound=true,
             }));
 
             get_ctx().spans.stmts[id] = {
@@ -996,6 +1014,8 @@ parse_primary :: proc(p: ^Parser) -> ExprId {
 }
 parse_block :: proc(p: ^Parser) -> Block{
     expect_symbol(p, "{");
+    prev := p.ignore_struct_lit;
+    p.ignore_struct_lit = false;
     stmts := make([dynamic]StmtId, allocator=get_ctx().allocator);
     for !(current_token(p).kind == .Symbol && current_token(p).text == "}") &&
         (current_token(p).kind != .EOF) {
@@ -1003,6 +1023,7 @@ parse_block :: proc(p: ^Parser) -> Block{
         append(&stmts, stmt)
     }
     expect_symbol(p, "}");
+    p.ignore_struct_lit = prev ;
     return Block{stmts=stmts[:]}
 }
 
@@ -1432,6 +1453,16 @@ expect_ident :: proc(p: ^Parser) -> Token {
     }
     return consume_token(p)
 }
+
+// `@link("./x.a")` / `@link("../x.a")` are relative to the file containing
+// the directive. Anything else (absolute paths, bare names) goes to ld as is.
+resolve_link_path :: proc(importer: string, path: string) -> string {
+    if strings.has_prefix(path, "./") || strings.has_prefix(path, "../") {
+        return resolve_import_path(importer, path)
+    }
+    return path
+}
+
 AST :: struct {
     items: []ItemId,
 }
@@ -1460,7 +1491,7 @@ parse_tokens :: proc(file_name: string, tokens: []Token) -> AST {
                     }
                     s := consume_token(p);
                     expect_symbol(p, ")");
-                    append(&get_ctx().links, s.text);
+                    append(&get_ctx().links, resolve_link_path(file_name, s.text));
                     continue;
                 } else {
                     highlight_lines(get_ctx().current_file, current_token(p).span)

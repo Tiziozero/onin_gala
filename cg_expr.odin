@@ -373,6 +373,8 @@ binop_llvm_op :: proc(e: Binop, cls: OperandClass) -> string {
         case .BitAnd:       return "and"
         case .BitXor:       return "xor"
         case .BitOr:        return "or"
+        case .ShiftLeft:    return "shl"
+        case .ShiftRight:   return "ashr" if signed else "lshr"
         }
     }
     case .Float: {

@@ -202,7 +202,6 @@ fn cstr(s: string): ^byte {
 // ============================================================
 // PRINTLN
 // ============================================================
-
 fn println(data: ..any) {
     i := 0;
 
@@ -229,6 +228,21 @@ fn println(data: ..any) {
 
         } else if id == type_id(i32) {
             printf(&("%d")[0], (transmute(^i32)a.data)^);
+
+        } else if id == type_id(u32) {
+            printf(&("%u")[0], (transmute(^u32)a.data)^);
+
+        } else if id == type_id(i16) {
+            printf(&("%d")[0], (transmute(^i16)a.data)^);
+
+        } else if id == type_id(u16) {
+            printf(&("%u")[0], (transmute(^u16)a.data)^);
+
+        } else if id == type_id(i8) {
+            printf(&("%d")[0], (transmute(^i8)a.data)^);
+
+        } else if id == type_id(u8) {
+            printf(&("%u")[0], (transmute(^u8)a.data)^);
 
         } else if id == type_id(f64) {
             printf(&("%g")[0], (transmute(^f64)a.data)^);

@@ -1,0 +1,29 @@
+// stb_image.gala
+//
+// Bindings for stb_image (libstb_image.a).
+
+@link("./libstb_image.a")
+
+// Load from a file. Returns pixel data (width * height * channels bytes),
+// or nil on failure. Pass 0 for desired_channels to keep the file's own
+// channel count, or 1-4 to force it (4 = RGBA).
+extern fn stbi_load(path: ^byte, x: ^i32, y: ^i32, channels_in_file: ^i32, desired_channels: i32): ^byte;
+
+// Load from an in-memory buffer (e.g. a file you read with fread).
+extern fn stbi_load_from_memory(buffer: ^byte, length: i32, x: ^i32, y: ^i32, channels_in_file: ^i32, desired_channels: i32): ^byte;
+
+// HDR / float images.
+extern fn stbi_loadf(path: ^byte, x: ^i32, y: ^i32, channels_in_file: ^i32, desired_channels: i32): ^f32;
+extern fn stbi_is_hdr(path: ^byte): i32;
+
+// Query size/channels without decoding. Returns 1 on success, 0 on failure.
+extern fn stbi_info(path: ^byte, x: ^i32, y: ^i32, channels_in_file: ^i32): i32;
+
+// Free anything returned by stbi_load*.
+extern fn stbi_image_free(data: rawptr);
+
+// Human-readable reason for the most recent failure.
+extern fn stbi_failure_reason(): ^byte;
+
+// Call before loading to flip rows so (0,0) is the bottom-left (OpenGL style).
+extern fn stbi_set_flip_vertically_on_load(flag: i32);

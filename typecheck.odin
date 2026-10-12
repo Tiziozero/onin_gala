@@ -693,7 +693,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             bool_ty := ty_from_name("bool");
             get_ctx().expr_types[id] = bool_ty;
         }
-        case .BitAnd, .BitOr, .BitXor: {
+        case .BitAnd, .BitOr, .BitXor, .ShiftLeft, .ShiftRight: {
             if is_untyped(ty) {
                 ty = get_untyped_default(ty)
             }
@@ -805,7 +805,6 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     case: panic("impl tc expr")
     }
 }
-
 is_iterable :: proc(id: TypeId) -> bool {
     t := get_type(id)
     #partial switch t.kind {

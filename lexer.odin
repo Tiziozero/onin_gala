@@ -347,8 +347,12 @@ lex_file :: proc(buf: []byte) -> [dynamic]Token {
             })
         } else {
             if  buf[i] == ':' && buf[i+1] == '=' ||
+                buf[i] == '<' && buf[i+1] == '<' ||
+                buf[i] == '>' && buf[i+1] == '>' ||
                 buf[i] == '<' && buf[i+1] == '=' ||
                 buf[i] == '>' && buf[i+1] == '=' ||
+                buf[i] == '<' && buf[i+1] == '<' && buf[i+2] == '=' ||
+                buf[i] == '>' && buf[i+1] == '>' && buf[i+2] == '=' ||
                 buf[i] == '!' && buf[i+1] == '=' ||
                 buf[i] == '=' && buf[i+1] == '=' ||
                 buf[i] == '|' && buf[i+1] == '|' ||
