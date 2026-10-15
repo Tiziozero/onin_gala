@@ -271,10 +271,18 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
 }
 resolve_struct_lit :: proc(s: ^Scope, id: ExprId) {
     e := get_expr(id).(StructLit)
-    // check type exists
-    tid, ok := scope_get_type(s, e.name); assert(ok);
+
+    // a typo'd or non-struct name is a user error, not an assertion failure
+    tid, ok := scope_get_type(s, e.name)
+    if !ok {
+        highlight_lines(get_ctx().current_file, get_span(id).span)
+        gala_panicf("Unknown struct type \"%s\".", e.name)
+    }
     ty := get_type(tid);
-    assert(ty.kind == .Struct);
+    if ty.kind != .Struct {
+        highlight_lines(get_ctx().current_file, get_span(id).span)
+        gala_panicf("\"%s\" is not a struct type.", e.name)
+    }
     sfields := ty.structure.fields
 
     // `Foo{1, 2}`: assign the values to the struct's fields in declaration
@@ -284,6 +292,10 @@ resolve_struct_lit :: proc(s: ^Scope, id: ExprId) {
             highlight_lines(get_ctx().current_file, get_span(id).span)
             gala_panicf("Type %s has %d fields, but the literal has %d values.",
                 e.name, len(sfields), len(e.positional));
+        }
+        // the parser may not have allocated the map for a purely positional literal
+        if e.fields == nil {
+            e.fields = make(type_of(e.fields), allocator=get_ctx().allocator)
         }
         for sf, i in sfields {
             e.fields[sf.name] = e.positional[i]
@@ -318,14 +330,15 @@ new_fn_type :: proc(t: Type) -> TypeId {
     append(&get_ctx().types, t);
     return TypeId(len(get_ctx().types)-1)
 }
-// only intern function and pointers
+// only interns pointers, slices, fixed arrays, strings, any and the untyped
+// kinds; structs and functions are nominal and never go through here
 intern_type :: proc(t: Type) -> TypeId {
     assert(t.kind == .Pointer || 
             t.kind == .UntypedInteger || t.kind == .UntypedFloat || 
             t.kind == .FixedSizeArray || t.kind == .ZeroInit ||
             t.kind == .Slice || t.kind == .String || t.kind == .Any)
     for ty, id in get_ctx().types {
-        if type_cmp(ty, t, true) { return TypeId(id) }
+        if type_equal(ty, t) { return TypeId(id) }
     }
     append(&get_ctx().types, t);
     return TypeId(len(get_ctx().types)-1)
@@ -415,8 +428,11 @@ get_untyped_default :: proc(t: TypeId) -> TypeId {
         return v
     }
 
-    case: panic("impl");
+    case: {
+        gala_panic("compiler bug: no default type for", tts(t))
     }
+    }
+    return 0
 }
 resolve_stmt :: proc(s: ^Scope, id: StmtId) {
     switch stmt in get(id) {
@@ -428,6 +444,7 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
         get_ctx().stmt_objects[id] = new_object(&new_s, Object{kind=.Argument, name=stmt.name}, get_span(id))
         b := stmt.block
         resolve_block(&new_s, &b);
+        free_scope(&new_s)
     }
     case WhileLoop: {
         resolve_expr(s, stmt.cond);
@@ -544,12 +561,11 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
     } else {
         fnty.fn.ret_ty = void_type();
     }
-    // new scope for args
+    // new scope for args (named so it doesn't shadow the new_scope proc)
     // args
-    new_scope := new_scope(s);
+    arg_scope := new_scope(s);
     args := make([]Arg, len(fndec.args), allocator=get_ctx().allocator)
     declared := make(map[string]Arg)
-    variadic_ty: TypeId
     for a, i in fndec.args {
         // `name := expr` has no written type yet: use void as a placeholder
         // and leave the object untyped until tc_default_args infers it.
@@ -557,7 +573,7 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
         if a.inferred {
             t = void_type()
         } else {
-            t = resolve_type_specifier(&new_scope, a.t)
+            t = resolve_type_specifier(&arg_scope, a.t)
         }
         if da, ok := declared[a.name]; ok {
             // print declared arg
@@ -568,7 +584,7 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
         arg := Arg{name=a.name, type=arg_t, span=a.span, inferred=a.inferred}
 
         // Default value: resolved against the *outer* scope `s`, not
-        // `new_scope`, so it can't see parameters.
+        // `arg_scope`, so it can't see parameters.
         if def, has_default := a.default.(ExprId); has_default {
             resolve_expr(s, def)
             arg.default = def
@@ -577,7 +593,7 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
 
         obj_ty: Maybe(TypeId) = arg_t
         if a.inferred do obj_ty = nil
-        arg.obj = new_object(&new_scope, Object{.Argument, a.name, obj_ty}, {file_name=get_ctx().current_file, span=a.span});
+        arg.obj = new_object(&arg_scope, Object{.Argument, a.name, obj_ty}, {file_name=get_ctx().current_file, span=a.span});
 
         args[i] = arg
         declared[a.name] = arg
@@ -585,7 +601,7 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
     fnty.fn.args = args
 
     if fndec.is_variadic {
-        variadic_ty := resolve_type_specifier(&new_scope, fndec.variadic_ty)
+        variadic_ty := resolve_type_specifier(&arg_scope, fndec.variadic_ty)
         name := fndec.variadic_arg_name
         if da, ok := declared[name]; ok {
             // print declared arg
@@ -600,14 +616,14 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
         // don't apend to args, as it's not an argument in the function ig
         // but declare object for fn body
         // it's fine because extern fn doesn't make use of it either way
-        new_object(&new_scope, Object{.Argument, name, new_ty_id},
+        new_object(&arg_scope, Object{.Argument, name, new_ty_id},
             {file_name=get_ctx().current_file, span=fndec.variadic_arg_span});
         fnty.fn.is_variadic = true
         fnty.fn.variadic_ty = variadic_ty
         fnty.fn.variadic_name = name
     }
-    // free args scope
-    return fnty, new_scope
+    // caller frees the args scope
+    return fnty, arg_scope
 }
 resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     fndec, ok := get(id).(ExternFnDec); assert(ok); // assert it's a fn dec
@@ -787,6 +803,48 @@ Module :: struct {
     ast: AST,
     path: string,
 }
+// A struct can't contain itself by value, directly or through other structs
+// and fixed arrays. Pointers, slices and functions break the cycle. Run once
+// all of a module's structs are resolved, so declaration order doesn't matter.
+// state: 0 = unvisited, 1 = in progress, 2 = done
+by_value_struct :: proc(t: TypeId) -> (TypeId, bool) {
+    cur := t
+    for {
+        ty := get_type(cur)
+        #partial switch ty.kind {
+        case .FixedSizeArray: cur = ty.fixed_size_array.type
+        case .Struct:         return cur, true
+        case:                 return TypeId(0), false
+        }
+    }
+    return TypeId(0), false
+}
+visit_struct :: proc(tid: TypeId, state: ^map[TypeId]int) {
+    if state^[tid] == 2 do return
+    state^[tid] = 1
+    ty := get_type(tid)
+    for f in ty.structure.fields {
+        inner, ok := by_value_struct(f.type)
+        if !ok do continue
+        if state^[inner] == 1 {
+            highlight_lines(get_ctx().current_file, f.span)
+            gala_panicf("Struct \"%s\" would contain itself by value: field \"%s\" (type \"%s\") closes a cycle. Use a pointer.",
+                ty.name, f.name, get_type(inner).name)
+        }
+        visit_struct(inner, state)
+    }
+    state^[tid] = 2
+}
+check_struct_cycles :: proc(ast: ^AST) {
+    state := make(map[TypeId]int, allocator=get_ctx().allocator)
+    for id in ast.items {
+        if _, is_struct := get(id).(StructDec); is_struct {
+            tid, ok := get_ctx().item_types[id]; assert(ok)
+            visit_struct(tid, &state)
+        }
+    }
+    delete(state)
+}
 resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
     append(&get_ctx().mods, Module{});
     mid := ModId(len(get_ctx().mods) - 1);
@@ -807,6 +865,7 @@ resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
             resolve_item(&global_scope, id)
         }
     }
+    check_struct_cycles(ast)
     for id in ast.items {
         if _, is_struct := get(id).(StructDec); !is_struct {
             resolve_item(&global_scope, id)

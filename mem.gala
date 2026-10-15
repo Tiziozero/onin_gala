@@ -4,6 +4,7 @@
 // An Allocator is a callback plus a data pointer, Odin style.
 
 import "core.gala";
+import "cfunctions.gala";
 
 // ============================================================
 // Constants and raw helpers

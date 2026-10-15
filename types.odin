@@ -116,7 +116,8 @@ type_kind_size :: proc(k: TypeKind) -> int {
     case .UInt16, .Int16, .Flt16:      return 2
     case .UInt_8, .Int_8, .Flt_8:      return 1
     case .Rune, .Byte, .Bool:          return 1
-    case .Pointer, .Function, .String, .Slice: return 8 // slice ptr field / fn ptr / cstring
+    case .Pointer, .Function:          return 8
+    case .String, .Slice:              return 16 // { ptr, i64 }
     }
     return 0 // caller should fall back to type_size for aggregates
 }
@@ -130,11 +131,11 @@ type_size :: proc(type_id: TypeId) -> int {
     #partial switch ty.kind {
     case .UInt64, .Int64, .Flt64, .Pointer, .Function:
         return 8
-    case .UInt32, .Int32, .Flt32, .Rune:
+    case .UInt32, .Int32, .Flt32:
         return 4
     case .UInt16, .Int16, .Flt16:
         return 2
-    case .UInt_8, .Int_8, .Flt_8, .Byte, .Bool:
+    case .UInt_8, .Int_8, .Flt_8, .Byte, .Rune, .Bool:
         return 1
     case .Slice, .String, .Any:
         return 16
@@ -184,79 +185,54 @@ type_size_no_abi :: proc(id: TypeId) -> int {
     }
 }
 
-// ---- fixed type_cmp switch (matches current TypeKind) ----
-
-type_cmp :: proc(l, r: Type, strict := false) -> bool {
-    if l.kind != r.kind {
-        if (l.kind == .Any || r.kind == .Any) && !strict {
-            return true
-        }
-        return false
-    }
+// ---- type identity ----
+// "Are these the same type?" and nothing else: no `any` wildcard, no untyped
+// literal reduction (those live in assignable / unify_binop in the type checker).
+//   structs   nominal: same id, or different types
+//   functions structural (never interned, see new_fn_type); arg names ignored
+//   pointer / slice / array: structural over their element types
+type_equal :: proc(l, r: Type) -> bool {
+    if l.kind != r.kind do return false
 
     switch l.kind {
     case .String:
         return true
 
     case .Function:
-        // fn types aren't interned (see new_fn_type), so two identical
-        // signatures have different TypeIds. Compare structurally, and always
-        // strictly: fn(any) must not match fn(i64).
         if l.fn.is_variadic != r.fn.is_variadic { return false }
-        if l.fn.is_variadic &&
-           !type_cmp_by_id(l.fn.variadic_ty, r.fn.variadic_ty, true) {
+        if l.fn.is_variadic && !types_equal(l.fn.variadic_ty, r.fn.variadic_ty) {
             return false
         }
-
-        if !type_cmp_by_id(l.fn.ret_ty, r.fn.ret_ty, true) { return false }
+        if !types_equal(l.fn.ret_ty, r.fn.ret_ty) { return false }
         if len(l.fn.args) != len(r.fn.args) { return false }
 
-        // arg names are deliberately ignored
         for i in 0..<len(l.fn.args) {
-            if !type_cmp_by_id(l.fn.args[i].type, r.fn.args[i].type, true) {
+            if !types_equal(l.fn.args[i].type, r.fn.args[i].type) {
                 return false
             }
         }
         return true
 
     case .Pointer:
-        return type_cmp_by_id(l.ptr, r.ptr, strict)
+        return types_equal(l.ptr, r.ptr)
 
     case .Struct:
-        // structs are nominal: same fields under a different name is a
-        // different type
-        if l.name != r.name { return false }
-        if len(l.structure.fields) != len(r.structure.fields) {
-            return false
-        }
-
-        for i in 0..<len(l.structure.fields) {
-            lf := l.structure.fields[i]
-            rf := r.structure.fields[i]
-
-            if lf.name != rf.name { return false }
-            if lf.type != rf.type { return false }
-        }
-        return true
+        // only reached for two different ids (types_equal short-circuits
+        // equal ids), and structs are nominal
+        return false
 
     case .Slice:
-        // element types go through type_cmp_by_id (strict), not raw id
-        // equality: a slice of fn types would otherwise never match, since
-        // each fn spec gets its own TypeId.
-        return type_cmp_by_id(l.slice.type, r.slice.type, true)
+        return types_equal(l.slice.type, r.slice.type)
 
     case .FixedSizeArray:
         return l.fixed_size_array.size == r.fixed_size_array.size &&
-               type_cmp_by_id(l.fixed_size_array.type, r.fixed_size_array.type, true)
+               types_equal(l.fixed_size_array.type, r.fixed_size_array.type)
 
     case .UInt64, .UInt32, .UInt16, .UInt_8,
          .Int64, .Int32, .Int16, .Int_8,
          .Flt64, .Flt32, .Flt16, .Flt_8,
-         .Rune, .Byte, .Bool, .Void,
+         .Rune, .Byte, .Bool, .Void, .Any,
          .UntypedInteger, .UntypedFloat, .ZeroInit:
-        return true
-
-    case .Any:
         return true
 
     case .Invalid:
@@ -265,12 +241,9 @@ type_cmp :: proc(l, r: Type, strict := false) -> bool {
 
     return false
 }
-type_cmp_by_id :: proc(lid, rid: TypeId, strict := false) -> bool {
-    if lid == rid { return true }
-    l := get_type(lid)
-    r := get_type(rid)
-
-    return type_cmp(l^, r^, strict);
+types_equal :: proc(a, b: TypeId) -> bool {
+    if a == b { return true }
+    return type_equal(get_type(a)^, get_type(b)^)
 }
 is_untyped :: proc(ty: TypeId) -> bool {
     return is_numeric_untyped(ty) || get_type(ty).kind == .ZeroInit
@@ -360,4 +333,3 @@ is_void_pointer :: proc(id: TypeId) -> bool {
     t := get_type(id)
     return t.kind == .Pointer && get_type(t.ptr).kind == .Void
 }
-

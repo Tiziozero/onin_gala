@@ -14,7 +14,21 @@ expr_ty :: proc(id: ExprId) -> TypeId {
     assert(ok);
     return t
 }
-compare_and_reduce_numerics :: proc(l, r: TypeId) -> (TypeId, bool, string) {
+// ---- type compatibility ----
+// Identity is types_equal (types.odin). On top of that the only implicit
+// things are: untyped literals, ZeroInit, and boxing into `any`.
+//   assignable   a value of type `got` into a slot of type `expected`
+//   unify_binop  the operand type of a binary operator
+
+// ZeroInit can become any type that has a value to zero.
+can_zero_init :: proc(k: TypeKind) -> bool {
+    #partial switch k {
+    case .Void, .Invalid, .UntypedInteger, .UntypedFloat, .Any: return false
+    }
+    return true
+}
+
+reduce_numerics :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     if l == r do return l, true, ""
 
     lk := get_type(l).kind
@@ -23,130 +37,122 @@ compare_and_reduce_numerics :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     l_untyped := is_numeric_untyped(l)
     r_untyped := is_numeric_untyped(r)
 
-    // Both untyped — UntypedFloat dominates
+    // both untyped: UntypedFloat dominates
     if l_untyped && r_untyped {
         if lk == .UntypedFloat || rk == .UntypedFloat {
             return intern_type(Type{kind = .UntypedFloat}), true, ""
         }
-
-        // both UntypedInteger
         return intern_type(Type{kind = .UntypedInteger}), true, ""
     }
 
-    // Left untyped, right typed
+    // untyped on one side: it takes the typed side's type
     if l_untyped {
-        if lk == .UntypedFloat && is_integer(r) {
+        if lk == .UntypedFloat && (is_integer(r) || is_byte_like(r)) {
             return TypeId(0), false, "type mismatch: float into integer"
         }
-
-        // allow untyped int to become any typed numeric
         return r, true, ""
     }
-
-    // Right untyped, left typed
     if r_untyped {
-        if rk == .UntypedFloat && is_integer(l) {
+        if rk == .UntypedFloat && (is_integer(l) || is_byte_like(l)) {
             return TypeId(0), false, "type mismatch: float into integer"
         }
-
         return l, true, ""
     }
 
-    // Both typed, different IDs
     return TypeId(0), false, "type mismatch (different types)"
 }
 
-// Handles:
-//   pointer <-> pointer   (delegates to type_cmp, so fn/any/etc. rules stay in one place)
-//   pointer <-> integer   (pointer arithmetic / indexing offsets, either order)
-// Assumes at least one of l/r is a Pointer — callers should route here only
-// in that case (see compare_and_reduce_types).
-compare_and_reduce_pointers :: proc(l, r: TypeId, strict := false) -> (TypeId, bool, string) {
+// pointer <-> pointer must be the same type; pointer <-> integer is offset
+// math (result keeps the pointer's type, float offsets are rejected).
+// Callers route here only when at least one side is a pointer.
+reduce_pointers :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     if l == r do return l, true, ""
 
-    // Pointer <-> Pointer
     if is_pointer(l) && is_pointer(r) {
-        // void* (rawptr) unifies with any concrete pointer type, like C.
-        /* if is_void_pointer(l) {
-            return r, true, ""
-        }
-        if is_void_pointer(r) {
-            return l, true, ""
-        } */
-
-        if type_cmp_by_id(l, r, strict) {
-            return l, true, ""
-        }
-
+        if types_equal(l, r) do return l, true, ""
         return TypeId(0), false, "type mismatch: incompatible pointer types"
     }
 
-    // Pointer <-> integer/untyped-integer (offset math): result stays a
-    // pointer of the pointer operand's type. Reject float offsets outright.
-    if is_pointer(l) {
-        if is_float(r) || get_type(r).kind == .UntypedFloat {
-            return TypeId(0), false, "type mismatch: float offset into pointer"
-        }
-        if is_integer(r) || is_numeric_untyped(r) {
-            return l, true, ""
-        }
-        return TypeId(0), false, "type mismatch: pointer with non-integer operand"
-    }
-
+    ptr, other := l, r
     if is_pointer(r) {
-        if is_float(l) || get_type(l).kind == .UntypedFloat {
-            return TypeId(0), false, "type mismatch: float offset into pointer"
-        }
-        if is_integer(l) || is_numeric_untyped(l) {
-            return r, true, ""
-        }
-        return TypeId(0), false, "type mismatch: pointer with non-integer operand"
+        ptr, other = r, l
     }
-
-    return TypeId(0), false, "type mismatch (pointer)"
+    if is_float(other) || get_type(other).kind == .UntypedFloat {
+        return TypeId(0), false, "type mismatch: float offset into pointer"
+    }
+    if is_integer(other) || is_numeric_untyped(other) {
+        return ptr, true, ""
+    }
+    return TypeId(0), false, "type mismatch: pointer with non-integer operand"
 }
 
-// Single entry point for "can these two types be unified, and into what?".
-//
-//   1. identical ids                 -> trivially ok
-//   2. any (unless strict)           -> the other side wins
-//   3. pointer involved              -> compare_and_reduce_pointers
-//   4. both numeric                  -> compare_and_reduce_numerics (untyped reduction)
-//   5. everything else               -> structural equality via type_cmp
-//                                       (fn, struct, slice, array, string, bool, ...)
-//
-// Only 2-4 *reduce* anything; 5 is pure equality, so type_cmp stays the one
-// source of truth for what "same type" means. On success from 5 we return l
-// (the left/expected type).
-compare_and_reduce_types :: proc(l, r: TypeId, strict := false) -> (TypeId, bool, string) {
-    if l == r do return l, true, ""
-
+// Operand types of a binary operator.
+unify_binop :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     lk := get_type(l).kind
     rk := get_type(r).kind
 
-    if !strict {
-        if lk == .Any do return r, true, ""
-        if rk == .Any do return l, true, ""
+    if lk == .ZeroInit || rk == .ZeroInit {
+        return TypeId(0), false, "a zero initialiser can't be used in an expression"
     }
+    if l == r do return l, true, ""
 
-    if is_pointer(l) || is_pointer(r) {
-        return compare_and_reduce_pointers(l, r, strict)
-    }
+    if is_pointer(l) || is_pointer(r) do return reduce_pointers(l, r)
+    if is_numeric(l) && is_numeric(r) do return reduce_numerics(l, r)
 
-    if is_numeric(l) && is_numeric(r) {
-        return compare_and_reduce_numerics(l, r)
-    }
-
-    // structural fallthrough: functions (incl. variadics), structs, slices,
-    // fixed arrays, strings, bools, ...
-    if type_cmp_by_id(l, r, strict) {
-        return l, true, ""
-    }
-
+    if types_equal(l, r) do return l, true, ""
     if lk == .Function && rk == .Function {
         return TypeId(0), false, "function types don't match"
     }
+    return TypeId(0), false, "types don't match"
+}
 
+// A value of type `got` into a slot of type `expected` (initialiser,
+// assignment, argument, return, literal element). Returns the type to
+// propagate into the value; for everything except `any` that is `expected`.
+//   ZeroInit       -> any type with a value to zero (not `any`)
+//   untyped number -> a typed numeric (float into integer is an error);
+//                     an untyped integer may also become a pointer (`p = 0`)
+//   anything       -> `any` (boxing); untyped numbers box as their default type
+//   otherwise      -> types_equal. `any` never converts back implicitly.
+assignable :: proc(expected, got: TypeId) -> (TypeId, bool, string) {
+    ek := get_type(expected).kind
+    gk := get_type(got).kind
+
+    if gk == .ZeroInit {
+        if !can_zero_init(ek) {
+            return TypeId(0), false, "a zero initialiser needs a concrete type here"
+        }
+        return expected, true, ""
+    }
+    if expected == got do return expected, true, ""
+
+    if ek == .Any {
+        if gk == .Void {
+            return TypeId(0), false, "can't use a value of type void"
+        }
+        if is_numeric_untyped(got) do return get_untyped_default(got), true, ""
+        return got, true, ""
+    }
+
+    if is_numeric_untyped(got) {
+        if is_numeric_typed(expected) {
+            if gk == .UntypedFloat && !is_float(expected) {
+                return TypeId(0), false, "type mismatch: float into integer"
+            }
+            return expected, true, ""
+        }
+        if gk == .UntypedInteger && is_pointer(expected) {
+            return expected, true, ""
+        }
+    }
+
+    if is_pointer(expected) != is_pointer(got) {
+        return TypeId(0), false, "type mismatch: pointers and non-pointers don't convert implicitly (use cast)"
+    }
+    if types_equal(expected, got) do return expected, true, ""
+    if ek == .Function && gk == .Function {
+        return TypeId(0), false, "function types don't match"
+    }
     return TypeId(0), false, "types don't match"
 }
 get_array_base_type :: proc(t: TypeId) -> (TypeId, bool) {
@@ -160,7 +166,9 @@ get_array_base_type :: proc(t: TypeId) -> (TypeId, bool) {
     }
     case .String: return byte_type(), true
     case .Pointer: {
-        if get_type(ty.ptr).kind == .Any {
+        // can't index through ^any or rawptr: there's no element type
+        k := get_type(ty.ptr).kind
+        if k == .Any || k == .Void {
             return TypeId(0), false
         }
         return ty.ptr, true
@@ -175,6 +183,15 @@ can_reference :: proc(id: ExprId) -> bool {
     }
     }
     return false;
+}
+// things that can sit on the left of `=`
+can_assign_to :: proc(id: ExprId) -> bool {
+    #partial switch e in get_expr(id) {
+    case Symbol, Index, FieldAccess, Deref: {
+        return true
+    }
+    }
+    return false
 }
 can_equal :: proc(id: TypeId, op: BinopKind) -> bool {
     t := get_type(id)
@@ -200,9 +217,14 @@ can_order :: proc(id: TypeId) -> bool {
 mark_arg :: proc(arg: ^FnCallArg, param_ty: TypeId, r: TypeId) {
     earg := arg.expr;
     if get(param_ty).kind == .Any {
+        t := expr_ty(earg)
+        if get_type(t).kind == .ZeroInit {
+            highlight_lines(get_span(earg))
+            gala_panic("Can't pass a zero initialiser as `any`: it has no type.")
+        }
         // if it's untyped (because target is "any" or other valid untyped targets)
-        if is_untyped(expr_ty(earg)) {
-            get_ctx().expr_types[earg] = get_untyped_default(expr_ty(earg))
+        if is_untyped(t) {
+            propagate_type(get_untyped_default(t), earg)
         }
         arg.needs_boxing = true;
         arg.box_type = expr_ty(earg);
@@ -245,14 +267,16 @@ tc_default_args :: proc(tc: ^TcContext, fn_type_id: TypeId) {
             tc_expr(tc, src)
 
             t := expr_ty(src)
-            if is_untyped(t) {
-                t = get_untyped_default(t)
-                propagate_type(t, src)
-            }
+            // check these first: is_untyped() is true for ZeroInit too, and
+            // there's no default type to give it
             kind := get_type(t).kind
             if kind == .ZeroInit || kind == .Void {
                 highlight_lines(get_span(src))
                 gala_panicf("Can't infer the type of parameter \"%s\" from its default value.", a.name)
+            }
+            if is_untyped(t) {
+                t = get_untyped_default(t)
+                propagate_type(t, src)
             }
 
             call := get_expr(def).(FnCall)
@@ -267,7 +291,7 @@ tc_default_args :: proc(tc: ^TcContext, fn_type_id: TypeId) {
         }
 
         tc_expr(tc, def)
-        _, ok, err := compare_and_reduce_types(a.type, expr_ty(def))
+        _, ok, err := assignable(a.type, expr_ty(def))
         if !ok {
             highlight_lines(get_span(def))
             gala_panicf("Default value doesn't match the type of parameter \"%s\": %s (expected %s, got %s)",
@@ -299,14 +323,19 @@ order_call_args :: proc(id: ExprId, args: [dynamic]FnCallArg, params: []Arg) -> 
                 highlight_lines(get_ctx().current_file, a.name_span)
                 gala_panicf("Function has no parameter named \"%s\".", a.name)
             }
-            if filled[idx] {
-                highlight_lines(get_ctx().current_file, a.name_span)
-                gala_panicf("Parameter \"%s\" is given more than once.", a.name)
-            }
         } else if i >= len(params) {
             highlight_lines(get_span(id))
             gala_panicf("args count for function don't match (expected at most %d, got %d).",
                 len(params), len(args))
+        }
+        // covers named-twice and a positional landing on a named one (`f(b=1, 2)`)
+        if filled[idx] {
+            if len(a.name) > 0 {
+                highlight_lines(get_ctx().current_file, a.name_span)
+            } else {
+                highlight_lines(get_span(a.expr))
+            }
+            gala_panicf("Parameter \"%s\" is given more than once.", params[idx].name)
         }
         ordered[idx] = a
         ordered[idx].name = ""
@@ -358,11 +387,11 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         t := expr_ty(e.expr);
         if get(t).kind != .Pointer {
             highlight_lines(get_span_expr(id));
-            gala_panic("Can't dereference expression if type %s.", tts(t));
+            gala_panicf("Can't dereference expression of type %s.", tts(t));
         }
         if get_type(get_type(t).ptr).kind == .Void {
             highlight_lines(get_span_expr(id));
-            gala_panic("Can't dereference expression if type %s.", tts(t));
+            gala_panicf("Can't dereference expression of type %s.", tts(t));
         }
         get_ctx().expr_types[id] = get_type(t).ptr;
     }
@@ -470,7 +499,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
         for el in e.initialiser {
             tc_expr(tc, el)
-            r, ok, err := compare_and_reduce_types(elem_ty, expr_ty(el))
+            r, ok, err := assignable(elem_ty, expr_ty(el))
             if !ok {
                 highlight_lines(get_span(el))
                 gala_panic("Type error:", err)
@@ -509,7 +538,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         for sf in s.structure.fields {
             f := e.fields[sf.name].expr
             tc_expr(tc, f);
-            r, ok, err := compare_and_reduce_types(sf.type, expr_ty(f))
+            r, ok, err := assignable(sf.type, expr_ty(f))
             if !ok {
                 span := e.fields[sf.name].span
                 highlight_lines(get_ctx().current_file, span)
@@ -593,7 +622,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         left_ty  := expr_ty(e.left);
         right_ty := expr_ty(e.right);
 
-        ty, ok, s := compare_and_reduce_types(left_ty, right_ty);
+        ty, ok, s := unify_binop(left_ty, right_ty);
         if !ok {
             highlight_lines(get_span(id))
             gala_panic(s, tts(left_ty), "vs", tts(right_ty))
@@ -606,6 +635,20 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
         switch e.kind {
         case .Addition, .Subtraction, .Multiply, .Divide, .Modulo: {
+            // pointer arithmetic: `ptr +- int`, `int + ptr`, `ptr - ptr`.
+            // not `ptr + ptr` and not `int - ptr`.
+            if is_pointer(right_ty) {
+                bad := false
+                if is_pointer(left_ty) {
+                    bad = e.kind == .Addition
+                } else {
+                    bad = e.kind != .Addition
+                }
+                if bad {
+                    highlight_lines(get_span(id))
+                    gala_panic("invalid pointer arithmetic.")
+                }
+            }
             if !can_binop(ty, e.kind) {
                 highlight_lines(get_span(id));
                 gala_panicf("can't perform a binop on these two expressions. (%s)", tts(ty));
@@ -700,9 +743,9 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             propagate_type(ty, e.left);
             propagate_type(ty, e.right);
 
-            if !is_integer(ty) {
+            if !is_integer(ty) && !is_byte_like(ty) {
                 highlight_lines(get_span(id));
-                gala_panic("bitwise operators require integer operands");
+                gala_panic("bitwise operators require integer or byte operands");
             }
 
             get_ctx().expr_types[id] = ty;
@@ -721,13 +764,13 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     case FnCall: {
         tc_expr(tc, e.target);
         fn_tid := expr_ty(e.target)
-        assert(get_type(fn_tid).kind == .Function)
+        if get_type(fn_tid).kind != .Function {
+            highlight_lines(get_span(e.target))
+            gala_panicf("Can't call a value of type %s.", tts(fn_tid))
+        }
 
         // make sure inferred parameter types are known before reading them
         tc_default_args(tc, fn_tid)
-
-        ty := get_type(fn_tid);
-        fargs := ty.fn.args;
 
         has_named := false
         for a in e.args {
@@ -738,8 +781,17 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             tc_expr(tc, a.expr);
         }
 
+        // Read the signature only now, after the arguments are typed: typing
+        // them can intern types, which may move the type table and leave a
+        // pointer taken earlier dangling.
+        ty := get_type(fn_tid);
+        fargs := ty.fn.args;
+        is_variadic := ty.fn.is_variadic
+        variadic_ty := ty.fn.variadic_ty
+        ret_ty := ty.fn.ret_ty
+
         call_args := e.args
-        if ty.fn.is_variadic {
+        if is_variadic {
             // defaults and variadics can't be combined (see parse_args_dec),
             // so every fixed parameter has to be passed positionally
             if has_named {
@@ -755,13 +807,15 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             // reorder named args and fill in defaults, then write the
             // full-arity call back (`e` is a copy of the union payload)
             call_args = order_call_args(id, e.args, fargs)
-            get_ctx().exprs[id] = Expr(FnCall{target=e.target, args=call_args})
+            new_call := e
+            new_call.args = call_args
+            get_ctx().exprs[id] = Expr(new_call)
         }
 
         for i in 0..<len(fargs) {
             earg := call_args[i].expr;
             farg := fargs[i];
-            r, ok, s := compare_and_reduce_types(farg.type, expr_ty(earg));
+            r, ok, s := assignable(farg.type, expr_ty(earg));
             if !ok {
                 highlight_lines(get_span(earg));
                 gala_panicf("Type Mismatch: %s (expected %s, got %s)",
@@ -770,33 +824,33 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             mark_arg(&call_args[i], farg.type, r);
         }
         // default for rest (variadic tail)
-        if ty.fn.is_variadic do for i in len(fargs)..<len(call_args) {
+        if is_variadic do for i in len(fargs)..<len(call_args) {
             earg := call_args[i].expr;
-            r, ok, err := compare_and_reduce_types(ty.fn.variadic_ty, expr_ty(earg));
+            r, ok, err := assignable(variadic_ty, expr_ty(earg));
             if !ok {
                 highlight_lines(get_span(earg));
                 gala_panicf("Type Mismatch: %s (expected %s, got %s)",
-                    err, tts(ty.fn.variadic_ty), tts(expr_ty(earg)));
+                    err, tts(variadic_ty), tts(expr_ty(earg)));
             }
-            mark_arg(&call_args[i], ty.fn.variadic_ty, r);
+            mark_arg(&call_args[i], variadic_ty, r);
         }
 
-        get_ctx().expr_types[id] = ty.fn.ret_ty
+        get_ctx().expr_types[id] = ret_ty
     }
     case FnLit: {
         // the resolver already built the fn type from the signature.
         tid := get_ctx().expr_resolution_types[id]
-        fn_ty := get_type(tid)
-        assert(fn_ty.kind == .Function)
+        assert(get_type(tid).kind == .Function)
 
         // validate parameter defaults before anything can call this literal
         tc_default_args(tc, tid)
 
         // body is checked like a FnDec body: fresh function context, and the
         // enclosing loop must not be visible (no break/continue across it).
+        // (type fetched after tc_default_args, which may have grown the table)
         new_tc := tc^
         new_tc.in_function = true
-        new_tc.fn_ret_ty = fn_ty.fn.ret_ty
+        new_tc.fn_ret_ty = get_type(tid).fn.ret_ty
         new_tc.in_loop = nil
         tc_block(&new_tc, e.block)
 
@@ -843,7 +897,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
         lid /* loop id */ := tc.in_loop;
         if lid == nil {
             highlight_lines(get_span(s));
-            gala_panic("Not in loop/if stmt");
+            gala_panic("break/continue outside of a loop");
         }
         get_ctx().break_lables[s] = lid.(StmtId);
     }
@@ -864,8 +918,8 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
     }
     case ExprId: tc_expr(tc, stmt);
     case IfElse: {
-        last_loop := tc.in_loop;
-        tc.in_loop = s;
+        // no in_loop change: break/continue inside an if/else target the
+        // enclosing loop
         tc_expr(tc, stmt.base_con);
         // make it numeric
         if get_type(expr_ty(stmt.base_con)).kind != .Bool {
@@ -877,44 +931,48 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             tc_expr(tc, a.cond);
             // make it numeric
             if get_type(expr_ty(a.cond)).kind != .Bool {
-                highlight_lines(get_span(stmt.base_con))
-                gala_panic("not a bool?");
+                highlight_lines(get_span(a.cond))
+                gala_panic("not a bool.");
             }
             tc_block(tc, a.block);
         }
         if stmt.has_else_block {
             tc_block(tc, stmt.else_block);
         }
-        tc.in_loop = last_loop;
     }
     case VarDec: {
         tc_expr(tc, stmt.value)
-        resolved_ty := get_obj(get_ctx().stmt_objects[s]).type;
+        oid := get_ctx().stmt_objects[s]
+        declared := get_obj(oid).type
         // if vardec doesn't have a defined type then infer
-        if resolved_ty == nil {
-            // set to it's expression
-            resolved_ty = expr_ty(stmt.value);
-            // if it's untyped then get default type
-            if is_untyped(resolved_ty.(TypeId)) {
-                t := get_untyped_default(resolved_ty.(TypeId))
-                propagate_type(t, stmt.value)
-            } else if get(resolved_ty.(TypeId)).kind == .ZeroInit {
+        if declared == nil {
+            t := expr_ty(stmt.value)
+            // check these first: is_untyped() is true for ZeroInit too, and
+            // there's no default type to give it
+            #partial switch get_type(t).kind {
+            case .ZeroInit: {
                 highlight_lines(get_span(s));
                 gala_panic("can't have zero initialiser here. Type required");
             }
-            // set obj type to expr type
-            resolved_ty = expr_ty(stmt.value);
-            get_obj(get_ctx().stmt_objects[s]).type = resolved_ty;
-        } else { // otherwise if the vardec has a specified type compare
-            expected_type := resolved_ty.(TypeId)
-            sid := s;
-            if t, ok, s := compare_and_reduce_types(expected_type, expr_ty(stmt.value)); ok {
-                propagate_type(t, stmt.value)
-            } else {
-                highlight_lines(get_span(sid))
-                gala_panic("types don't match (%s vs %s)",
-                    tts(expected_type),expr_ty(stmt.value));
+            case .Void: {
+                highlight_lines(get_span(s));
+                gala_panic("can't declare a variable from an expression with no value.");
             }
+            }
+            // if it's untyped then get default type
+            if is_untyped(t) {
+                propagate_type(get_untyped_default(t), stmt.value)
+            }
+            get_obj(oid).type = expr_ty(stmt.value);
+        } else { // otherwise if the vardec has a specified type compare
+            expected := declared.(TypeId)
+            r, ok, err := assignable(expected, expr_ty(stmt.value))
+            if !ok {
+                highlight_lines(get_span(s))
+                gala_panicf("types don't match (%s vs %s): %s",
+                    tts(expected), tts(expr_ty(stmt.value)), err)
+            }
+            propagate_type(r, stmt.value)
         }
     }
     case Return: {
@@ -928,10 +986,12 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
                 gala_panic("no return value expected");
             }
             // compare return expr type with fn return type
-            ty, ok, s := compare_and_reduce_types(expr_ty(e), tc.fn_ret_ty.(TypeId));
-            if !ok {
+            expected := tc.fn_ret_ty.(TypeId)
+            ty, cok, err := assignable(expected, expr_ty(e));
+            if !cok {
                 highlight_lines(get_span(e));
-                gala_panic(s, tts(expr_ty(e)), "vs", tts(tc.fn_ret_ty.(TypeId)));
+                gala_panicf("Return type mismatch: %s (expected %s, got %s)",
+                    err, tts(expected), tts(expr_ty(e)));
             }
             propagate_type(ty, e);
         // otherwise make sure function doesn't expect a value
@@ -948,9 +1008,13 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
     case Assignment: {
         tc_expr(tc, stmt.target);
         tc_expr(tc, stmt.value);
+        if !can_assign_to(stmt.target) {
+            highlight_lines(get_span(stmt.target));
+            gala_panic("Can't assign to this expression.");
+        }
         // target must have a type
         _, tyok := get_ctx().expr_types[stmt.target]; assert(tyok);
-        t, ok, err := compare_and_reduce_types(expr_ty(stmt.target), expr_ty(stmt.value))
+        t, ok, err := assignable(expr_ty(stmt.target), expr_ty(stmt.value))
         if !ok {
             highlight_lines(get_span(s));
             debugln(tts(expr_ty(stmt.target)), tts(expr_ty(stmt.value)));
@@ -981,16 +1045,24 @@ tc_global_var_dec :: proc(tc: ^TcContext, id: ItemId) {
     resolved_ty := get_obj(oid).type
     if resolved_ty == nil {
         t := expr_ty(gd.value)
-        if is_untyped(t) {
-            propagate_type(get_untyped_default(t), gd.value)
-        } else if get(t).kind == .ZeroInit {
+        // before is_untyped(): that's true for ZeroInit too
+        #partial switch get_type(t).kind {
+        case .ZeroInit: {
             highlight_lines(get_ctx().current_file, span)
             gala_panic("can't have zero initialiser here. Type required")
+        }
+        case .Void: {
+            highlight_lines(get_ctx().current_file, span)
+            gala_panic("can't declare a global from an expression with no value.")
+        }
+        }
+        if is_untyped(t) {
+            propagate_type(get_untyped_default(t), gd.value)
         }
         get_obj(oid).type = expr_ty(gd.value)
     } else {
         expected := resolved_ty.(TypeId)
-        t, cok, err := compare_and_reduce_types(expected, expr_ty(gd.value))
+        t, cok, err := assignable(expected, expr_ty(gd.value))
         if !cok {
             highlight_lines(get_ctx().current_file, span)
             gala_panicf("types don't match (%s vs %s): %s",
@@ -1028,27 +1100,28 @@ tc_item :: proc(tc: ^TcContext, id: ItemId) {
 typecheck_module :: proc(ast: ^AST) {
     tc := TcContext{fn_ret_ty=nil, in_function=false}
 
-    // First pass: check parameter defaults of every module-level function
+    // First pass: globals, in declaration order, before any function body.
+    // A `:=` global only gets its type here, and functions may use globals
+    // declared further down the file, so all of them must be typed before
+    // the first body is checked. A global initialiser that calls a function
+    // gets that function's parameter defaults checked on demand (FnCall).
+    for i in ast.items {
+        if _, is_global := get_item(i).(GlobalVarDec); is_global {
+            tc_global_var_dec(&tc, i)
+        }
+    }
+
+    // Second pass: check parameter defaults of every module-level function
     // (extern ones included) before any body is checked, so inferred
     // parameter types and hidden-function return types exist by the time a
-    // call needs them. Needs nothing but signatures, so it doesn't matter
-    // that no global has a type yet.
+    // call needs them. Runs after the globals so an inferred default
+    // (`fn f(x := SOME_GLOBAL)`) can use them.
     for i in ast.items {
         #partial switch _ in get_item(i) {
         case FnDec, ExternFnDec: {
             fn_obj, ok := get_ctx().item_objects[i]; assert(ok);
             tc_default_args(&tc, get_obj(fn_obj).type.(TypeId))
         }
-        }
-    }
-
-    // Second pass: globals, in declaration order, before any function body.
-    // A `:=` global only gets its type here, and functions may use globals
-    // declared further down the file, so all of them must be typed before
-    // the first body is checked.
-    for i in ast.items {
-        if _, is_global := get_item(i).(GlobalVarDec); is_global {
-            tc_global_var_dec(&tc, i)
         }
     }
 
