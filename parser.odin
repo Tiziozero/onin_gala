@@ -49,8 +49,8 @@ ContinueStmt :: struct {label: string};
 StructLit :: struct {
     name: string,
     fields: map[string]struct{expr:ExprId,span:Span},
-    // `Foo{1, 2}` form: values in source order. The resolver moves these into
-    // `fields` once it knows the struct's field names; after that this is unused.
+    // `Foo{1, 2}` form, in source order. The resolver moves these into
+    // `fields`; unused after that.
     positional: []struct{expr:ExprId,span:Span},
 }
 Len :: struct { target: ExprId };
@@ -60,11 +60,10 @@ BoolLitFalse :: distinct struct {}
 UnNegative :: struct {
     expr: ExprId,
 }
-// Anonymous function expression. Both surface forms produce this node:
+// Anonymous function expression. Both forms produce this node:
 //   fn(i: i32, j: i32): i32 { return i + j }
 //   fn(i: i32, j: i32): i32 => i + j
-// The `=>` form is desugared by the parser into a block containing a single
-// `return <expr>;`, so later passes only ever see one shape (a block body).
+// The `=>` form is desugared into a block with a single `return <expr>;`.
 FnLit :: struct {
     using signature: FnDecSignature,
     span: Span,
@@ -129,8 +128,8 @@ FnCall :: struct {
     args: [dynamic]FnCallArg,
 }
 // `name` is set for `f(x = 1)` style arguments. The type checker reorders
-// everything into parameter order and clears the names, so later passes
-// (codegen) only ever see plain positional, full-arity calls.
+// everything into parameter order and clears the names, so codegen only sees
+// positional, full-arity calls.
 FnCallArg :: struct{
     expr: ExprId,
     needs_boxing: bool,
@@ -200,6 +199,7 @@ Parser::struct{
     extra_items: [dynamic]ItemId,
 }
 op_kind :: proc(t: Token) -> (kind: BinopKind, ok: bool) {
+    if t.kind != .Symbol do return {}, false
     switch t.text {
     case "+":  return .Addition,     true
     case "-":  return .Subtraction,  true
@@ -223,26 +223,32 @@ op_kind :: proc(t: Token) -> (kind: BinopKind, ok: bool) {
     return {}, false
 }
 
-op_precedence :: proc(t: Token) -> int {
+compound_op_kind :: proc(t: Token) -> (kind: BinopKind, ok: bool) {
+    if t.kind != .Symbol do return {}, false
     switch t.text {
-    case "||":
-        return 1
-    case "&&":
-        return 2
-    case "|":
-        return 3
-    case "~":
-        return 4
-    case "&":
-        return 5
-    case "==", "!=", "<=", ">=", "<", ">":
-        return 6
-    case "<<", ">>":
-        return 7
-    case "+", "-":
-        return 8
-    case "*", "/", "%":
-        return 9
+    case "+=":  return .Addition,    true
+    case "-=":  return .Subtraction, true
+    case "*=":  return .Multiply,    true
+    case "/=":  return .Divide,      true
+    case "%=":  return .Modulo,      true
+    case "&=":  return .BitAnd,      true
+    case "|=":  return .BitOr,       true
+    case "~=":  return .BitXor,      true
+    case "<<=": return .ShiftLeft,   true
+    case ">>=": return .ShiftRight,  true
+    }
+    return {}, false
+}
+
+// Go/Odin-style: bitwise ops bind tighter than comparisons.
+op_precedence :: proc(t: Token) -> int {
+    if t.kind != .Symbol do return -1
+    switch t.text {
+    case "||": return 1
+    case "&&": return 2
+    case "==", "!=", "<=", ">=", "<", ">": return 3
+    case "+", "-", "|", "~": return 4
+    case "*", "/", "%", "&", "<<", ">>": return 5
     }
     return -1
 }
@@ -250,6 +256,8 @@ op_precedence :: proc(t: Token) -> int {
 op_is_right_assoc :: proc(t: Token) -> bool {
     return false // extend for ** etc.
 }
+
+// Header of an `if`/`while`/`for`: `Name {` is the block, not a struct lit.
 parse_condition :: proc(p: ^Parser) -> ExprId {
     prev_ignore_struct_lit := p.ignore_struct_lit
     p.ignore_struct_lit = true
@@ -257,9 +265,20 @@ parse_condition :: proc(p: ^Parser) -> ExprId {
     p.ignore_struct_lit = prev_ignore_struct_lit
     return e;
 }
+
+// Inside (), [] and {} a struct literal is unambiguous, even in an
+// `if`/`while`/`for` header.
+parse_nested_expr :: proc(p: ^Parser) -> ExprId {
+    prev := p.ignore_struct_lit
+    p.ignore_struct_lit = false
+    e := parse_expr(p)
+    p.ignore_struct_lit = prev
+    return e
+}
+
 // `Name{x=1, y=2}` or `Name{1, 2}` (not both in one literal)
 parse_struct_lit :: proc(p: ^Parser) -> ExprId {
-    name := expect_ident(p); // "name"
+    name := expect_ident(p);
     consume_token(p); // "{"
     fields := make(map[string]struct{expr: ExprId, span: Span}, allocator=get_ctx().allocator);
     positional := make([dynamic]struct{expr: ExprId, span: Span}, allocator=get_ctx().allocator);
@@ -273,7 +292,7 @@ parse_struct_lit :: proc(p: ^Parser) -> ExprId {
             }
             fname := expect_ident(p);
             consume_token(p); // "="
-            expr := parse_expr(p);
+            expr := parse_nested_expr(p);
             if _, exists := fields[fname.text]; exists {
                 highlight_lines(get_ctx().current_file, fname.span)
                 gala_panic("duplicate fields.");
@@ -285,7 +304,7 @@ parse_struct_lit :: proc(p: ^Parser) -> ExprId {
                 highlight_lines(get_ctx().current_file, current_token(p).span)
                 gala_panic("Can't mix named and positional fields in a struct literal.")
             }
-            expr := parse_expr(p);
+            expr := parse_nested_expr(p);
             append(&positional, struct{expr: ExprId, span: Span}{expr, get_span(expr).span})
         }
 
@@ -302,78 +321,61 @@ parse_struct_lit :: proc(p: ^Parser) -> ExprId {
     }
     return id;
 }
+
+// `[N]T{}` (zeroed) or `[N]T{a, b, c}` (trailing comma ok)
+parse_array_lit :: proc(p: ^Parser) -> ExprId {
+    open_b := consume_token(p) // "["
+    n := consume_token(p)
+    if n.kind != .Number {
+        highlight_lines(get_ctx().current_file, n.span)
+        gala_panic("Expected a number for the fixed size array size.")
+    }
+    size, ok := strconv.parse_int(n.text)
+    if !ok {
+        highlight_lines(get_ctx().current_file, n.span)
+        gala_panic("Invalid array size.")
+    }
+    expect_symbol(p, "]")
+    t := parse_type(p)
+    expect_symbol(p, "{")
+
+    elems := make([dynamic]ExprId, allocator=get_ctx().allocator)
+    for !is_symbol(current_token(p), "}") {
+        append(&elems, parse_nested_expr(p))
+        if is_symbol(current_token(p), ",") {
+            consume_token(p)
+        } else {
+            break
+        }
+    }
+    end := expect_symbol(p, "}")
+    span := Span{start=open_b.span.start, end=end.span.end}
+
+    if len(elems) > size {
+        highlight_lines(get_ctx().current_file, span)
+        gala_panic("too many elements in array initialiser")
+    }
+
+    init: []ExprId // nil for `{}`
+    if len(elems) > 0 do init = elems[:]
+
+    id := new_expr(Expr(FixedSizeArray{size=size, ty=t, initialiser=init}))
+    get_ctx().spans.exprs[id] = {file_name=get_ctx().current_file, span=span}
+    return id
+}
+
+// Struct literals, array literals and strings are only allowed here, at the
+// start of an expression (so `a == Foo{}` and `"abc"[0]` don't parse).
 parse_expr :: proc(p: ^Parser) -> ExprId {
-    if current_token(p).kind ==.Ident && is_symbol(next_token(p), "{") &&
-        !p.ignore_struct_lit { // flag to ignore struct lits
-            return parse_struct_lit(p)
-    } else if is_symbol(current_token(p), "[") {
-        // eg: "v := [1024]byte{}"       (all zeroes)
-        //     "v := [3]i32{1, 2, 3}"    (initialised, trailing comma ok)
-        open_b := consume_token(p); // "["
-        n := consume_token(p); // number
-        if n.kind != .Number {
-            highlight_lines(get_ctx().current_file, n.span);
-            gala_panic("expected number for fixed size array init");
-        }
-        size, ok := strconv.parse_int(n.text); assert(ok);
-        close_b := expect_symbol(p, "]");
-
-        t := parse_type(p);
-
-        expect_symbol(p, "{");
-
-        // The elements are full expressions, so struct literals must be
-        // allowed in here even when this literal sits inside an `if`/`for`
-        // header that has ignore_struct_lit set.
-        saved_ignore := p.ignore_struct_lit
-        p.ignore_struct_lit = false
-
-        elems := make([dynamic]ExprId, allocator=get_ctx().allocator)
-        for !is_symbol(current_token(p), "}") {
-            append(&elems, parse_expr(p))
-            if is_symbol(current_token(p), ",") {
-                consume_token(p)
-            } else {
-                break
-            }
-        }
-
-        p.ignore_struct_lit = saved_ignore
-        end := expect_symbol(p, "}")
-
-        span := Span{start=open_b.span.start, end=end.span.end}
-
-        if len(elems) > size {
-            highlight_lines(get_ctx().current_file, span)
-            gala_panic("too many elements in array initialiser")
-        }
-
-        init: [dynamic]ExprId // stays nil for `{}`
-        if len(elems) > 0 {
-            init = elems
-        }
-
-        id := new_expr(Expr(FixedSizeArray{size=size, ty=t, initialiser=init[:]}))
-        get_ctx().spans.exprs[id] = {
-            file_name=get_ctx().current_file,
-            span=span,
-        }
-        return id
-    } else if is_symbol(current_token(p), "{") {
-        open_b := consume_token(p); // "{"
-        close_b := expect_symbol(p, "}");
-        id := new_expr(Expr(ZeroInit{}))
-        get_ctx().spans.exprs[id] = {
-            file_name=get_ctx().current_file,
-            span={
-                start=open_b.span.start,
-                end=close_b.span.end
-            }
-        }
-        panic("not implemented yet")
-        // return id;
-
-    } else if current_token(p).kind == .String {
+    cur := current_token(p)
+    if cur.kind == .Ident && is_symbol(next_token(p), "{") && !p.ignore_struct_lit {
+        return parse_struct_lit(p)
+    } else if is_symbol(cur, "[") {
+        return parse_array_lit(p)
+    } else if is_symbol(cur, "{") {
+        highlight_lines(get_ctx().current_file, cur.span)
+        gala_panic("`{}` zero-initialiser isn't implemented yet.")
+    } else if cur.kind == .String {
         s := consume_token(p);
         id := new_expr(String{s=s.text})
         get_ctx().spans.exprs[id] = {
@@ -424,40 +426,31 @@ parse_compiler_op :: proc(p: ^Parser) -> ExprId {
     }
     return parse_unary(p);
 }
+
 parse_unary :: proc(p: ^Parser) -> ExprId {
-    if is_symbol(current_token(p), "&") {
-        token := consume_token(p); // "&"
-        expr := parse_unary(p);
-        id := new_expr(Expr(Reference{expr}));
+    t := current_token(p)
+    if is_symbol(t, "&") || is_symbol(t, "!") || is_symbol(t, "-") {
+        consume_token(p)
+        expr := parse_compiler_op(p) // so `-cast(T) x` works
+        id: ExprId
+        switch t.text {
+        case "&": id = new_expr(Expr(Reference{expr}))
+        case "!": id = new_expr(Expr(UnNot{expr}))
+        case:     id = new_expr(Expr(UnNegative{expr}))
+        }
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
-            span={token.span.start,get_span(expr).span.end}
+            span={t.span.start, get_span(expr).span.end},
         }
         return id
-    } else if is_symbol(current_token(p), "!") {
-        token := consume_token(p); // "!"
-        expr := parse_unary(p);
-        id := new_expr(Expr(UnNot{expr}));
-        get_ctx().spans.exprs[id] = {
-            file_name=get_ctx().current_file,
-            span={token.span.start,get_span(expr).span.end}
-        }
-        return id
-        } else if is_symbol(current_token(p), "-") {
-            token := consume_token(p); // "-"
-            expr := parse_unary(p);
-            id := new_expr(Expr(UnNegative{expr}));
-            get_ctx().spans.exprs[id] = {
-                file_name=get_ctx().current_file,
-                span={token.span.start, get_span(expr).span.end}
-            }
-            return id
-        } else if is_symbol(current_token(p), "+") {
-            consume_token(p); // "+", unary plus is a no-op
-            return parse_unary(p);
-        }
+    }
+    if is_symbol(t, "+") { // no-op
+        consume_token(p)
+        return parse_compiler_op(p)
+    }
     return parse_postfix(p);
 }
+
 parse_binop :: proc(p: ^Parser, min_prec: int) -> ExprId {
     lhs := parse_compiler_op(p)
 
@@ -493,24 +486,22 @@ parse_binop :: proc(p: ^Parser, min_prec: int) -> ExprId {
 consume_token :: proc(p: ^Parser) -> Token {
     if p.i < len(p.tokens) {
         t := p.tokens[p.i];
-       p.i += 1;
-       return t;
+        p.i += 1;
+        return t;
     } else {
         return Token{kind=.EOF}
     }
 }
 current_token :: proc(p: ^Parser) -> Token {
     if p.i < len(p.tokens) {
-        t := p.tokens[p.i];
-       return t;
-    } else {;
+        return p.tokens[p.i];
+    } else {
         return Token{kind=.EOF}
     }
 }
 next_token :: proc(p: ^Parser) -> Token {
     if p.i + 1 < len(p.tokens) {
-        t := p.tokens[p.i + 1];
-       return t;
+        return p.tokens[p.i + 1];
     } else {
         return Token{kind=.EOF}
     }
@@ -558,7 +549,7 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         return id
     } else if is_kw(current_token(p), .Return) {
         token := consume_token(p); // "return";
-        
+
         if is_symbol(current_token(p), ";") {
             end_semi := consume_token(p); // ";"
             id := new_stmt(Stmt(Return{expr=nil}));
@@ -591,7 +582,7 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         for is_kw(current_token(p), .Else) && is_kw(next_token(p), .If) {
             consume_token(p); // else
             consume_token(p); // if
-            cond := parse_expr(p);
+            cond := parse_condition(p);
             block := parse_block(p);
             append(&alts, AltCon{cond, block})
         }
@@ -626,13 +617,10 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
             highlight_lines(get_ctx().current_file, current_token(p).span);
             gala_panic("Expected \"in\".");
         }
-        in_kw := consume_token(p);
+        consume_token(p); // "in"
 
-        prev := p.ignore_struct_lit
-        p.ignore_struct_lit = true
-        expr := parse_expr(p)
+        expr := parse_condition(p)
         block := parse_block(p);
-        p.ignore_struct_lit = prev;
 
         id := new_stmt(ForLoop{name=ident.text, expr=expr, block=block});
         get_ctx().spans.stmts[id] = {
@@ -642,7 +630,7 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         return id;
     } else if is_kw(current_token(p), .Break) {
         token := consume_token(p); // "break"
-        end_semi := expect_symbol(p, ";");
+        expect_symbol(p, ";");
         id := new_stmt(BreakStmt{});
         get_ctx().spans.stmts[id] = {
             file_name=get_ctx().current_file,
@@ -651,7 +639,7 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
         return id;
     } else if is_kw(current_token(p), .Continue) {
         token := consume_token(p); // "continue"
-        end_semi := expect_symbol(p, ";");
+        expect_symbol(p, ";");
         id := new_stmt(ContinueStmt{});
         get_ctx().spans.stmts[id] = {
             file_name=get_ctx().current_file,
@@ -661,7 +649,7 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
     } else {
         expr := parse_expr(p);
         if is_symbol(current_token(p), "=") {
-            token := consume_token(p); // "="
+            consume_token(p); // "="
             v := parse_expr(p);
             end := expect_symbol(p, ";");
             id := new_stmt(Stmt(Assignment{target=expr, value=v}));
@@ -673,55 +661,20 @@ parse_stmt :: proc(p: ^Parser) -> StmtId {
                 }
             }
             return id;
-        } else if is_symbol(current_token(p), "+=") ||
-                is_symbol(current_token(p), "-=") ||
-                is_symbol(current_token(p), "*=") ||
-                is_symbol(current_token(p), "/=") ||
-                is_symbol(current_token(p), "%=") ||
-                is_symbol(current_token(p), "&=") ||
-                is_symbol(current_token(p), "|=") ||
-                is_symbol(current_token(p), "~=") ||
-                is_symbol(current_token(p), "~=") ||
-                is_symbol(current_token(p), "<<=") ||
-                is_symbol(current_token(p), ">>=") {
-            token := consume_token(p);
-
-            kind : BinopKind;
-            if token.text == "+=" {
-                kind = .Addition;
-            } else if token.text == "-=" {
-                kind = .Subtraction;
-            } else if token.text == "*=" {
-                kind = .Multiply;
-            } else if token.text == "/=" {
-                kind = .Divide;
-            } else if token.text == "%=" {
-                kind = .Modulo;
-            } else if token.text == "&=" {
-                kind = .BitAnd;
-            } else if token.text == "|=" {
-                kind = .BitOr;
-            } else if token.text == "~=" {
-                kind = .BitXor;
-            } else if token.text == "~=" {
-                kind = .BitXor;
-            } else if token.text == "<<=" {
-                kind = .ShiftLeft;
-            } else if token.text == ">>=" {
-                kind = .ShiftRight;
-            }
+        } else if kind, is_compound := compound_op_kind(current_token(p)); is_compound {
+            consume_token(p);
 
             v := parse_expr(p);
             end := expect_symbol(p, ";");
 
-            value := new_expr(Binop{kind=kind,left=expr, right=v})
+            value := new_expr(Binop{kind=kind, left=expr, right=v})
             get_ctx().spans.exprs[value] = {
                 file_name=get_ctx().current_file,
                 span={
                     start=get_span(expr).span.start,
                     end=get_span(v).span.end,
                 }
-            }; // set span for expr
+            };
             id := new_stmt(Stmt(Assignment{
                 target=expr,
                 value=value,
@@ -758,8 +711,7 @@ is_kw :: proc(t: Token, k: Keyword) -> bool {
     return false
 }
 
-// "=>" may be lexed as a single symbol, or as "=" followed by ">" depending on
-// the lexer; accept both so the parser doesn't care.
+// "=>" may be lexed as one symbol, or as "=" followed by ">"; accept both.
 is_fat_arrow :: proc(p: ^Parser) -> bool {
     if is_symbol(current_token(p), "=>") do return true
     return is_symbol(current_token(p), "=") && is_symbol(next_token(p), ">")
@@ -773,6 +725,17 @@ consume_fat_arrow :: proc(p: ^Parser) {
     }
 }
 
+// `a` or `a, b, c` (the names of a `a, b: type` group). The caller expects
+// the ":" afterwards.
+parse_ident_group :: proc(p: ^Parser) -> [dynamic]Token {
+    names := make([dynamic]Token, allocator=get_ctx().allocator)
+    append(&names, expect_ident(p))
+    for is_symbol(current_token(p), ",") {
+        consume_token(p) // ","
+        append(&names, expect_ident(p))
+    }
+    return names
+}
 // fn(args): ret { ... }      block body
 // fn(args): ret => expr      expression body (desugared to `{ return expr; }`)
 parse_fn_lit :: proc(p: ^Parser) -> ExprId {
@@ -781,8 +744,8 @@ parse_fn_lit :: proc(p: ^Parser) -> ExprId {
     lit := FnLit{}
     lit.signature = parse_args_dec(p)
 
-    // the body is a fresh context: a struct literal is fine in here even if
-    // the lambda itself sits inside an `if`/`while` condition.
+    // the body is a fresh context: struct literals are fine in here even if
+    // the lambda sits inside an `if`/`while` condition.
     prev_ignore_struct_lit := p.ignore_struct_lit
     p.ignore_struct_lit = false
     defer p.ignore_struct_lit = prev_ignore_struct_lit
@@ -819,114 +782,87 @@ parse_fn_lit :: proc(p: ^Parser) -> ExprId {
     return id
 }
 
+parse_call :: proc(p: ^Parser, target: ExprId) -> ExprId {
+    consume_token(p) // "("
+    args := make([dynamic]FnCallArg, allocator=get_ctx().allocator)
+    seen_named := false
+    for !is_symbol(current_token(p), ")") {
+        arg := FnCallArg{}
+        // `name = expr`; positional args must all come before these
+        if current_token(p).kind == .Ident && is_symbol(next_token(p), "=") {
+            n := consume_token(p)
+            consume_token(p) // "="
+            arg.name = n.text
+            arg.name_span = n.span
+            seen_named = true
+        } else if seen_named {
+            highlight_lines(get_ctx().current_file, current_token(p).span)
+            gala_panic("Positional arguments can't come after named arguments.")
+        }
+        arg.expr = parse_nested_expr(p)
+        append(&args, arg)
+        if is_symbol(current_token(p), ",") {
+            consume_token(p)
+        } else do break
+    }
+    end := expect_symbol(p, ")")
+    id := new_expr(FnCall{target=target, args=args})
+    get_ctx().spans.exprs[id] = {
+        file_name=get_ctx().current_file,
+        span={start=get_span(target).span.start, end=end.span.end},
+    }
+    return id
+}
+
+// `t[i]`, `t[a:b]`, `t[:b]`, `t[a:]`, `t[:]`
+parse_index_or_slice :: proc(p: ^Parser, t: ExprId) -> ExprId {
+    consume_token(p) // "["
+    slice := TakeSlice{target=t, empty_start=true, empty_end=true}
+    index: ExprId
+    if !is_symbol(current_token(p), ":") {
+        index = parse_nested_expr(p)
+        slice.start = index
+        slice.empty_start = false
+    }
+    is_slice := is_symbol(current_token(p), ":")
+    if is_slice {
+        consume_token(p) // ":"
+        if !is_symbol(current_token(p), "]") {
+            slice.end = parse_nested_expr(p)
+            slice.empty_end = false
+        }
+    }
+    end := expect_symbol(p, "]") // errors on `a[1 2`
+
+    id: ExprId
+    if is_slice {
+        id = new_expr(slice)
+    } else {
+        id = new_expr(Index{target=t, index=index})
+    }
+    get_ctx().spans.exprs[id] = {
+        file_name=get_ctx().current_file,
+        span={start=get_span(t).span.start, end=end.span.end},
+    }
+    return id
+}
+
 parse_postfix :: proc(p: ^Parser) -> ExprId {
     t := parse_primary(p);
     for {
         if is_symbol(current_token(p), "(") {
-            start := consume_token(p); // "("
-            args := make([dynamic]FnCallArg, allocator=get_ctx().allocator);
-            seen_named := false
-            // "until it meets a ")"
-            for !is_symbol(current_token(p), ")") {
-                arg := FnCallArg{}
-                // `name = expr`; positional args must all come before these
-                if current_token(p).kind == .Ident && is_symbol(next_token(p), "=") {
-                    n := consume_token(p) // name
-                    consume_token(p) // "="
-                    arg.name = n.text
-                    arg.name_span = n.span
-                    seen_named = true
-                } else if seen_named {
-                    highlight_lines(get_ctx().current_file, current_token(p).span)
-                    gala_panic("Positional arguments can't come after named arguments.")
-                }
-                arg.expr = parse_expr(p)
-                append(&args, arg)
-                if is_symbol(current_token(p), ",") {
-                    consume_token(p); // ","
-                } else do break
-            }
-            end := expect_symbol(p, ")"); // expect ")"
-
-            id := new_expr(FnCall{target=t, args=args});
-            get_ctx().spans.exprs[id] = {
-                file_name=get_ctx().current_file,
-                span={start=get_span(t).span.start,end=end.span.end}
-            }
-            t = id
+            t = parse_call(p, t)
         } else if is_symbol(current_token(p), ".") {
-            token := consume_token(p); // "."
+            consume_token(p); // "."
             ident := expect_ident(p);
             id := new_expr(FieldAccess{target=t, field=ident.text});
             get_ctx().spans.exprs[id] = {
                 file_name=get_ctx().current_file,
-                span={start=get_span(t).span.start,end=ident.span.end}
+                span={start=get_span(t).span.start, end=ident.span.end}
             }
             t = id
         } else if is_symbol(current_token(p), "[") {
-            start := consume_token(p); // "["
-            // "slice[:..]"
-            if is_symbol(current_token(p), ":") {
-                consume_token(p); // ":"
-                // "slice[:]"
-                if is_symbol(current_token(p), "]") {
-                    end := consume_token(p); // "]"
-                    id := new_expr(TakeSlice{
-                        target=t,
-                        empty_start=true,
-                        empty_end=true});
-                    get_ctx().spans.exprs[id] = {
-                        file_name=get_ctx().current_file,
-                        span={start=get_span(t).span.start,end=end.span.end}
-                    }
-                    t = id
-                } else {
-                    e := parse_expr(p);
-                    end := expect_symbol(p, "]"); // "]"
-                    id := new_expr(TakeSlice{
-                        target=t,
-                        empty_start=true,
-                        end=e});
-                    get_ctx().spans.exprs[id] = {
-                        file_name=get_ctx().current_file,
-                        span={start=get_span(t).span.start,end=end.span.end}
-                    }
-                    t = id
-                }
-            } else {
-                index := parse_expr(p);
-
-                if is_symbol(current_token(p), "]") {
-                    end := expect_symbol(p, "]");
-                    id := new_expr(Index{target=t, index=index});
-                    get_ctx().spans.exprs[id] = {
-                        file_name=get_ctx().current_file,
-                        span={start=get_span(t).span.start,end=end.span.end}
-                    }
-                    t = id
-                } else if is_symbol(current_token(p), ":") {
-                    consume_token(p); // ":"
-                    if is_symbol(current_token(p), "]") {
-                        end := expect_symbol(p, "]");
-                        id := new_expr(TakeSlice{target=t,
-                            start=index, empty_end=true});
-                        get_ctx().spans.exprs[id] = {
-                            file_name=get_ctx().current_file,
-                            span={start=get_span(t).span.start,end=end.span.end}
-                        }
-                        t = id
-                    } else {
-                        end_index := parse_expr(p);
-                        end := expect_symbol(p, "]");
-                        id := new_expr(TakeSlice{target=t, start=index, end=end_index});
-                        get_ctx().spans.exprs[id] = {
-                            file_name=get_ctx().current_file,
-                            span={start=get_span(t).span.start,end=end.span.end}
-                        }
-                        t = id
-                    }
-                }
-            }
+            t = parse_index_or_slice(p, t)
         } else if is_symbol(current_token(p), "^") {
             token := consume_token(p); // "^"
             id := new_expr(Deref{t});
@@ -935,7 +871,6 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
                 span={get_span(t).span.start, token.span.end}
             }
             t = id
-
         } else do break
     }
     return t;
@@ -962,19 +897,19 @@ parse_primary :: proc(p: ^Parser) -> ExprId {
         return id
     } else if is_symbol(current_token(p), "(") {
         token := consume_token(p); // "("
-        e := parse_expr(p);
-        end := expect_symbol(p, ")"); // ")";
-        id := e;
-        get_ctx().spans.exprs[id] = {
+        e := parse_nested_expr(p);
+        end := expect_symbol(p, ")");
+        // the parens' span replaces the inner span (handy for binop spans)
+        get_ctx().spans.exprs[e] = {
             file_name=get_ctx().current_file,
             span={token.span.start, end.span.end}
         }
-        return id
+        return e
     } else if current_token(p).kind == .Len {
         token := consume_token(p);// "len"
-        open := expect_symbol(p, "("); // "("
+        expect_symbol(p, "(");
         e := parse_expr(p);
-        close := expect_symbol(p, ")"); // ")"
+        close := expect_symbol(p, ")");
         id := new_expr(Len{e});
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
@@ -983,9 +918,9 @@ parse_primary :: proc(p: ^Parser) -> ExprId {
         return id
     } else if current_token(p).kind == .Sizeof {
         token := consume_token(p);// "sizeof"
-        open := expect_symbol(p, "("); // "("
+        expect_symbol(p, "(");
         t := parse_type(p);
-        close := expect_symbol(p, ")"); // ")"
+        close := expect_symbol(p, ")");
         id := new_expr(Sizeof{t});
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
@@ -1044,7 +979,7 @@ FnDecArg :: struct{
 }
 FnDecSignature :: struct {
     name: string,
-    args: []FnDecArg, 
+    args: []FnDecArg,
     ret_ty: Maybe(TypeSpecifier),
     is_variadic: bool,
     variadic_ty: TypeSpecifier,
@@ -1068,9 +1003,9 @@ ExternFnDec :: struct {
 // Top-level variable:
 //   counter := 0;
 //   limit: i32 = 100;
-// `type` is nil for the `:=` form (inferred by the type checker). The value
-// can be any expression: codegen runs it in a per-module init function
-// before gala `main`, in declaration order.
+// `type` is nil for the `:=` form (inferred by the type checker). Codegen
+// runs the value in a per-module init function before gala `main`, in
+// declaration order.
 GlobalVarDec :: struct {
     name: string,
     type: Maybe(TypeSpecifier),
@@ -1116,7 +1051,7 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
         token := consume_token(p); // "["
         if is_symbol(current_token(p), "]") { // slice
             consume_token(p); // "]"
-            base_specifier := new(TypeSpecifier, allocator=get_ctx().allocator);
+            base_specifier := new(TypeSpecifier, allocator=get_ctx().allocator)
             base_specifier^ = parse_type(p);
 
             return TypeSpecifier(SliceSpecifier{
@@ -1127,11 +1062,17 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
                 }
             })
         }
-        n := consume_token(p);
-        assert(n.kind == .Number);
+        n := consume_token(p)
+        if n.kind != .Number {
+            highlight_lines(get_ctx().current_file, n.span)
+            gala_panic("Expected a number for the array size.")
+        }
         size, ok := strconv.parse_int(n.text)
-        assert(ok);
-        end := expect_symbol(p, "]");
+        if !ok {
+            highlight_lines(get_ctx().current_file, n.span)
+            gala_panic("Invalid array size.")
+        }
+        expect_symbol(p, "]");
 
         base_specifier := new(TypeSpecifier, allocator=get_ctx().allocator);
         base_specifier^ = parse_type(p);
@@ -1149,7 +1090,7 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
         base_specifier^ = parse_type(p);
         return TypeSpecifier(PointerType{
             ptr=base_specifier,
-            span=token.span,
+            span={start=token.span.start, end=base_span(base_specifier).end},
         })
     } else if current_token(p).kind == .Any {
         t := consume_token(p); // "any"
@@ -1157,9 +1098,6 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
     }
     highlight_lines(get_ctx().current_file, current_token(p).span)
     gala_panic("Invalid token in type specifier.");
-}
-
-ArgSpecs :: struct {
 }
 
 // Unique across the whole compiler run, not per file: codegen binds items
@@ -1173,10 +1111,9 @@ default_thunk_counter: int
 //
 //     fn __default_N(): <param type> { return <expr>; }
 //
-// and the parameter's default becomes the call `__default_N()`, which every
-// later pass treats like any other call. The default is re-evaluated on every
-// call that omits it. `ty` is nil for `name := expr` parameters: the thunk is
-// declared without a return type and the type checker fills it in.
+// and the parameter's default becomes the call `__default_N()`. The default
+// is re-evaluated on every call that omits it. `ty` is nil for `name := expr`
+// parameters: the type checker fills the return type in.
 //
 // The thunk item is queued in p.extra_items; parse_tokens inserts it ahead of
 // the item that contains the signature.
@@ -1211,26 +1148,19 @@ make_default_thunk :: proc(p: ^Parser, ty: Maybe(TypeSpecifier), expr: ExprId) -
     return call
 }
 
-// The written default expression. Inside the parens a struct literal is
-// unambiguous even if the signature sits in an `if`/`while` condition.
-parse_default_expr :: proc(p: ^Parser) -> ExprId {
-    prev_ignore_struct_lit := p.ignore_struct_lit
-    p.ignore_struct_lit = false
-    e := parse_expr(p)
-    p.ignore_struct_lit = prev_ignore_struct_lit
-    return e
-}
-
 // Once a parameter has a default every parameter after it must too, and
 // defaults can't be combined with a variadic tail. `any` parameters can't have
-// a default (the hidden function would have to return `any`).
+// a default (the hidden function would have to return `any`). `a, b: type`
+// groups can't have defaults or be variadic.
 parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
     f := FnDecSignature{};
     args := make([dynamic]FnDecArg, allocator=get_ctx().allocator)
     seen_default := false
     expect_symbol(p, "(");
     for !is_symbol(current_token(p), ")") {
-        name := expect_ident(p);
+        names := parse_ident_group(p)
+        name := names[len(names) - 1]
+        grouped := len(names) > 1
 
         ty: TypeSpecifier
         written: ExprId
@@ -1239,16 +1169,24 @@ parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
 
         if is_symbol(current_token(p), ":=") {
             // `name := expr`
+            if grouped {
+                highlight_lines(get_ctx().current_file, current_token(p).span)
+                gala_panic("Default values can't be used with grouped parameters (`a, b: type`).")
+            }
             consume_token(p); // ":="
             inferred = true
             ty = TypeSpecifier(BaseType{ident="", span=name.span}) // placeholder
-            written = parse_default_expr(p)
+            written = parse_nested_expr(p)
             has_written = true
         } else {
             expect_symbol(p, ":")
             if is_symbol(current_token(p), ".") &&
                 is_symbol(next_token(p), ".") {
-                token := consume_token(p); // "."
+                if grouped {
+                    highlight_lines(get_ctx().current_file, name.span)
+                    gala_panic("A variadic parameter can't be part of a grouped declaration.")
+                }
+                consume_token(p); // "."
                 consume_token(p); // "."
                 t := parse_type(p);
                 f.is_variadic = true;
@@ -1261,13 +1199,17 @@ parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
 
             // `name: type = expr`
             if is_symbol(current_token(p), "=") {
+                if grouped {
+                    highlight_lines(get_ctx().current_file, current_token(p).span)
+                    gala_panic("Default values can't be used with grouped parameters (`a, b: type`).")
+                }
                 consume_token(p); // "="
 
                 if _, is_any := ty.(AnySpecifier); is_any {
                     highlight_lines(get_ctx().current_file, name.span)
                     gala_panic("Default values aren't supported for `any` parameters.")
                 }
-                written = parse_default_expr(p)
+                written = parse_nested_expr(p)
                 has_written = true
             }
         }
@@ -1281,14 +1223,17 @@ parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
             if inferred do default_src = written
             seen_default = true
         } else if seen_default {
-            highlight_lines(get_ctx().current_file, name.span)
+            highlight_lines(get_ctx().current_file, names[0].span)
             gala_panic("A parameter without a default value can't come after one with a default.")
         }
 
-        append(&args, FnDecArg{
-            name=name.text, t=ty, span=name.span,
-            default=default, inferred=inferred, default_src=default_src,
-        })
+        // every name in the group gets the same type
+        for n in names {
+            append(&args, FnDecArg{
+                name=n.text, t=ty, span=n.span,
+                default=default, inferred=inferred, default_src=default_src,
+            })
+        }
         if is_symbol(current_token(p), ",") {
             consume_token(p);
         } else {
@@ -1315,7 +1260,6 @@ parse_fn_signature :: proc(p: ^Parser) -> FnDec {
         gala_panic("Expected \"fn\".");
     }
     name := expect_ident(p);
-          // args
     f := FnDec{};
     f.signature = parse_args_dec(p);
     f.name = name.text;
@@ -1353,15 +1297,17 @@ parse_global_var_dec :: proc(p: ^Parser) -> ItemId {
 parse_module_kw :: proc(p: ^Parser) -> ItemId {
     #partial switch current_token(p).kw {
     case .Struct: {
-        kw := consume_token(p); // "struct"
+        consume_token(p); // "struct"
         name := expect_ident(p);
         expect_symbol(p, "{");
         fields := make([dynamic]StructField, allocator=get_ctx().allocator);
         for !is_symbol(current_token(p), "}") {
-            name := expect_ident(p);
+            names := parse_ident_group(p) // `a, b: type`
             expect_symbol(p, ":");
             ty := parse_type(p);
-            append(&fields, StructField{name=name.text, t=ty, span=name.span});
+            for n in names {
+                append(&fields, StructField{name=n.text, t=ty, span=n.span});
+            }
             if is_symbol(current_token(p), ",") {
                 consume_token(p); // ","
             } else do break
@@ -1393,7 +1339,7 @@ parse_module_kw :: proc(p: ^Parser) -> ItemId {
         return id
     }
     case .Extern: {
-        token := consume_token(p); // "extern"
+        consume_token(p); // "extern"
         f := parse_fn_signature(p);
         ef := ExternFnDec{}
         ef.name = f.name;
@@ -1401,7 +1347,7 @@ parse_module_kw :: proc(p: ^Parser) -> ItemId {
         ef.ret_ty = f.ret_ty
         ef.signature = f.signature
         ef.span = f.span
-        
+
         expect_symbol(p, ";");
 
         id := new_item(Item(ef))
@@ -1429,9 +1375,10 @@ parse_module_kw :: proc(p: ^Parser) -> ItemId {
         get_ctx().current_file = current_name
         return id;
     }
-    case: panic("impl");
+    case:
+        highlight_lines(get_ctx().current_file, current_token(p).span)
+        gala_panic("Unexpected keyword at top level.")
     }
-    panic("impl");
 }
 expect_symbol :: proc(p: ^Parser, str: string) -> Token {
     c := current_token(p);
@@ -1482,12 +1429,13 @@ parse_tokens :: proc(file_name: string, tokens: []Token) -> AST {
         }
         case:
             if is_symbol(current_token(p), "@") {
-                start := consume_token(p);
+                consume_token(p); // "@"
                 if current_token(p).kind == .Link {
-                    link := consume_token(p);
+                    consume_token(p); // "link"
                     expect_symbol(p, "(");
                     if current_token(p).kind != .String {
-                        panic("epected string for link path");
+                        highlight_lines(get_ctx().current_file, current_token(p).span)
+                        gala_panic("Expected a string for the @link path.")
                     }
                     s := consume_token(p);
                     expect_symbol(p, ")");
@@ -1499,7 +1447,7 @@ parse_tokens :: proc(file_name: string, tokens: []Token) -> AST {
                 }
             } else {
                 highlight_lines(get_ctx().current_file, current_token(p).span);
-                panic("impl");
+                gala_panic("Expected a declaration, import or directive.")
             }
         }
 
