@@ -1,6 +1,6 @@
-import "core.gala";
-import "net.gala";
-import "mem.gala";
+import "core/core.gala";
+import "core/net.gala";
+import "core/mem.gala";
 
 fn printlen(data: []byte) {
     println("Len data:", len(data));

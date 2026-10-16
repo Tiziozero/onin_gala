@@ -3,8 +3,8 @@
 // Memory helpers and allocators (heap, arena, pool, tracking).
 // An Allocator is a callback plus a data pointer, Odin style.
 
-import "core.gala";
-import "cfunctions.gala";
+import "./core.gala";
+import "./cfunctions.gala";
 
 // ============================================================
 // Constants and raw helpers

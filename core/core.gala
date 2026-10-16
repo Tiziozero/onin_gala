@@ -9,7 +9,7 @@
 
 @link("/lib/x86_64-linux-gnu/libc.so.6")
 @link("/lib/x86_64-linux-gnu/libm.so.6")
-import "cfunctions.gala";
+import "./cfunctions.gala";
 
 
 // ============================================================
