@@ -179,20 +179,26 @@ Cli_Args :: struct {
     extra_libs:   [dynamic]string, // paths passed via -l/--link, e.g. "-l libfoo.so"
 }
 
-// Program names are restricted to something `ld -o` and the shell will
-// both be happy with: letters, digits (not leading), underscore, and
-// dash (not leading).
-is_legal_program_name :: proc(n: string) -> bool {
-    if len(n) == 0 {
-        return false
+// Validates the file name of `-o <path>`; the directory part is free-form.
+// No leading '-' (option confusion in the tools we spawn), no leading '.'
+// or digit; '.' and '-' are fine after the first character.
+is_legal_program_name :: proc(path: string) -> bool {
+    base := path
+    for i := len(path) - 1; i >= 0; i -= 1 {
+        if path[i] == '/' {
+            base = path[i+1:]
+            break
+        }
     }
-    for c, i in n {
+    if len(base) == 0 do return false // "" or a trailing '/'
+
+    for c, i in base {
         switch {
         case c >= 'a' && c <= 'z':
         case c >= 'A' && c <= 'Z':
         case c == '_':
-        case c == '-' && i > 0: // allow dash, but not as first char
-        case c >= '0' && c <= '9' && i > 0: // digits ok, just not first char
+        case (c == '-' || c == '.') && i > 0:
+        case c >= '0' && c <= '9' && i > 0:
         case:
             return false
         }

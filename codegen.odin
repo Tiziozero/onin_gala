@@ -483,7 +483,7 @@ cg_compound_assign :: proc(c: ^CGCtx, s: Assignment) {
     rhs, returns := reduce_expr_to_single_value(c, cg_expr(c, bin.right))
     assert(returns)
 
-    result := new_tmp(c)
+    result := ""
     if is_pointer(tid) {
         if bin.kind != .Addition && bin.kind != .Subtraction {
             gala_panic("unsupported pointer compound assignment")
@@ -495,9 +495,12 @@ cg_compound_assign :: proc(c: ^CGCtx, s: Assignment) {
         arith := "add" if bin.kind == .Addition else "sub"
         sum := new_tmp(c)
         cwritefln(c, "\t%s = %s i64 %s, %s", sum, arith, ci, ri)
+        result = new_tmp(c)
         cwritefln(c, "\t%s = inttoptr i64 %s to ptr", result, sum)
     } else {
         op := binop_llvm_op(bin, operand_class(tid))
+
+        result = new_tmp(c)
         cwritefln(c, "\t%s = %s %s %s, %s", result, op, ty_str, cur, rhs)
     }
     cwritefln(c, "\tstore %s %s, ptr %s", ty_str, result, ptr)

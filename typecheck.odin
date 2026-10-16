@@ -490,6 +490,10 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             highlight_lines(get_span(e.target));
             gala_panic("Can't get index:", tts(target_ty))
         }
+        if get(ty).kind == .Void || get(ty).kind == .Any {
+            highlight_lines(get_span(e.target));
+            gala_panic("Can't index with base:", tts(target_ty))
+        }
 
         get_ctx().expr_types[id] = ty
     }
