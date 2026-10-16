@@ -699,15 +699,33 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     case Number: {
         ty_id := expr_ty(id)
         if is_float(ty_id) {
+            // `1.5` is a real float literal; `5`, `0xff`, `0b101` are integer
+            // literals that were converted to a float type.
+            is_real := is_float_literal(e.text)
+            int_val: i64
+            if !is_real {
+                ok: bool
+                int_val, ok = parse_integer_literal(e.text)
+                assert(ok)
+            }
+
             #partial switch get_type(ty_id).kind {
             case .Flt64: {
-                f, ok := strconv.parse_f64(e.text)
-                assert(ok)
+                f := f64(int_val)
+                if is_real {
+                    ok: bool
+                    f, ok = strconv.parse_f64(e.text)
+                    assert(ok)
+                }
                 return {kind=.Number, v=llvm_double_const(f)}
             }
             case .Flt32: {
-                f, ok := strconv.parse_f32(e.text)
-                assert(ok)
+                f := f32(int_val)
+                if is_real {
+                    ok: bool
+                    f, ok = strconv.parse_f32(e.text)
+                    assert(ok)
+                }
                 return {kind=.Number, v=llvm_float_const(f)}
             }
             case:

@@ -330,7 +330,8 @@ parse_array_lit :: proc(p: ^Parser) -> ExprId {
         highlight_lines(get_ctx().current_file, n.span)
         gala_panic("Expected a number for the fixed size array size.")
     }
-    size, ok := strconv.parse_int(n.text)
+    size64, ok := parse_integer_literal(n.text)
+    size := int(size64)
     if !ok {
         highlight_lines(get_ctx().current_file, n.span)
         gala_panic("Invalid array size.")
@@ -1067,7 +1068,8 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
             highlight_lines(get_ctx().current_file, n.span)
             gala_panic("Expected a number for the array size.")
         }
-        size, ok := strconv.parse_int(n.text)
+        size64, ok := parse_integer_literal(n.text)
+        size := int(size64)
         if !ok {
             highlight_lines(get_ctx().current_file, n.span)
             gala_panic("Invalid array size.")

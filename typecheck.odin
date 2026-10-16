@@ -592,12 +592,10 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         get_ctx().expr_types[id] = t
     }
     case Number: {
-        // check if it's an untyped float or int
-        for c in e.text {
-            if c == '.' {
-                get_ctx().expr_types[id] = intern_type(Type{kind=.UntypedFloat})
-                return
-            }
+        // untyped float if it has a '.', otherwise untyped int (decimal, 0x.., 0b..)
+        if is_float_literal(e.text) {
+            get_ctx().expr_types[id] = intern_type(Type{kind=.UntypedFloat})
+            return
         }
         get_ctx().expr_types[id] = intern_type(Type{kind=.UntypedInteger})
     }
@@ -654,7 +652,11 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
                 gala_panicf("can't perform a binop on these two expressions. (%s)", tts(ty));
             }
             if e.kind == .Modulo {
-                if !is_int_kind(get(ty).kind) {
+                k := get(ty).kind
+                // untyped integers (`7 % 3`) are fine; they get a concrete
+                // integer type later when they're propagated into a slot
+                if !is_int_kind(k) && k != .UntypedInteger {
+                    debugln(tts(ty))
                     highlight_lines(get_span(id))
                     gala_panic("can't take modulo of non-integer numbers.")
                 }
@@ -1184,6 +1186,10 @@ propagate_type :: proc(ty: TypeId, expr: ExprId) {
         t, ok := get_ctx().expr_types[expr];
         if ok {
             if !is_untyped(t) do return // skip if it's been assigned a type
+        }
+        if e.kind == .Modulo && !is_int_kind(get(ty).kind) && !is_untyped(ty) {
+            highlight_lines(get_span(expr))
+            gala_panicf("can't take modulo of non-integer numbers (result used as %s).", tts(ty))
         }
         // else propagate and set self
         propagate_type(ty, e.left)

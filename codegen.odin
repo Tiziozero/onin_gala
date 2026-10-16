@@ -5,7 +5,6 @@ import "core:os"
 import "core:io"
 import "core:fmt"
 import "core:strings"
-import "core:strconv"
 import "core:mem"
 import "core:path/filepath"
 
@@ -13,25 +12,36 @@ import "core:path/filepath"
 // through memory (see cg_fn_header / the Return statement).
 SRET_PARAM :: "%.sret"
 
-parse_integer_literal :: proc(s: string) -> (i64, bool) {
-    if len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
-        if len(s) == 2 {
-            return 0, false
-        }
-
-        value: i64 = 0
-        for i in 2 ..< len(s) {
-            d := hex_digit_val(s[i])
-            if d < 0 {
-                return 0, false
-            }
-            value = value * 16 + i64(d)
-        }
-        return value, true
+// `5`, `0xff`, `0b101`
+is_float_literal :: proc(text: string) -> bool {
+    for c in text {
+        if c == '.' do return true
     }
+    return false
+}
 
-    v, ok := strconv.parse_int(s)
-    return cast(i64)v, ok
+// "123", "0xff", "0XFF", "0b101". Hex/binary use the full 64 bits
+// (0xFFFFFFFFFFFFFFFF == -1); decimal must fit in i64.
+parse_integer_literal :: proc(text: string) -> (n: i64, ok: bool) {
+    base: u64 = 10
+    digits := text
+    if len(text) > 2 && text[0] == '0' {
+        switch text[1] {
+        case 'x', 'X': base = 16; digits = text[2:]
+        case 'b', 'B': base = 2;  digits = text[2:]
+        }
+    }
+    if len(digits) == 0 do return 0, false
+
+    limit := max(u64) if base != 10 else u64(max(i64))
+    v: u64
+    for ch in digits {
+        d := hex_digit_val(byte(ch))
+        if d < 0 || u64(d) >= base do return 0, false
+        if v > (limit - u64(d)) / base do return 0, false // overflow
+        v = v * base + u64(d)
+    }
+    return i64(v), true
 }
 
 CGResKind :: enum {Invalid, Address, Value, Binop, Number, Struct, None, Place}
