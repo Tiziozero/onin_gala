@@ -25,7 +25,7 @@ fn pair_arr(a: $T): [2]T {
     return r;
 }
 // never instantiated, so its body is never checked (a type error here must NOT break the build)
-fn never_called(a: $T): T { return a + "x"; }
+fn never_called(a: $T): T { return a + 67; }
 
 fn user_a(): i64 { return id(1); }
 fn user_b(): i64 { return id(2) + user_a(); }

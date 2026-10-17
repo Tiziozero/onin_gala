@@ -651,6 +651,9 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
 is_type_specifier_generic :: proc(t: TypeSpecifier) -> bool {
     #partial switch k in t {
         case GenericSpecifier: return true
+        case PointerType: {
+            if is_type_specifier_generic(k.ptr^) do return true
+        }
         case FnSpecifier: {
             for a in k.args {
                 if is_type_specifier_generic(a.t) do return true
