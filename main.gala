@@ -1,4 +1,5 @@
 import "core/core.gala";
+
 struct abc {
     x, y: f32,
 }
@@ -16,11 +17,46 @@ fn g(a: $T, b: T): T {
 fn a_dot_b(a: $A, b: $B): f32 {
     return a.x * b.x + a.y * b.y;
 }
+import "core/mem.gala";
+fn filter(m: []$T, ff: fn(a: T): bool): []T {
+    data := make_slice(cast(u64)len(m), cast(T)0);
+    l := len(m); i := 0; c := 0;
+    while i < len(m) {
+        a := m[i];
+        if !ff(a) { l -= 1; } else { data[c] = m[i]; c += 1; }
+        i += 1;
+    }
+    return data[:l];
+}
+
+struct VoidSlice { data: rawptr, siize: u64 }
+
+fn make_slice(size: u64, m: $T): []T {
+    data := alloc(size*sizeof(T));
+    return transmute([]T)(VoidSlice{data, size});
+}
+// Allocates a T, copies `v` into it. Returns NULL (as ^T) on failure.
+fn new(v: $T, a: Allocator = base_allocator): ^T {
+    size := cast(u64)sizeof(T);
+    raw := alloc(size, align_for_size(size), a);
+    p := transmute(^T)raw;
+    if raw != NULL {
+        p^ = v;
+    }
+    return p;
+}
 fn main() {
     f(("Hello")[:], fn(i: byte): byte => i - 10);
     data := [5]f32{1.0, 1.4, 14.4, 12.5, 37.2};
     f(data[:], fn(i: f32): f32 => i - 10);
     g(1, 2);
     println("a.b:", a_dot_b(v2{1, 2}, abc{3, 4}));
+    dirty := [10]f32{1.4, 2.5, -1.3, 4.4, 6.23, -4.6, -10.12, 5.3, -1.0, 7.4};
+    filtered := filter(dirty[:], fn(i: f32): bool => i > 0);
+    println("len filtered:", len(filtered));
+    for i in filtered {
+        println(i);
+    }
+    new(v2{1, 2});
 }
 

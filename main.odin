@@ -412,6 +412,19 @@ main :: proc() { // odins context is passed down, not up, or some shi
 
     link_executable(ctx, cli.extra_libs[:])
 
+    debugln("modules:       ", len(get_ctx().mods));
+    debugln("items:         ", len(get_ctx().items));
+    debugln("stmts:         ", len(get_ctx().stmts));
+    debugln("exprs:         ", len(get_ctx().exprs));
+    debugln("objects:       ", len(get_ctx().objs));
+    debugln("types:         ", len(get_ctx().types));
+    dump_type_stats :: proc() {
+        counts: map[TypeKind]int
+        defer delete(counts)
+        for t in get_ctx().types do counts[t.kind] += 1
+        for k, n in counts do fmt.println(k, n)
+    }
+    dump_type_stats()
     destroy_context(ctx, heap);
     free_all(context.temp_allocator);
     debugln("Finished compiling");
