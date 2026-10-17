@@ -142,6 +142,7 @@ PointerType :: struct {ptr:^TypeSpecifier, span: Span };
 FixedArreySpecifier :: struct { size: int, base: ^TypeSpecifier, span: Span };
 SliceSpecifier :: struct {base : ^TypeSpecifier, span: Span }
 AnySpecifier :: struct { span: Span }
+GenericSpecifier :: struct { name: string, span: Span }
 FnSpecifier :: struct { span: Span, using signature: ^FnDecSignature }
 TypeSpecifier :: union {
     BaseType,
@@ -150,6 +151,7 @@ TypeSpecifier :: union {
     SliceSpecifier,
     AnySpecifier,
     FnSpecifier,
+    GenericSpecifier,
 }
 VarDec :: struct {
     name: string,
@@ -196,6 +198,63 @@ Parser::struct{
     // item (see make_default_thunk). parse_tokens moves them into the item
     // list, ahead of the item that caused them.
     extra_items: [dynamic]ItemId,
+}
+Block :: struct {
+    stmts: []StmtId,
+}
+
+FnDecArg :: struct{
+    name: string,
+    t: TypeSpecifier,
+    span: Span,
+    default: Maybe(ExprId),
+    inferred: bool,
+    default_src: Maybe(ExprId),
+}
+FnDecSignature :: struct {
+    name: string,
+    args: []FnDecArg,
+    ret_ty: Maybe(TypeSpecifier),
+    is_variadic: bool,
+    variadic_ty: TypeSpecifier,
+    variadic_arg_name: string,
+    variadic_arg_span: Span,
+}
+FnDec :: struct {
+    using signature: FnDecSignature,
+    span: Span,
+    block: Block,
+}
+StructField :: struct{name: string, t: TypeSpecifier, span: Span}
+StructDec :: struct {
+    name: string,
+    fields: []StructField,
+}
+ExternFnDec :: struct {
+    using signature: FnDecSignature,
+    span: Span,
+}
+// Top-level variable:
+//   counter := 0;
+//   limit: i32 = 100;
+// `type` is nil for the `:=` form (inferred by the type checker). Codegen
+// runs the value in a per-module init function before gala `main`, in
+// declaration order.
+GlobalVarDec :: struct {
+    name: string,
+    type: Maybe(TypeSpecifier),
+    value: ExprId,
+}
+
+Import :: struct {
+    fname, alias: string,
+}
+Item :: union {
+    Import,
+    StructDec,
+    FnDec,
+    ExternFnDec,
+    GlobalVarDec,
 }
 op_kind :: proc(t: Token) -> (kind: BinopKind, ok: bool) {
     if t.kind != .Symbol do return {}, false
@@ -512,9 +571,6 @@ prev_token_span :: proc(p: ^Parser) -> Span {
         return p.tokens[p.i - 1].span
     }
     return Span{}
-}
-Block :: struct {
-    stmts: []StmtId,
 }
 is_symbol :: proc(t: Token, s: string) -> bool {
     if t.kind == .Symbol && t.text == s { return true }
@@ -969,59 +1025,6 @@ parse_block :: proc(p: ^Parser) -> Block{
 // function and `default` is a call to it (see make_default_thunk). For the
 // inferred form `inferred` is set, `t` is a placeholder and `default_src` is
 // the written expression, so the type checker can infer the type from it.
-FnDecArg :: struct{
-    name: string,
-    t: TypeSpecifier,
-    span: Span,
-    default: Maybe(ExprId),
-    inferred: bool,
-    default_src: Maybe(ExprId),
-}
-FnDecSignature :: struct {
-    name: string,
-    args: []FnDecArg,
-    ret_ty: Maybe(TypeSpecifier),
-    is_variadic: bool,
-    variadic_ty: TypeSpecifier,
-    variadic_arg_name: string,
-    variadic_arg_span: Span,
-}
-FnDec :: struct {
-    using signature: FnDecSignature,
-    span: Span,
-    block: Block,
-}
-StructField :: struct{name: string, t: TypeSpecifier, span: Span}
-StructDec :: struct {
-    name: string,
-    fields: []StructField,
-}
-ExternFnDec :: struct {
-    using signature: FnDecSignature,
-    span: Span,
-}
-// Top-level variable:
-//   counter := 0;
-//   limit: i32 = 100;
-// `type` is nil for the `:=` form (inferred by the type checker). Codegen
-// runs the value in a per-module init function before gala `main`, in
-// declaration order.
-GlobalVarDec :: struct {
-    name: string,
-    type: Maybe(TypeSpecifier),
-    value: ExprId,
-}
-
-Import :: struct {
-    fname, alias: string,
-}
-Item :: union {
-    Import,
-    StructDec,
-    FnDec,
-    ExternFnDec,
-    GlobalVarDec,
-}
 
 base_span :: proc(t: ^TypeSpecifier) -> Span {
     switch t in t {
@@ -1031,10 +1034,15 @@ base_span :: proc(t: ^TypeSpecifier) -> Span {
     case FixedArreySpecifier: return t.span;
     case AnySpecifier: return t.span;
     case FnSpecifier: return t.span;
+    case GenericSpecifier: return t.span;
     }
     panic("impl")
 }
 parse_type :: proc(p: ^Parser) -> TypeSpecifier {
+    if is_symbol(current_token(p), "$") {
+        n := expect_ident(p);
+        return TypeSpecifier(GenericSpecifier{n.text, n.span});
+    }
     if current_token(p).kind == .Ident {
         token := consume_token(p)
         return TypeSpecifier(BaseType({token.text, token.span}));
