@@ -1,0 +1,177 @@
+import "core/core.gala";
+
+// Passes iff there are no FAIL lines and it prints "all passed" (a failing case prints "FAIL: <name>").
+// `$T` declares a generic once per signature, plain `T` uses it.
+
+fn check(name: string, ok: bool) {
+    if !ok {
+        println("FAIL:", name);
+    }
+}
+
+struct Pair { a: i32, b: i32 }
+
+fn id(a: $T): T { return a; }
+fn add(a: $T, b: T): T { return a + b; }
+fn sub(a: $T, b: T): T { return a - b; }
+fn max2(a: $T, b: T): T {
+    if a > b { return a; }
+    return b;
+}
+fn modulo(a: $T, b: T): T { return a % b; }
+fn zero_of(a: $T): T {
+    z : T = cast(T)0;
+    return z;
+}
+fn size_of_t(a: $T): i64 { return sizeof(T); }
+fn tag(a: $T): i64 { return sizeof(T); }
+fn swap(a: ^$T, b: ^T) {
+    tmp : T = a^;
+    a^ = b^;
+    b^ = tmp;
+}
+fn sum(a: []$T): T {
+    total : T = cast(T)0;
+    for i in a { total = total + i; }
+    return total;
+}
+fn first(a: []$T): T { return a[0]; }
+fn tail(a: []$T): []T { return a[1:]; }
+fn apply(a: $T, f: fn(x: T): T): T { return f(a); }
+fn twice(a: $T, f: fn(x: T): T): T { return f(f(a)); }
+fn add3(a: $T, b: T, c: T): T { return add(add(a, b), c); }
+fn id_twice(a: $T): T { return id(id(a)); }
+fn noop_gen(a: $T) { }
+fn fact(n: $T): T {
+    if n <= 1 { return n; }
+    return n * fact(n - 1);
+}
+fn is_even(n: $T): bool {
+    if n == 0 { return true; }
+    return is_odd(n - 1);
+}
+fn is_odd(n: $T): bool {
+    if n == 0 { return false; }
+    return is_even(n - 1);
+}
+fn plain(a: i32): i32 { return id(a); }
+
+fn main() {
+    // identity over many types (untyped literals default to i64 / f64)
+    check("id int literal", id(41) == 41);
+    check("id i32", id(cast(i32)7) == cast(i32)7);
+    check("id f64", id(2.5) == 2.5);
+    check("id f32", id(cast(f32)1.5) == cast(f32)1.5);
+    check("id byte", id(cast(byte)200) == cast(byte)200);
+    check("id bool", id(true) == true);
+    check("id string", len(id("hello")) == 5);
+    x := 9;
+    p := &x;
+    q := id(p);
+    check("id pointer", q^ == 9);
+    pr := id(Pair{1, 2});
+    check("id struct", pr.a == 1 && pr.b == 2);
+    check("id struct field direct", id(Pair{3, 4}).b == 4);
+
+    // two params sharing T
+    a32 : i32 = 10;
+    b32 : i32 = 4;
+    check("add i64", add(1, 2) == 3);
+    check("add f64", add(1.5, 2.25) == 3.75);
+    check("add i32", add(a32, b32) == 14);
+    check("sub i32", sub(a32, b32) == 6);
+    check("max2 i32", max2(a32, b32) == 10);
+    check("max2 f64", max2(1.5, 0.5) == 1.5);
+    check("modulo i32", modulo(a32, b32) == 2);
+    check("modulo i64", modulo(17, 5) == 2);
+
+    // T used inside the body
+    check("zero_of i32", zero_of(a32) == 0);
+    check("zero_of f64", zero_of(3.5) == 0.0);
+    check("sizeof i32", size_of_t(a32) == 4);
+    check("sizeof i64", size_of_t(1) == 8);
+    check("sizeof f64", size_of_t(1.0) == 8);
+    check("sizeof byte", size_of_t(cast(byte)1) == 1);
+
+    // pointers
+    s1 := 1;
+    s2 := 2;
+    swap(&s1, &s2);
+    check("swap i64", s1 == 2 && s2 == 1);
+    f1 := 1.5;
+    f2 := 2.5;
+    swap(&f1, &f2);
+    check("swap f64", f1 == 2.5 && f2 == 1.5);
+    pp1 := Pair{1, 2};
+    pp2 := Pair{3, 4};
+    swap(&pp1, &pp2);
+    check("swap struct", pp1.a == 3 && pp2.a == 1);
+
+    // slices
+    ints := [4]i64{1, 2, 3, 4};
+    fl := [3]f32{1.5, 2.5, 3.0};
+    check("sum i64", sum(ints[:]) == 10);
+    check("sum f32", sum(fl[:]) == 7.0);
+    check("sum empty", sum(ints[0:0]) == 0);
+    check("first", first(ints[:]) == 1);
+    check("first of string", first(("Hello")[:]) == cast(byte)72);
+    t := tail(ints[:]);
+    check("tail len", len(t) == 3);
+    check("tail first", t[0] == 2);
+    check("tail of tail", first(tail(tail(ints[:]))) == 3);
+
+    // function-typed params
+    check("apply", apply(5, fn(x: i64): i64 => x * 2) == 10);
+    check("apply f64", apply(1.5, fn(x: f64): f64 => x + 1.0) == 2.5);
+    check("twice", twice(cast(i32)3, fn(x: i32): i32 => x * x) == cast(i32)81);
+
+    // generics calling generics, nesting
+    check("add3", add3(1, 2, 3) == 6);
+    check("add3 f64", add3(0.5, 0.25, 0.25) == 1.0);
+    check("id_twice", id_twice(cast(i32)8) == cast(i32)8);
+    check("nested call", id(id(id(5))) == 5);
+    check("generic as generic arg", add(id(1), id(2)) == 3);
+
+    // recursion (self and mutual), one version per type
+    check("fact i64", fact(5) == 120);
+    check("fact i32", fact(cast(i32)6) == cast(i32)720);
+    check("fact f64", fact(4.0) == 24.0);
+    check("is_even", is_even(10) && !is_even(7));
+    check("is_odd i32", is_odd(cast(i32)7));
+
+    // pointer / slice / pointer-pointer / struct must all get distinct versions
+    n32 : i32 = 1;
+    pn := &n32;
+    arr3 := [3]i32{1, 2, 3};
+    arr4 := [4]i32{1, 2, 3, 4};
+    check("tag i32", tag(n32) == 4);
+    check("tag ptr", tag(&n32) == 8);
+    check("tag ptr ptr", tag(&pn) == 8);
+    check("tag slice 3", tag(arr3[:]) == 16);
+    check("tag slice 4", tag(arr4[:]) == 16);
+    check("tag struct", tag(pr) == 8);
+
+    // call sites: loops, conditions, indices, plain wrappers, void generics
+    total := 0;
+    k := 0;
+    while k < 100 {
+        total = total + id(k);
+        k = k + 1;
+    }
+    check("generic in while", total == 4950);
+    acc := 0;
+    for v in ints[:] {
+        acc = acc + id(v);
+    }
+    check("generic in for", acc == 10);
+    hit := false;
+    if id(true) { hit = true; }
+    check("generic in if", hit);
+    check("generic as index", ints[id(2)] == 3);
+    check("via plain fn", plain(3) == 3);
+    noop_gen(1);
+    noop_gen(2.5);
+    noop_gen(pr);
+
+    println("all passed");
+}

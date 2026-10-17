@@ -4,8 +4,16 @@
   ./build.py                 build galac, compile main.gala, run it
   ./build.py build           build galac, compile main.gala
   ./build.py memcheck        like run, but under valgrind
-  ./build.py test [filter]   compile + run every tests/test_*.gala
+  ./build.py test [filter]   run every tests/test_*.gala, then every negative case
+  ./build.py neg [filter]    only the negative (must-fail) cases
   --no-build                 skip the `odin build` step
+
+Negative cases live in tests/neg_*.txt, many programs per file:
+
+  //### case_name | text the compiler error must contain (optional)
+  <gala program>
+
+Each one must fail to compile (and print that text, if given).
 """
 import argparse
 import glob
@@ -19,7 +27,9 @@ MAIN_SRC = "main.gala"
 PROGRAM = "program"
 TEST_DIR = "tests"
 TEST_BIN = os.path.join(TEST_DIR, "main")  # "main" is gitignored
+NEG_SRC = os.path.join(TEST_DIR, ".neg_case.gala")  # written next to the tests so imports resolve the same way
 TEST_TIMEOUT = 10  # seconds; catches infinite loops
+NEG_TIMEOUT = 20   # seconds; catches a compiler that never terminates
 
 ENV = os.environ.copy()
 ENV["LD_LIBRARY_PATH"] = ".:/" + (":" + ENV["LD_LIBRARY_PATH"] if "LD_LIBRARY_PATH" in ENV else "")
@@ -68,11 +78,11 @@ def build_galac():
     return code == 0
 
 
-def compile_gala(src, out):
+def compile_gala(src, out, timeout=None):
     """Compile src to out. Removes a stale binary first so a failed compile can't run old code."""
     if os.path.exists(out):
         os.remove(out)
-    return run_captured([GALAC, "-o", out, src])
+    return run_captured([GALAC, "-o", out, src], timeout=timeout)
 
 
 # ---------- run / memcheck ----------
@@ -104,7 +114,7 @@ def memcheck():
     return result
 
 
-# ---------- tests ----------
+# ---------- positive tests ----------
 
 def judge(code, output):
     """Return (passed, reason). The test programs exit 0 even when checks fail,
@@ -121,13 +131,11 @@ def judge(code, output):
     return True, ""
 
 
-def run_tests(name_filter):
+def run_positive(name_filter):
+    """Returns (number run, names that failed)."""
     files = sorted(glob.glob(os.path.join(TEST_DIR, "test_*.gala")))
     if name_filter:
         files = [f for f in files if name_filter in os.path.basename(f)]
-    if not files:
-        print("no tests found")
-        return False
 
     failed = []
     for src in files:
@@ -150,9 +158,91 @@ def run_tests(name_filter):
         fails = [l for l in output.splitlines() if l.startswith("FAIL:")]
         print(indent("\n".join(fails) if fails else output))
         failed.append(name)
+    return len(files), failed
 
+
+# ---------- negative tests ----------
+
+def load_neg_cases():
+    """Split tests/neg_*.txt into [{name, expect, source}]."""
+    cases = []
+    for path in sorted(glob.glob(os.path.join(TEST_DIR, "neg_*.txt"))):
+        group = os.path.basename(path)[len("neg_"):-len(".txt")]
+        cur = None
+        with open(path) as f:
+            for line in f.read().splitlines():
+                if line.startswith("//### "):
+                    name, _, expect = line[len("//### "):].partition("|")
+                    cur = {"name": f"{group}/{name.strip()}", "expect": expect.strip(), "lines": []}
+                    cases.append(cur)
+                elif cur is not None:
+                    cur["lines"].append(line)
+    for c in cases:
+        c["source"] = "\n".join(c["lines"]) + "\n"
+    return cases
+
+
+def judge_neg(code, output, expect):
+    """Return (passed, reason). The compiler must reject the program."""
+    if code is None:
+        return False, f"compiler hung (no exit after {NEG_TIMEOUT}s)"
+    if code == 0:
+        return False, "compiled, but should have failed"
+    # a signal (negative code) with no diagnostic printed means a compiler crash,
+    # not a clean rejection
+    if code < 0 and not output.strip():
+        return False, f"compiler crashed (signal {-code}) without an error message"
+    if expect and expect.lower() not in output.lower():
+        return False, f"wrong error (wanted \"{expect}\")"
+    return True, ""
+
+
+def run_negative(name_filter):
+    """Returns (number run, names that failed)."""
+    cases = load_neg_cases()
+    if name_filter:
+        cases = [c for c in cases if name_filter in c["name"]]
+
+    failed = []
+    for c in cases:
+        with open(NEG_SRC, "w") as f:
+            f.write(c["source"])
+        try:
+            code, output = compile_gala(NEG_SRC, TEST_BIN, timeout=NEG_TIMEOUT)
+        finally:
+            os.remove(NEG_SRC)
+
+        passed, reason = judge_neg(code, output, c["expect"])
+        if passed:
+            print(f"{green('ok')}   {c['name']} {dim('(rejected)')}")
+            continue
+
+        print(f"{red('FAIL')} {c['name']}: {reason}")
+        tail = "\n".join(output.rstrip().splitlines()[-4:])
+        if tail:
+            print(indent(tail))
+        failed.append(c["name"])
+    return len(cases), failed
+
+
+def run_tests(name_filter, positive=True, negative=True):
+    total, failed = 0, []
+    if positive:
+        n, f = run_positive(name_filter)
+        total += n
+        failed += f
+    if negative:
+        if positive:
+            print(dim("-- negative cases --"))
+        n, f = run_negative(name_filter)
+        total += n
+        failed += f
+
+    if total == 0:
+        print("no tests found")
+        return False
     print()
-    print(f"{len(files) - len(failed)}/{len(files)} passed")
+    print(f"{total - len(failed)}/{total} passed")
     return not failed
 
 
@@ -161,9 +251,9 @@ def run_tests(name_filter):
 def main():
     ap = argparse.ArgumentParser(description="Build and run gala programs.")
     ap.add_argument("command", nargs="?", default="run",
-                    choices=["run", "build", "memcheck", "test"])
+                    choices=["run", "build", "memcheck", "test", "neg"])
     ap.add_argument("filter", nargs="?", default="",
-                    help="for `test`: only run files whose name contains this")
+                    help="for `test`/`neg`: only run cases whose name contains this")
     ap.add_argument("--no-build", action="store_true",
                     help="skip the `odin build` step")
     args = ap.parse_args()
@@ -173,6 +263,8 @@ def main():
 
     if args.command == "test":
         sys.exit(0 if run_tests(args.filter) else 1)
+    if args.command == "neg":
+        sys.exit(0 if run_tests(args.filter, positive=False) else 1)
 
     code, output = compile_gala(MAIN_SRC, PROGRAM)
     if output.strip():

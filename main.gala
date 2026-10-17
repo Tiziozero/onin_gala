@@ -1,6 +1,5 @@
 import "core/core.gala";
 struct abc {
-    a, b: $T
 }
 fn f(a: []$T, b: fn(i: T): T) {
     for i in a {

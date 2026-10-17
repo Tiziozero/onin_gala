@@ -1,0 +1,76 @@
+import "core/core.gala";
+
+// Cases the implementation may not handle yet. "KNOWN?" = suspected gap.
+// Same rule as the other tests.
+
+fn check(name: string, ok: bool) {
+    if !ok {
+        println("FAIL:", name);
+    }
+}
+
+struct Pair { a: i32, b: i32 }
+struct Other { x: i64, a: i32 }
+struct Big { data: [512]i32, n: i32 }
+
+fn id(a: $T): T { return a; }
+fn add(a: $T, b: T): T { return a + b; }
+fn sub(a: $T, b: T): T { return a - b; }
+fn tag(a: $T): i64 { return sizeof(T); }
+fn apply(a: $T, f: fn(x: T): T): T { return f(a); }
+fn sum4(a: [4]$T): T { return a[0] + a[1] + a[2] + a[3]; }
+fn field_a(p: ^$T): i32 { return p^.a; }       // duck-typed: any T with a field `a`
+fn pair_arr(a: $T): [2]T {
+    r := [2]T{a, a};
+    return r;
+}
+// never instantiated, so its body is never checked (a type error here must NOT break the build)
+fn never_called(a: $T): T { return a + "x"; }
+
+fn user_a(): i64 { return id(1); }
+fn user_b(): i64 { return id(2) + user_a(); }
+
+g1 := id(7);
+g2 : f64 = id(2.5);
+
+fn main() {
+    a32 : i32 = 10;
+    f32v : f32 = 1.5;
+
+    // untyped literal taking the binding from the other argument
+    check("lit right", add(a32, 5) == 15);                                  // KNOWN?
+    check("lit left", add(5, a32) == 15);                                   // KNOWN?
+    check("lit float", add(f32v, 1.5) == 3.0);                              // KNOWN?
+    check("lit into fn param", apply(5, fn(x: i32): i32 => x + 1) == 6);    // KNOWN?
+
+    // named args + generics
+    check("named args", sub(b = 1, a = 5) == 4);
+
+    // one version shared by several callers
+    check("shared instance", user_b() == 3);
+
+    // arrays as T
+    arr3 := [3]i32{1, 2, 3};
+    arr4 := [4]i32{1, 2, 3, 4};
+    check("tag array 3", tag(arr3) == 12);                                  // KNOWN?
+    check("tag array 4", tag(arr4) == 16);                                  // KNOWN?
+    check("fixed array param", sum4(arr4) == 10);                           // KNOWN?
+    pa := pair_arr(3);
+    check("array of T", pa[0] + pa[1] == 6);                                // KNOWN?
+
+    // large aggregates by value
+    big := Big{[512]i32{}, 7};
+    check("large struct by value", id(big).n == 7);                         // KNOWN?
+
+    // duck typing
+    pr := Pair{1, 2};
+    ot := Other{5, 9};
+    check("duck pair", field_a(&pr) == 1);                                  // KNOWN?
+    check("duck other", field_a(&ot) == 9);                                 // KNOWN?
+
+    // generic calls in global initialisers
+    check("global init i64", g1 == 7);                                      // KNOWN?
+    check("global init f64", g2 == 2.5);                                    // KNOWN?
+
+    println("all passed");
+}

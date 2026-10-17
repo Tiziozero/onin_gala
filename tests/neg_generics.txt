@@ -1,0 +1,148 @@
+// Must-fail cases for generics, one program per section.
+// Section header:  //### name | text that should appear in the error (optional)
+// build.py (`./build.py neg`) splits this file and checks each program fails to compile.
+
+//### conflicting_bindings |
+import "core/core.gala";
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    x : i32 = 1;
+    y : i64 = 2;
+    z := add(x, y);
+}
+
+//### float_into_int_binding |
+import "core/core.gala";
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    x : i32 = 1;
+    z := add(x, 2.5);
+}
+
+//### dup_generic_decl | already declared
+import "core/core.gala";
+fn f(a: $T, b: $T): T { return a; }
+fn main() {
+    z := f(1, 2);
+}
+
+//### use_before_decl | type doesn't exist
+import "core/core.gala";
+fn f(a: T, b: $T): T { return b; }
+fn main() {
+    z := f(1, 2);
+}
+
+//### generic_only_in_return | Can't specify generic in return type
+import "core/core.gala";
+fn make(a: i32): $T { return a; }
+fn main() {
+    z := make(1);
+}
+
+//### generic_in_vardec | generics in vardecs
+import "core/core.gala";
+fn f(a: $T) {
+    x : $T = a;
+}
+fn main() {
+    f(1);
+}
+
+//### zeroinit_arg | zero
+import "core/core.gala";
+fn id(a: $T): T { return a; }
+fn main() {
+    x := id({});
+}
+
+//### void_arg |
+import "core/core.gala";
+fn id(a: $T): T { return a; }
+fn noop() { }
+fn main() {
+    x := id(noop());
+}
+
+//### too_few_args | Missing argument
+import "core/core.gala";
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    z := add(1);
+}
+
+//### too_many_args | args count
+import "core/core.gala";
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    z := add(1, 2, 3);
+}
+
+//### body_error_on_instantiation |
+import "core/core.gala";
+fn bad(a: $T): T { return a + "x"; }
+fn main() {
+    z := bad(1);
+}
+
+//### modulo_on_float | modulo
+import "core/core.gala";
+fn modulo(a: $T, b: T): T { return a % b; }
+fn main() {
+    z := modulo(5.5, 2.0);
+}
+
+//### duck_type_missing_field | doesn't exist
+import "core/core.gala";
+struct Other { x: i64 }
+fn field_a(p: ^$T): i32 { return p^.a; }
+fn main() {
+    o := Other{1};
+    z := field_a(&o);
+}
+
+//### non_slice_for_slice_param |
+import "core/core.gala";
+fn sum(a: []$T): T { return a[0]; }
+fn main() {
+    z := sum(5);
+}
+
+//### non_pointer_for_pointer_param |
+import "core/core.gala";
+fn swap(a: ^$T, b: ^T) { }
+fn main() {
+    swap(1, 2);
+}
+
+//### literal_uses_outer_T | type doesn't exist
+import "core/core.gala";
+fn f(a: $T): T {
+    g := fn(x: T): T => x;
+    return g(a);
+}
+fn main() {
+    z := f(1);
+}
+
+//### generic_fn_as_value |
+import "core/core.gala";
+fn id(a: $T): T { return a; }
+fn main() {
+    p := id;
+}
+
+//### generic_struct |
+import "core/core.gala";
+struct Box { v: $T }
+fn main() { }
+
+//### polymorphic_recursion |
+// f<T> instantiates f<^T> forever: needs an instantiation limit, should not hang
+import "core/core.gala";
+fn f(a: $T) {
+    f(&a);
+}
+fn main() {
+    f(1);
+}
