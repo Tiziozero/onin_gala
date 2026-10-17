@@ -43,6 +43,11 @@ Context :: struct {
 
     obj_modules:        map[ObjId]ModId,
     ty_modules:         map[TypeId]ModId,
+    // generics
+    // functions shouldn't be interned, so one type per function
+    // generics: call expr -> the instantiation it uses
+    expr_fn_version:        map[ExprId]FnVersionRef,
+    fn_generic_variations:  map[TypeId]struct{},
 
     // for other stuff that need to know things only available
     // at resolution phase

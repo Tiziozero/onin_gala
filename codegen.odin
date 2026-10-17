@@ -1420,11 +1420,11 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import := false) {
             }
             ctx.declared_mods[mid] = true // mark before recursing so cycles terminate
             m := get_ctx().mods[mid]
-            cg_items_dec(ctx, m.ast.items, true) // gen items into this
+            cg_items_dec(ctx, m.ast.items[:], true) // gen items into this
 
             // Post-order: this module's own imports were appended during the
             // recursion above, so they run before it.
-            if items_have_globals(m.ast.items) {
+            if items_have_globals(m.ast.items[:]) {
                 append(&ctx.init_mods, mid)
                 cwritefln(ctx, "declare void %s()", mod_init_name(ctx, mid))
             }
@@ -1562,7 +1562,7 @@ cg_entry_wrapper :: proc(c: ^CGCtx, m: ModId, ast: ^AST, has_globals: bool) {
 
 cg_module :: proc(m: ModId) {
     module := get_ctx().mods[m]
-    ast := &module.ast
+    ast := module.ast
     is_entry := module.path == get_ctx().entry_file
 
     cgctx := CGCtx{}
@@ -1600,7 +1600,7 @@ cg_module :: proc(m: ModId) {
     cwritefln(&cgctx, "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)")
 
     // struct types (and prototypes) first: everything below refers to them
-    cg_items_dec(&cgctx, ast.items)
+    cg_items_dec(&cgctx, ast.items[:])
 
     // globals go after all type definitions (see cg_globals_dec)
     cg_globals_dec(&cgctx)
@@ -1617,9 +1617,9 @@ cg_module :: proc(m: ModId) {
 
     // this module's global initialisers (needs the scope bindings made by
     // cg_items_dec, so it must come before anything resets cgctx.scope)
-    has_globals := items_have_globals(ast.items)
+    has_globals := items_have_globals(ast.items[:])
     if has_globals {
-        cg_globals_init(&cgctx, m, ast.items)
+        cg_globals_init(&cgctx, m, ast.items[:])
     }
 
     // function literals found while generating the items above were
@@ -1649,7 +1649,7 @@ cg_module :: proc(m: ModId) {
     // mem2reg: promotes the entry-block allocas to SSA registers
     run_tool("opt", {"opt", "-passes=mem2reg", ll_name, "-S", "-o", opt_name})
 
-    debugln("compiling:", name)
+    // debugln("compiling:", name)
     run_tool("llc", {"llc", "-filetype=obj", "-O2", opt_name, "-o", o_name})
 
     append(&get_ctx().o_files, o_name)

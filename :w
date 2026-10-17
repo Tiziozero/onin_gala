@@ -1,0 +1,8 @@
+import "core/core.gala";
+// struct T {}
+fn f(a: $T): T { return a; }
+fn main() {
+    a := f(32);
+    println("a:", a);
+}
+

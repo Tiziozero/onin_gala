@@ -1,43 +1,15 @@
 import "core/core.gala";
-import "core/net.gala";
-import "core/mem.gala";
-
-fn printlen(data: []byte) {
-    println("Len data:", len(data));
+struct abc {
+    a, b: $T
+}
+fn f(a: []$T, b: fn(i: T): T) {
+    for i in a {
+        println(cast(i32)b(i));
+    }
 }
 fn main() {
-    server := tcp_listen(9000, 16);
-    if server.fd < 0 {
-        println("failed to start server");
-        return;
-    }
-    println("echo server listening on port 9000");
-    while true {
-        client := tcp_accept(server);
-
-        if client.fd < 0 {
-            println("accept failed");
-            continue;
-        }
-
-        println("client connected");
-
-        buffer:=[1024]byte{};
-
-        while true {
-            n := tcp_recv(client, buffer[:]);
-            if n <= 0 {
-                break;
-            }
-            println("Got:", transmute(string)buffer[0:n]);
-
-            tcp_send(client, buffer[0:n]);
-            for c in buffer[0:n] {
-                println("char:", cast(i64)c);
-            }
-        }
-        println("client disconnected");
-        tcp_close(client);
-    }
-    tcp_close(server);
+    f(("Hello")[:], fn(i: byte): byte => i - 10);
+    data := [5]f32{1.0, 1.4, 14.4, 12.5, 37.2};
+    f(data[:], fn(i: f32): f32 => i - 10);
 }
+

@@ -1040,8 +1040,9 @@ base_span :: proc(t: ^TypeSpecifier) -> Span {
 }
 parse_type :: proc(p: ^Parser) -> TypeSpecifier {
     if is_symbol(current_token(p), "$") {
+        g := consume_token(p);
         n := expect_ident(p);
-        return TypeSpecifier(GenericSpecifier{n.text, n.span});
+        return TypeSpecifier(GenericSpecifier{n.text, {g.span.start, n.span.end}});
     }
     if current_token(p).kind == .Ident {
         token := consume_token(p)
@@ -1420,7 +1421,7 @@ resolve_link_path :: proc(importer: string, path: string) -> string {
 }
 
 AST :: struct {
-    items: []ItemId,
+    items: [dynamic]ItemId,
 }
 parse_tokens :: proc(file_name: string, tokens: []Token) -> AST {
     _p := Parser{file=file_name, tokens=tokens}
@@ -1469,5 +1470,5 @@ parse_tokens :: proc(file_name: string, tokens: []Token) -> AST {
 
         append(&items, id)
     }
-    return AST{items=items[:]}
+    return AST{items=items}
 }

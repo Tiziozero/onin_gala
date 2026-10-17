@@ -1,14 +1,51 @@
 package main
 
 import "core:slice"
+import "core:strings"
+
 TcContext :: struct {
     in_function: bool,
     fn_ret_ty: Maybe(TypeId),
     in_loop: Maybe(StmtId),
+    generic_items: ^[dynamic]ItemId,
+    generic_exprs: ^[dynamic]ExprId,
+}
+// one concrete instantiation of a generic function
+FnVersion :: struct {
+    llvm_fn_name: string,   // filled in by codegen
+    params:       []TypeId, // concrete param types (the version's identity)
+    ret_ty:       TypeId,
+    item:         ItemId,   // the clone made for this version
+}
+
+// which version of which function a call expr resolved to
+FnVersionRef :: struct {
+    fn:  TypeId, // function types aren't interned, so this is unique per function
+    idx: int,    // index into get_type(fn).fn.versions
+}
+// Finds the version with exactly these concrete params, or adds it.
+// Type ids are interned, so comparing ids is enough.
+get_or_add_fn_version :: proc(fn_tid: TypeId, params: []TypeId, ret_ty: TypeId) -> (idx: int, added: bool) {
+    // fetch fresh each time, nothing here holds a pointer across calls
+    f := &get_type(fn_tid).fn
+
+    search: for v, i in f.versions {
+        if len(v.params) != len(params) do continue
+        for p, j in v.params {
+            if p != params[j] do continue search
+        }
+        return i, false
+    }
+
+    owned := make([]TypeId, len(params), get_ctx().allocator)
+    copy(owned, params)
+    append(&f.versions, FnVersion{params = owned, ret_ty = ret_ty})
+    return len(f.versions) - 1, true
 }
 expr_ty :: proc(id: ExprId) -> TypeId {
     t, ok  := get_ctx().expr_types[id];
     if !ok {
+        debugln(get(id))
         gala_panic(id, "has no type")
     }
     assert(ok);
@@ -775,6 +812,16 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             gala_panicf("Can't call a value of type %s.", tts(fn_tid))
         }
 
+        // Read the signature only now, after the arguments are typed: typing
+        // them can intern types, which may move the type table and leave a
+        // pointer taken earlier dangling.
+        ty := get_type(fn_tid);
+        fargs := ty.fn.args;
+        variadic_ty := ty.fn.variadic_ty
+        is_variadic := ty.fn.is_variadic
+        is_generic := ty.fn.is_generic
+        declared_ret := ty.fn.ret_ty   // copied now: substitution below can intern types
+
         // make sure inferred parameter types are known before reading them
         tc_default_args(tc, fn_tid)
 
@@ -786,15 +833,6 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         for a in e.args {
             tc_expr(tc, a.expr);
         }
-
-        // Read the signature only now, after the arguments are typed: typing
-        // them can intern types, which may move the type table and leave a
-        // pointer taken earlier dangling.
-        ty := get_type(fn_tid);
-        fargs := ty.fn.args;
-        is_variadic := ty.fn.is_variadic
-        variadic_ty := ty.fn.variadic_ty
-        ret_ty := ty.fn.ret_ty
 
         call_args := e.args
         if is_variadic {
@@ -818,17 +856,39 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             get_ctx().exprs[id] = Expr(new_call)
         }
 
+        // Concrete parameter types for this call, and the return type.
+        // Non-generic: straight from the signature. Generic: inferred from the
+        // arguments, then the matching version is found or created.
+        param_tys := make([]TypeId, len(fargs), context.temp_allocator)
+        ret_ty: TypeId
+
+        if !is_generic {
+            for farg, i in fargs do param_tys[i] = farg.type
+            ret_ty = declared_ret
+        } else {
+            bound := infer_generic_bindings(id, call_args, fn_tid)
+            for farg, i in fargs {
+                param_tys[i] = gen_subst(farg.type, bound, id)
+            }
+            ret_ty = gen_subst(declared_ret, bound, id)
+
+            idx, _ := get_or_add_fn_version(fn_tid, param_tys, ret_ty)
+            get_ctx().expr_fn_version[id] = FnVersionRef{fn = fn_tid, idx = idx}
+        }
+
         for i in 0..<len(fargs) {
             earg := call_args[i].expr;
-            farg := fargs[i];
-            r, ok, s := assignable(farg.type, expr_ty(earg));
+            expected := param_tys[i]
+            r, ok, s := assignable(expected, expr_ty(earg));
             if !ok {
+                debugln(get(expected));
                 highlight_lines(get_span(earg));
                 gala_panicf("Type Mismatch: %s (expected %s, got %s)",
-                    s, tts(farg.type), tts(expr_ty(earg)));
+                    s, tts(expected), tts(expr_ty(earg)));
             }
-            mark_arg(&call_args[i], farg.type, r);
+            mark_arg(&call_args[i], expected, r);
         }
+
         // default for rest (variadic tail)
         if is_variadic do for i in len(fargs)..<len(call_args) {
             earg := call_args[i].expr;
@@ -847,6 +907,11 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         // the resolver already built the fn type from the signature.
         tid := get_ctx().expr_resolution_types[id]
         assert(get_type(tid).kind == .Function)
+
+        if get_type(tid).fn.is_generic {
+            append(tc.generic_exprs, id);
+            return
+        }
 
         // validate parameter defaults before anything can call this literal
         tc_default_args(tc, tid)
@@ -1094,17 +1159,47 @@ tc_item :: proc(tc: ^TcContext, id: ItemId) {
         fn, ok := get_ctx().item_objects[id]; assert(ok);
         type := get_type(get_obj(fn).type.(TypeId));
         assert(type.kind == .Function);
-        new_tc := tc^;
-        new_tc.in_function = true;
-        new_tc.fn_ret_ty = type.fn.ret_ty;
-        tc_block(&new_tc, i.block);
-
+        if type.fn.is_generic {
+            append(tc.generic_items, id);
+        } else {
+            new_tc := tc^;
+            new_tc.in_function = true;
+            new_tc.fn_ret_ty = type.fn.ret_ty;
+            tc_block(&new_tc, i.block);
+        }
     }
     case: panic("impl")
     }
 }
+// "f" + params [f64, ^i32] -> "f.f64.p_i32"; only [A-Za-z0-9_] survive, LLVM-safe
+mangle_version :: proc(base: string, params: []TypeId) -> string {
+    b: strings.Builder
+    strings.builder_init(&b, get_ctx().allocator)
+    strings.write_string(&b, base)
+    for p in params {
+        strings.write_byte(&b, '.')
+        for r in tts(p) {
+            switch {
+            case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+                strings.write_rune(&b, r)
+            case r == '^': strings.write_string(&b, "p_")
+            case r == '[': strings.write_string(&b, "a_")
+            case r == ']': // dropped
+            case: strings.write_byte(&b, '_')
+            }
+        }
+    }
+    return strings.to_string(b)
+}
 typecheck_module :: proc(ast: ^AST) {
-    tc := TcContext{fn_ret_ty=nil, in_function=false}
+    generic_items := make([dynamic]ItemId, allocator=get_ctx().allocator);
+    generic_exprs := make([dynamic]ExprId, allocator=get_ctx().allocator);
+    tc := TcContext{
+        fn_ret_ty=nil,
+        in_function=false,
+        generic_items=&generic_items,
+        generic_exprs=&generic_exprs,
+    }
 
     // First pass: globals, in declaration order, before any function body.
     // A `:=` global only gets its type here, and functions may use globals
@@ -1136,6 +1231,64 @@ typecheck_module :: proc(ast: ^AST) {
     for i in ast.items {
         tc_item(&tc, i);
     }
+    // Generic bodies are checked per version, now that every call is known.
+    done := make(map[ItemId]int, allocator=get_ctx().allocator)
+    progress := true
+    for progress {
+        progress = false
+        for g in tc.generic_items {
+            fn_tid := get_obj(get_ctx().item_objects[g]).type.(TypeId)
+            for done[g] < len(get_type(fn_tid).fn.versions) {
+                idx := done[g]
+                done[g] += 1
+
+                iid := clone_item(g)
+
+                // unique name per version, kept on the version too
+                fd := get_ctx().items[iid].(FnDec)
+                fd.name = mangle_version(fd.name, get_type(fn_tid).fn.versions[idx].params)
+                get_ctx().items[iid] = Item(fd)
+                get_type(fn_tid).fn.versions[idx].llvm_fn_name = fd.name
+
+                // fetched fresh each time: cloning/resolving appends to the tables
+                get_type(fn_tid).fn.versions[idx].item = iid
+                v := get_type(fn_tid).fn.versions[idx]
+
+                append(&ast.items, iid)
+                resolve_generic_clone(g, iid, v)
+                c := get_ctx()
+                t := get_type(get(c.item_objects[iid]).type.(TypeId))
+                tc_item(&tc, iid)
+                progress = true
+            }
+        }
+    }
+    // update objects as well
+    // point every generic call at its clone, so codegen sees a plain call
+    for call_id, ref in get_ctx().expr_fn_version {
+        v := get_type(ref.fn).fn.versions[ref.idx]
+        if v.llvm_fn_name == "" do continue // not instantiated in this module yet
+
+            call := get_expr(call_id).(FnCall)
+            oid := get_ctx().item_objects[v.item]
+            get_ctx().expr_objects[call.target] = oid
+            get_ctx().expr_types[call.target] = get_obj(oid).type.(TypeId)
+
+            // codegen resolves callees by name, so rename the symbol too
+            if sym, ok := get_expr(call.target).(Symbol); ok {
+                sym.name = get_obj(oid).name
+                get_ctx().exprs[call.target] = Expr(sym)
+            }
+        }
+    // the generic originals have no types; only their clones go on
+    kept := make([dynamic]ItemId, allocator=get_ctx().allocator)
+    for i in ast.items {
+        if slice.contains(tc.generic_items[:], i) {
+            continue
+        }
+        append(&kept, i)
+    }
+    ast.items = kept
 }
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
     switch e in get_expr(expr) {

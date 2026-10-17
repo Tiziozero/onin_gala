@@ -2,6 +2,7 @@ package main
 
 TypeKind :: enum {
     Invalid,
+    Generic,
     // basics
     // unsigned int
     UInt64,
@@ -46,13 +47,18 @@ Type :: struct {
     fn: struct {
         args: []Arg,
         ret_ty: TypeId,
+
+        is_external: bool,
+
         is_variadic: bool,
         variadic_ty: TypeId,
         variadic_name: string,
-        is_external: bool,
+        // if it's a gala function then variadic type is going to be a slice
         gala_abi_ty: TypeId,
-        // for variadics/any
-        versions: [dynamic]struct{llvm_fn_name: string, args:[]Arg},
+
+        // for generics
+        is_generic: bool,
+        versions: [dynamic]FnVersion,
     },
     structure: struct {fields: []Field},
     fixed_size_array: struct { type: TypeId, size: int },
@@ -195,6 +201,9 @@ type_equal :: proc(l, r: Type) -> bool {
     if l.kind != r.kind do return false
 
     switch l.kind {
+    case .Generic: {
+        return false;
+    }
     case .String:
         return true
 

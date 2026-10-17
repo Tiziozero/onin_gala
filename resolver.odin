@@ -368,13 +368,43 @@ scope_get_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
     debugln(n, "Not found")
     return 0, false
 }
-resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
+new_generic_ty :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
+    type := Type{
+        kind=.Generic /* should never be processed, really. */,
+        name=t.(GenericSpecifier).name,
+    };
+    return new_type(s, type, {get_ctx().current_file, t.(GenericSpecifier).span});
+}
+resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier, no_declare_generic := false,
+        bindings: map[string]TypeId = nil) -> TypeId {
     switch k in t {
+    case GenericSpecifier: {
+        // instantiating a clone: declare the name as the concrete type
+        if bindings != nil {
+            if existing, ok := s.types[k.name]; ok do return existing
+            tid, ok := bindings[k.name]
+            if !ok {
+                highlight_lines({get_ctx().current_file, k.span})
+                gala_panicf("No binding for generic \"%s\".", k.name)
+            }
+            s.types[k.name] = tid
+            return tid
+        }
+        if name_exists(s, k.name) {
+            highlight_lines({get_ctx().current_file, k.span})
+            gala_panicf("Name \"%s\" already declared.", k.name);
+        }
+        if no_declare_generic {
+            highlight_lines({get_ctx().current_file, k.span})
+            gala_panicf("Can't specify generic in return type.");
+        }
+        return new_generic_ty(s, t);
+    }
     case AnySpecifier: {
         return intern_type({kind=.Any})
     }
     case SliceSpecifier: {
-        base := resolve_type_specifier(s, k.base^)
+        base := resolve_type_specifier(s, k.base^, bindings = bindings)
         return intern_type({kind=.Slice, slice={type=base}})
     }
     case BaseType: { // will get declared type id
@@ -387,31 +417,24 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
         assert(ok)
         return ty
     }
-    case PointerType: { // creates a pointer and will ge that one
-        id := resolve_type_specifier(s, k.ptr^)
+    case PointerType: {
+        id := resolve_type_specifier(s, k.ptr^, bindings = bindings)
         return intern_type({kind=.Pointer, ptr=id})
     }
-    case FixedArreySpecifier: { // creates a pointer and will ge that one
-        id := resolve_type_specifier(s, k.base^)
+    case FixedArreySpecifier: {
+        id := resolve_type_specifier(s, k.base^, bindings = bindings)
         return intern_type({kind=.FixedSizeArray,
             fixed_size_array={type=id, size=k.size}})
     }
     case FnSpecifier: {
-        // a function *type* has no body to fall back from, and a default
-        // would have no meaning for calls through a pointer of that type.
         for a in k.signature.args {
             if a.default != nil {
                 highlight_lines(get_ctx().current_file, a.span)
                 gala_panic("Default values aren't allowed in function types.")
             }
         }
-        // resolve the signature (ret type, args, variadic) into a Function type.
-        // the returned scope only exists so a fn body could be resolved in it;
-        // a bare specifier has no body, so just free it.
-        fnty, fnscope := resolve_fn_dec_signature(s, k.signature^)
+        fnty, fnscope := resolve_fn_dec_signature(s, k.signature^, bindings = bindings)
         free_scope(&fnscope)
-        // not interned: function types are nominal here (see new_fn_type), so
-        // the type checker must compare two fn specifier types structurally.
         return new_fn_type(fnty)
     }
     case: panic("impl");
@@ -456,6 +479,10 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
         resolved_ty : Maybe(TypeId) = nil
         if stmt.type != nil {
             ty, ok := stmt.type.(TypeSpecifier); assert(ok);
+            if is_type_specifier_generic(ty) {
+                highlight_lines(get_span(id));
+                gala_panic("can't have generics in vardecs.");
+            }
             resolved_ty = resolve_type_specifier(s, ty);
         }
         oid := new_object(s, Object{kind=.Variable,
@@ -532,6 +559,9 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
             highlight_lines(get_ctx().current_file, f.span);
             gala_panic("Field already exists.");
         }
+        if is_type_specifier_generic(f.t) {
+            panic("Impl");
+        }
         t := resolve_type_specifier(s, f.t);
         field := Field{name=f.name, type=t, span=f.span}
         fields[i] = field;
@@ -551,86 +581,117 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 
 // for gala functions, add an aditional arg to function body of type slice of var arg type
 // takes ^Scope (not ^ModuleScope) so fn type specifiers can be resolved from any scope
-resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := false) -> (Type, Scope) {
+resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := false,
+        bindings: map[string]TypeId = nil) -> (Type, Scope) {
     // create fn type
     fnty := Type{}
     fnty.kind = .Function;
-    // return type
+    // a clone built from bindings is concrete
+    fnty.fn.is_generic = is_fn_signature_generic(fndec) && bindings == nil
+    arg_scope := new_scope(s);
+    if len(fndec.args) > 0 || fndec.is_variadic {
+        args := make([]Arg, len(fndec.args), allocator=get_ctx().allocator)
+        declared := make(map[string]Arg)
+        for a, i in fndec.args {
+            t: TypeId
+            if a.inferred {
+                t = void_type()
+            } else {
+                t = resolve_type_specifier(&arg_scope, a.t, bindings = bindings)
+            }
+            if da, ok := declared[a.name]; ok {
+                print_lines(get_file_lines(get_ctx().current_file, da.span), da.span)
+                gala_panic("Duplicate argument. Arg already declared here.")
+            }
+            arg_t := t;
+            arg := Arg{name=a.name, type=arg_t, span=a.span, inferred=a.inferred}
+
+            if def, has_default := a.default.(ExprId); has_default {
+                resolve_expr(s, def)
+                arg.default = def
+                arg.default_src = a.default_src
+            }
+
+            obj_ty: Maybe(TypeId) = arg_t
+            if a.inferred do obj_ty = nil
+            arg.obj = new_object(&arg_scope,
+                Object{.Argument, a.name, obj_ty},
+                {file_name=get_ctx().current_file, span=a.span});
+
+            args[i] = arg
+            declared[a.name] = arg
+        }
+        fnty.fn.args = args
+        if fndec.is_variadic {
+            variadic_ty := resolve_type_specifier(&arg_scope, fndec.variadic_ty, bindings = bindings)
+            name := fndec.variadic_arg_name
+            if da, ok := declared[name]; ok {
+                print_lines(get_file_lines(get_ctx().current_file, da.span), da.span)
+                gala_panic("Duplicate argument. Arg already declared here.")
+            }
+            new_ty := Type{kind=.Slice, slice={type=variadic_ty}}
+            new_ty_id := intern_type(new_ty)
+            fnty.fn.gala_abi_ty = new_ty_id;
+
+            new_object(&arg_scope, Object{.Argument, name, new_ty_id},
+                {file_name=get_ctx().current_file, span=fndec.variadic_arg_span});
+            fnty.fn.is_variadic = true
+            fnty.fn.variadic_ty = variadic_ty
+            fnty.fn.variadic_name = name
+        }
+    }
     if fndec.ret_ty != nil {
-        fnty.fn.ret_ty = resolve_type_specifier(s, fndec.ret_ty.(TypeSpecifier))
+        fnty.fn.ret_ty = resolve_type_specifier(&arg_scope,
+            fndec.ret_ty.(TypeSpecifier), no_declare_generic = true, bindings = bindings)
     } else {
         fnty.fn.ret_ty = void_type();
     }
-    // new scope for args (named so it doesn't shadow the new_scope proc)
-    // args
-    arg_scope := new_scope(s);
-    args := make([]Arg, len(fndec.args), allocator=get_ctx().allocator)
-    declared := make(map[string]Arg)
-    for a, i in fndec.args {
-        // `name := expr` has no written type yet: use void as a placeholder
-        // and leave the object untyped until tc_default_args infers it.
-        t: TypeId
-        if a.inferred {
-            t = void_type()
-        } else {
-            t = resolve_type_specifier(&arg_scope, a.t)
-        }
-        if da, ok := declared[a.name]; ok {
-            // print declared arg
-            print_lines(get_file_lines(get_ctx().current_file, da.span), da.span)
-            gala_panic("Duplicate argument. Arg already declared here.")
-        }
-        arg_t := t;
-        arg := Arg{name=a.name, type=arg_t, span=a.span, inferred=a.inferred}
-
-        // Default value: resolved against the *outer* scope `s`, not
-        // `arg_scope`, so it can't see parameters.
-        if def, has_default := a.default.(ExprId); has_default {
-            resolve_expr(s, def)
-            arg.default = def
-            arg.default_src = a.default_src
-        }
-
-        obj_ty: Maybe(TypeId) = arg_t
-        if a.inferred do obj_ty = nil
-        arg.obj = new_object(&arg_scope, Object{.Argument, a.name, obj_ty}, {file_name=get_ctx().current_file, span=a.span});
-
-        args[i] = arg
-        declared[a.name] = arg
-    }
-    fnty.fn.args = args
-
-    if fndec.is_variadic {
-        variadic_ty := resolve_type_specifier(&arg_scope, fndec.variadic_ty)
-        name := fndec.variadic_arg_name
-        if da, ok := declared[name]; ok {
-            // print declared arg
-            print_lines(get_file_lines(get_ctx().current_file, da.span), da.span)
-            gala_panic("Duplicate argument. Arg already declared here.")
-        }
-        // type is slice of type
-        new_ty := Type{kind=.Slice, slice={type=variadic_ty}}
-        new_ty_id := intern_type(new_ty)
-        fnty.fn.gala_abi_ty = new_ty_id;
-
-        // don't apend to args, as it's not an argument in the function ig
-        // but declare object for fn body
-        // it's fine because extern fn doesn't make use of it either way
-        new_object(&arg_scope, Object{.Argument, name, new_ty_id},
-            {file_name=get_ctx().current_file, span=fndec.variadic_arg_span});
-        fnty.fn.is_variadic = true
-        fnty.fn.variadic_ty = variadic_ty
-        fnty.fn.variadic_name = name
-    }
-    // caller frees the args scope
     return fnty, arg_scope
 }
+is_type_specifier_generic :: proc(t: TypeSpecifier) -> bool {
+    #partial switch k in t {
+        case GenericSpecifier: return true
+        case FnSpecifier: {
+            for a in k.args {
+                if is_type_specifier_generic(a.t) do return true
+            }
+            if k.is_variadic {
+                if is_type_specifier_generic(k.variadic_ty) do return true;
+            }
+            rt, has_rt := k.ret_ty.(TypeSpecifier);
+            if  has_rt { if is_type_specifier_generic(rt) do return true };
+        }
+        case SliceSpecifier: {
+            if is_type_specifier_generic(k.base^) do return true
+        }
+        case FixedArreySpecifier: { // no size yet.
+            if is_type_specifier_generic(k.base^) do return true
+        }
+    }
+    return false
+}
+is_fn_signature_generic :: proc(fndec: FnDecSignature) -> bool {
+    for a in fndec.args {
+        if is_type_specifier_generic(a.t) do return true;
+    }
+    if fndec.is_variadic {
+        if is_type_specifier_generic(fndec.variadic_ty) do return true;
+    }
+    rt, has_rt := fndec.ret_ty.(TypeSpecifier);
+    if  has_rt { if is_type_specifier_generic(rt) do return true };
+    return false
+}
+// can't be generic, really. so fail
 resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     fndec, ok := get(id).(ExternFnDec); assert(ok); // assert it's a fn dec
     oid, ook := s.obj_foreward[fndec.name]; assert(ook); // make sure fd exists
     obj := get(oid); // gets pointer, so modify that
 
     fnty, scope := resolve_fn_dec_signature(s, fndec, extern=true);
+    if fnty.fn.is_generic {
+        highlight_lines(get_span(id));
+        gala_panic("extern function can not be generic.");
+    }
     fnty.fn.is_external = true;
     free_scope(&scope);
 
@@ -684,6 +745,10 @@ resolve_global_var_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     obj := get(oid) // gets pointer, so modify that
     if gd.type != nil {
         ts, tok := gd.type.(TypeSpecifier); assert(tok)
+        if is_type_specifier_generic(ts) {
+            highlight_lines(get_span(id));
+            gala_panic("can't have generics in vardecs.");
+        }
         obj.type = resolve_type_specifier(s, ts)
     }
     obj.name = gd.name
@@ -800,7 +865,7 @@ free_module_scope :: proc(s: ^ModuleScope) {
 }
 Module :: struct {
     declarations: ModuleScope,
-    ast: AST,
+    ast: ^AST,
     path: string,
 }
 // A struct can't contain itself by value, directly or through other structs
@@ -874,8 +939,55 @@ resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
     // assign module
     get_ctx().mods[mid] = Module {
         declarations=global_scope,
-        ast=ast^,
+        ast=ast,
         path=path,
     }
     return mid;
+}
+// Walks a generic specifier against a concrete type to recover `$T`.
+bind_generics :: proc(spec: TypeSpecifier, concrete: TypeId, out: ^map[string]TypeId) {
+    ty := get_type(concrete)
+    #partial switch k in spec {
+    case GenericSpecifier:
+        out^[k.name] = concrete
+    case PointerType:
+        if ty.kind == .Pointer do bind_generics(k.ptr^, ty.ptr, out)
+    case SliceSpecifier:
+        if ty.kind == .Slice do bind_generics(k.base^, ty.slice.type, out)
+    case FixedArreySpecifier:
+        if ty.kind == .FixedSizeArray do bind_generics(k.base^, ty.fixed_size_array.type, out)
+    }
+}
+
+// Resolves clone `iid` of generic item `g` as the concrete function for `v`.
+resolve_generic_clone :: proc(g, iid: ItemId, v: FnVersion) {
+    ctx := get_ctx()
+
+    // resolve in the module the generic was declared in
+    mid := ctx.obj_modules[ctx.item_objects[g]]
+    saved_mid := ctx.current_module_id
+    ctx.current_module_id = mid
+    defer ctx.current_module_id = saved_mid
+    ms := &ctx.mods[mid].declarations
+
+    orig, _ := get(g).(FnDec)
+    fndec, ok := get(iid).(FnDec); assert(ok)
+
+    bindings := make(map[string]TypeId, allocator=ctx.allocator)
+    for a, i in orig.signature.args {
+        bind_generics(a.t, v.params[i], &bindings)
+    }
+
+    fnty, fnscope := resolve_fn_dec_signature(ms, fndec.signature, bindings = bindings)
+    resolve_block(&fnscope, &fndec.block)
+    free_scope(&fnscope)
+
+    tyid := new_fn_type(fnty)
+    ctx.spans.ty_decs[tyid] = get_span(iid)
+
+    append(&ctx.objs, Object{kind=.Variable, name=fndec.name, type=tyid})
+    oid := ObjId(len(ctx.objs) - 1)
+    ctx.obj_modules[oid] = mid
+    ctx.spans.objs_decs[oid] = get_span(iid)
+    ctx.item_objects[iid] = oid
 }

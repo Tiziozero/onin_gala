@@ -9,7 +9,15 @@ tts :: proc(t: TypeId) -> string {
         return "<invalid>"
     }
 
+    if ty.kind == .Generic {
+        return fmt.aprintf("(generic type) %s", ty.name);
+    }
+    if ty.name != "" {
+        return ty.name
+    }
     switch ty.kind {
+    case .Generic:
+        return "generic_type"
     case .Int64: 
         return "Int64"
     case .Int32: 

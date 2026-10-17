@@ -145,12 +145,12 @@ handle_file :: proc(file_name: string) -> string {
     get_ctx().current_file = resolved
 
     tokens := lex_file(data)
-    defer delete(tokens)
-
-    ast := parse_tokens(resolved, tokens[:])
-    mid := resolve_module_ast(&ast, resolved)
-    typecheck_module(&ast)
-    lower_module(&ast)        // <-- new
+    ast := new(AST, get_ctx().allocator)
+    ast^ = parse_tokens(resolved, tokens[:])
+    mid := resolve_module_ast(ast, resolved)
+    typecheck_module(ast)
+    lower_module(ast)
+    // get_ctx().mods[mid].ast = ast   // the module holds a copy; sync it
     cg_module(mid)
 
     get_ctx().modules[resolved] = mid
