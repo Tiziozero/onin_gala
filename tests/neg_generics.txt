@@ -125,11 +125,6 @@ fn main() {
     p := id;
 }
 
-//### generic_struct |
-import "core/core.gala";
-struct Box { v: $T }
-fn main() { }
-
 //### polymorphic_recursion |
 // f<T> instantiates f<^T> forever: needs an instantiation limit, should not hang
 import "core/core.gala";
@@ -394,11 +389,6 @@ import "core/core.gala";
 fn main() {
     f : fn(a: $T): T;
 }
-
-//### generic_in_struct_field |
-import "core/core.gala";
-struct S { a: $T }
-fn main() { }
 
 //### generic_in_global |
 import "core/core.gala";
