@@ -181,6 +181,11 @@ fn main() {
 
 //### fn_param_binding_mismatch |
 import "core/core.gala";
+fn apply(a: $T, f: fn(x: T): T): T { return f(a); }
+fn main() {
+    a : i64 = 5;
+    z := apply(a, fn(x: f64): f64 => x);
+}
 
 //### fn_literal_wrong_arity |
 import "core/core.gala";
@@ -568,4 +573,337 @@ import "tests/generics_lib.gala";
 fn lib_id(a: $T): T { return a; }
 fn main() {
     z := lib_id(1);
+}
+
+// ------------------------------------------------------------------ named args, literals, binding order
+
+//### fn_binds_first_then_typed_arg_conflicts |
+import "core/core.gala";
+fn run(f: fn(x: $T): T, v: T): T { return f(v); }
+fn main() {
+    a : i64 = 5;
+    z := run(fn(x: f64): f64 => x, a);
+}
+
+//### fn_literal_float_into_int_binding |
+// T = i64 comes from the fn literal, so the float literal must be rejected, not truncated
+import "core/core.gala";
+fn apply(a: $T, f: fn(x: T): T): T { return f(a); }
+fn main() {
+    z := apply(5.5, fn(x: i64): i64 => x);
+}
+
+//### fn_literals_disagree_on_binding |
+import "core/core.gala";
+fn both_fns(f: fn(x: $T): T, g: fn(x: T): T) { }
+fn main() {
+    both_fns(fn(x: i64): i64 => x, fn(x: i32): i32 => x);
+}
+
+//### all_literals_int_then_float |
+// ASSUMPTION: with only untyped args the first one fixes T (i64), so the float literal is an error.
+// Delete this one if you'd rather the float win (then add(1, 2.5) should be f64).
+import "core/core.gala";
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    z := add(1, 2.5);
+}
+
+//### named_unknown_param |
+import "core/core.gala";
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    z := add(a=1, c=2);
+}
+
+//### named_duplicate_arg |
+import "core/core.gala";
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    z := add(1, a=2);
+}
+
+//### named_conflicting_binding |
+import "core/core.gala";
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    x : i32 = 1;
+    y : i64 = 2;
+    z := add(b=y, a=x);
+}
+
+//### named_missing_arg |
+import "core/core.gala";
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    z := add(b=1);
+}
+
+// ------------------------------------------------------------------ shapes that must not unify
+
+//### array_for_slice_param |
+// no implicit array -> slice conversion
+import "core/core.gala";
+fn sum(a: []$T): T { return a[0]; }
+fn main() {
+    xs := [2]i64{1, 2};
+    z := sum(xs);
+}
+
+//### slice_for_fixed_array_param |
+import "core/core.gala";
+fn f(a: [2]$T): T { return a[0]; }
+fn main() {
+    xs := [2]i64{1, 2};
+    z := f(xs[:]);
+}
+
+//### fixed_array_size_mismatch_with_param |
+import "core/core.gala";
+fn f(a: [3]$T): T { return a[0]; }
+fn main() {
+    xs := [4]i32{1, 2, 3, 4};
+    z := f(xs);
+}
+
+//### fixed_array_elem_conflict |
+import "core/core.gala";
+fn f(a: [2]$T, b: T): T { return b; }
+fn main() {
+    xs := [2]i32{1, 2};
+    y : i64 = 3;
+    z := f(xs, y);
+}
+
+//### slice_for_pointer_param |
+import "core/core.gala";
+fn f(a: ^$T): T { return a^; }
+fn main() {
+    xs := [2]i64{1, 2};
+    z := f(xs[:]);
+}
+
+//### pointer_depth_mismatch |
+// ^^$T needs a pointer to a pointer
+import "core/core.gala";
+fn f(a: ^^$T): T { return a^^; }
+fn main() {
+    x : i64 = 1;
+    z := f(&x);
+}
+
+//### variadic_typed_conflict |
+import "core/core.gala";
+fn vfirst(a: $A, rest: ..$B): A { return a; }
+fn main() {
+    x : i32 = 1;
+    y : i64 = 2;
+    z := vfirst(1, x, y);
+}
+
+//### variadic_void_arg |
+import "core/core.gala";
+fn vsum(data: ..$T): T { return data[0]; }
+fn noop() { }
+fn main() {
+    z := vsum(noop());
+}
+
+//### variadic_string_among_ints |
+import "core/core.gala";
+fn vsum(data: ..$T): T { return data[0]; }
+fn main() {
+    z := vsum(cast(i64)1, "x");
+}
+
+// ------------------------------------------------------------------ errors in the body that depend on T
+
+//### shift_on_float |
+import "core/core.gala";
+fn shl(a: $T, b: T): T { return a << b; }
+fn main() {
+    z := shl(1.5, 2.0);
+}
+
+//### shift_on_bool |
+import "core/core.gala";
+fn shl(a: $T, b: T): T { return a << b; }
+fn main() {
+    z := shl(true, false);
+}
+
+//### logical_and_on_int |
+import "core/core.gala";
+fn both(a: $T, b: T): bool { return a && b; }
+fn main() {
+    z := both(1, 2);
+}
+
+//### if_condition_is_int |
+import "core/core.gala";
+fn f(a: $T) {
+    if a { }
+}
+fn main() {
+    f(5);
+}
+
+//### for_over_int |
+import "core/core.gala";
+fn f(a: $T) {
+    for i in a { }
+}
+fn main() {
+    f(5);
+}
+
+//### len_of_int |
+import "core/core.gala";
+fn ln(a: $T): i64 { return len(a); }
+fn main() {
+    z := ln(5);
+}
+
+//### slice_expr_on_int |
+import "core/core.gala";
+fn tl(a: $T): T { return a[1:]; }
+fn main() {
+    z := tl(5);
+}
+
+//### assign_float_literal_to_int_param |
+import "core/core.gala";
+fn f(a: $T) {
+    a = 1.5;
+}
+fn main() {
+    f(cast(i32)1);
+}
+
+//### return_float_literal_in_int_instantiation |
+// fine for T = f64, an error for T = i64
+import "core/core.gala";
+fn f(a: $T): T { return 1.5; }
+fn main() {
+    x := f(1.5);
+    y := f(1);
+}
+
+//### compare_T_with_fixed_i64 |
+import "core/core.gala";
+fn f(a: $T): bool { return a == cast(i64)1; }
+fn main() {
+    z := f(cast(i32)1);
+}
+
+//### arith_T_with_fixed_i64 |
+import "core/core.gala";
+fn f(a: $T, n: i64): T { return a + n; }
+fn main() {
+    z := f(cast(i32)1, 2);
+}
+
+//### cast_string_to_int_in_generic |
+import "core/core.gala";
+fn f(a: $T): i64 { return cast(i64)a; }
+fn main() {
+    z := f("nope");
+}
+
+//### type_id_of_undeclared_T |
+import "core/core.gala";
+fn main() {
+    x := type_id(T);
+}
+
+//### undeclared_type_in_return |
+import "core/core.gala";
+fn f(a: $T): U { return a; }
+fn main() {
+    z := f(1);
+}
+
+//### local_named_like_type_param |
+// ASSUMPTION: no shadowing at all, so a local `T` clashes with the type parameter
+import "core/core.gala";
+fn f(a: $T) {
+    T := 1;
+}
+fn main() {
+    f(1);
+}
+
+//### generic_in_fn_literal |
+// ASSUMPTION: only top level fns declare `$T`
+import "core/core.gala";
+fn main() {
+    g := fn(x: $T): T => x;
+}
+
+// ------------------------------------------------------------------ imports
+
+//### import_variadic_conflict |
+import "core/core.gala";
+import "tests/generics_lib.gala";
+fn main() {
+    x : i32 = 1;
+    y : i64 = 2;
+    z := lib_vsum(x, y);
+}
+
+//### import_fn_param_mismatch |
+// T = bool from the fn literal, the literal 5 can't become a bool
+import "core/core.gala";
+import "tests/generics_lib.gala";
+fn main() {
+    z := lib_apply(5, fn(x: bool): bool => x);
+}
+
+//### import_swap_pointee_mismatch |
+import "core/core.gala";
+import "tests/generics_lib.gala";
+fn main() {
+    x : i32 = 1;
+    y : i64 = 2;
+    lib_swap(&x, &y);
+}
+
+//### import_dot_second_arg_lacks_field |
+import "core/core.gala";
+import "tests/generics_lib.gala";
+fn main() {
+    z := lib_dot(LibV2{1.0, 2.0}, 5);
+}
+
+//### import_default_arg_wrong_type |
+import "core/core.gala";
+import "tests/generics_lib.gala";
+fn main() {
+    z := lib_pad(1, "x");
+}
+
+//### import_lib2_conflicting_bindings |
+import "core/core.gala";
+import "tests/generics_lib2.gala";
+fn main() {
+    x : i32 = 1;
+    y : i64 = 2;
+    z := lib2_add3(x, y, x);
+}
+
+//### import_lib2_swap_sum_mismatch |
+import "core/core.gala";
+import "tests/generics_lib2.gala";
+fn main() {
+    x : i32 = 1;
+    y : i64 = 2;
+    z := lib2_swap_sum(&x, &y);
+}
+
+//### import_nested_generic_body_error |
+// lib2_double -> lib_add on strings: the error is two modules deep
+import "core/core.gala";
+import "tests/generics_lib2.gala";
+fn main() {
+    z := lib2_double("s");
 }
