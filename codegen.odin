@@ -112,6 +112,10 @@ CGCtx :: struct {
     // imports come before it). The entry `main` wrapper calls their
     // __init_globals functions in this order.
     init_mods: [dynamic]ModId,
+
+    // for generics - types form importing modules to imported module
+    declared_types: map[TypeId]bool,
+    extra_types:    strings.Builder,
 }
 
 CGObjectKind :: enum {
@@ -173,6 +177,45 @@ is_memory_type :: proc(t: TypeId) -> bool {
     return type_size(t) > LARGE_AGGREGATE_BYTES
 }
 
+type_llvm_name :: proc(tid: TypeId) -> string {
+    name, ok := get_ctx().cg_ty_names[tid]
+    if !ok {
+        mid, mid_ok := get_ctx().ty_modules[tid]
+        if !mid_ok {
+            gala_panicf("struct type %s has no module associated with it.", get(tid).name)
+        }
+        name = fmt.aprintf("%s.%s", module_prefix(mid), get(tid).name, allocator=get_ctx().allocator)
+        get_ctx().cg_ty_names[tid] = name
+        get_ctx().llvm_ty[tid] = fmt.aprintf("%%%s", name, allocator=get_ctx().allocator)
+    }
+    return name
+}
+
+mod_item_type_name :: proc(c: ^CGCtx, id: ItemId) -> string {
+    return type_llvm_name(get_ctx().item_types[id])
+}
+// Declares, in THIS module's output, every named struct reachable by value from `id`.
+ensure_type_declared :: proc(c: ^CGCtx, id: TypeId) {
+    ty := get_type(id)
+    #partial switch ty.kind {
+case .Struct:
+        if ty.name == "" || c.declared_types[id] do return
+        c.declared_types[id] = true
+        llvm_name := type_llvm_name(id)
+        fields := ty.structure.fields
+        for f in fields do ensure_type_declared(c, f.type)
+        strings.write_string(&c.extra_types, "%")
+        strings.write_string(&c.extra_types, llvm_name)
+        strings.write_string(&c.extra_types, " = type {")
+        for f, k in fields {
+            if k > 0 do strings.write_string(&c.extra_types, ",")
+            strings.write_string(&c.extra_types, ty_to_llvm_str(c, f.type))
+        }
+        strings.write_string(&c.extra_types, "}\n")
+    case .FixedSizeArray:
+        ensure_type_declared(c, ty.fixed_size_array.type)
+    }
+}
 // True if cg_addr can produce a real address for this expression, i.e. it
 // names an object in memory (variable, field of one, element, deref).
 is_addressable :: proc(c: ^CGCtx, id: ExprId) -> bool {
@@ -291,6 +334,7 @@ is_signed :: proc(k: TypeKind) -> bool {
 // scalar_llvm_str (cg_abi.odin) so there is exactly one scalar table in the
 // compiler; only aggregates are worth caching.
 ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
+    ensure_type_declared(c, id)
     if t, ok := get_ctx().llvm_ty[id]; ok {
         return t
     }
@@ -310,7 +354,7 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
             debugln(ty)
             gala_panic("ty_to_llvm_str: anonymous struct has no LLVM name")
         }
-        n := aprintf(c, "%%%s", ty.name)
+        n := aprintf(c, "%%%s", type_llvm_name(id))
         get_ctx().llvm_ty[id] = n
         return n
     }
@@ -1186,7 +1230,13 @@ cg_fn_definition :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string, block: Blo
 cg_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
     case Import: {} // ok
-    case StructDec: {}
+    case StructDec: {
+        if c.declared_items[id] {
+        } else {
+            c.declared_items[id] = true
+            ensure_type_declared(c, get_ctx().item_types[id])
+        }
+    }
     case GlobalVarDec: {
         // declared by cg_globals_dec, initialised by cg_globals_init
     }
@@ -1433,15 +1483,7 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import := false) {
         case StructDec: {
             if ctx.declared_items[id] do continue
             ctx.declared_items[id] = true
-
-            name := mod_item_type_name(ctx, id)
-            cwritef(ctx, "%%%s = ", name)
-            cwrite(ctx, "type {")
-            for f, k in get_type(get_ctx().item_types[id]).structure.fields {
-                if k > 0 do cwrite(ctx, ",")
-                cwrite(ctx, ty_to_llvm_str(ctx, f.type))
-            }
-            cwriteln(ctx, "}")
+            ensure_type_declared(ctx, get_ctx().item_types[id])
         }
         case GlobalVarDec: {
             if ctx.declared_items[id] do continue
@@ -1587,10 +1629,18 @@ cg_module :: proc(m: ModId) {
     cgctx.init_mods       = make([dynamic]ModId, allocator=alloc)
     cgctx.scope = new_gcscope(nil)
 
+    cgctx.declared_types = make(map[TypeId]bool, allocator=alloc)
+    strings.builder_init(&cgctx.extra_types)
+    defer strings.builder_destroy(&cgctx.extra_types)
+
+
     // boilerplate + garbage
+    cwritefln(&cgctx, "; file \"%s\"", module.path)
     cwritefln(&cgctx, "; target info")
     cwritefln(&cgctx, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"")
     cwritefln(&cgctx, "target triple = \"x86_64-pc-linux-gnu\" ")
+
+    types_at := strings.builder_len(sb)
 
     // memory intrinsics used by cg_memcpy / cg_memmove / cg_memset.
     // Declared unconditionally: an unused `declare` costs nothing, and one
@@ -1644,7 +1694,12 @@ cg_module :: proc(m: ModId) {
     opt_name := aprintf(&cgctx, ".gala_build/%s.opt.ll", name)
     o_name   := aprintf(&cgctx, ".gala_build/%s.o", name)
 
-    if e := os.write_entire_file_from_string(ll_name, strings.to_string(sb)); e != io.Error.None {
+    
+    // write relevant types from importing files first
+    ir := strings.to_string(sb)
+    full := strings.concatenate({ir[:types_at], strings.to_string(cgctx.extra_types), ir[types_at:]},
+        get_ctx().allocator)
+    if e := os.write_entire_file_from_string(ll_name, full); e != io.Error.None {
         gala_panic("Failed to write to file:", e)
     }
 
@@ -1683,7 +1738,7 @@ path_to_file_prefix :: proc(c: ^CGCtx, path: string) -> string {
     return out
 }
 
-mod_item_type_name :: proc(c: ^CGCtx, id: ItemId) -> string {
+_mod_item_type_name :: proc(c: ^CGCtx, id: ItemId) -> string {
     tid := get_ctx().item_types[id]
     name, ok := get_ctx().cg_ty_names[tid]
     if !ok {

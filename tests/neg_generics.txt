@@ -80,7 +80,7 @@ fn main() {
 
 //### body_error_on_instantiation |
 import "core/core.gala";
-fn bad(a: $T): T { return a + "x"; }
+fn bad(a: $T): T { return a + ("Hello"); }
 fn main() {
     z := bad(1);
 }
@@ -141,8 +141,431 @@ fn main() { }
 // f<T> instantiates f<^T> forever: needs an instantiation limit, should not hang
 import "core/core.gala";
 fn f(a: $T) {
-    // f(&a);
+    f(&a);
 }
 fn main() {
     f(1);
+}
+//### conflicting_slice_elem |
+import "core/core.gala";
+fn f(a: []$T, b: T): T { return b; }
+fn main() {
+    xs := [2]i64{1, 2};
+    z := f(xs[:], 2.5);
+}
+
+//### scalar_vs_slice_binding |
+import "core/core.gala";
+fn f(a: $T, b: []T): T { return a; }
+fn main() {
+    xs := [2]i64{1, 2};
+    z := f(1.5, xs[:]);
+}
+
+//### pointee_mismatch |
+import "core/core.gala";
+fn swap(a: ^$T, b: ^T) { }
+fn main() {
+    x : i32 = 1;
+    y : i64 = 2;
+    swap(&x, &y);
+}
+
+//### pointer_vs_value_binding |
+import "core/core.gala";
+fn f(a: $T, b: ^T) { }
+fn main() {
+    x : i64 = 1;
+    f(5.5, &x);
+}
+
+//### fn_param_binding_mismatch |
+import "core/core.gala";
+
+//### fn_literal_wrong_arity |
+import "core/core.gala";
+fn apply(a: $T, f: fn(x: T): T): T { return f(a); }
+fn main() {
+    z := apply(5, fn(x: i64, y: i64): i64 => x);
+}
+
+//### fn_literal_wrong_return |
+import "core/core.gala";
+fn apply(a: $T, f: fn(x: T): T): T { return f(a); }
+fn main() {
+    z := apply(5, fn(x: i64): bool => true);
+}
+
+//### non_function_for_fn_param |
+import "core/core.gala";
+fn apply(a: $T, f: fn(x: T): T): T { return f(a); }
+fn main() {
+    z := apply(5, 3);
+}
+
+//### generic_fn_passed_as_arg |
+import "core/core.gala";
+fn id(a: $T): T { return a; }
+fn apply(a: $T, f: fn(x: T): T): T { return f(a); }
+fn main() {
+    z := apply(5, id);
+}
+
+//### struct_binding_conflict |
+import "core/core.gala";
+struct A { x: i64 }
+struct B { x: i64 }
+fn same(a: $T, b: T) { }
+fn main() {
+    same(A{1}, B{2});
+}
+
+//### array_size_binding_conflict |
+import "core/core.gala";
+fn same(a: $T, b: T) { }
+fn main() {
+    x := [3]i32{1, 2, 3};
+    y := [4]i32{1, 2, 3, 4};
+    same(x, y);
+}
+
+//### variadic_conflicting |
+import "core/core.gala";
+fn vsum(data: ..$T): T { return data[0]; }
+fn main() {
+    z := vsum(1, 2.5);
+}
+
+//### variadic_zero_args |
+import "core/core.gala";
+fn vsum(data: ..$T): i64 { return len(data); }
+fn main() {
+    z := vsum();
+}
+
+//### multi_name_shared_generic_conflict |
+import "core/core.gala";
+fn f(a, b: $T): T { return a; }
+fn main() {
+    z := f(1, 2.5);
+}
+
+// ------------------------------------------------------------------ errors that only show on instantiation
+
+//### nested_conflict |
+import "core/core.gala";
+fn add(a: $T, b: T): T { return a + b; }
+fn outer(a: $T): T { return add(a, 2.5); }
+fn main() {
+    z := outer(1);
+}
+
+//### nested_modulo_on_float |
+import "core/core.gala";
+fn mod(a: $T, b: T): T { return a % b; }
+fn outer(a: $T): T { return mod(a, a); }
+fn main() {
+    x := outer(3);
+    y := outer(2.5);
+}
+
+//### return_type_mismatch_on_instantiation |
+import "core/core.gala";
+fn f(a: $T): i64 { return a; }
+fn main() {
+    x := f(1);
+    y := f(1.5);
+}
+
+//### field_on_non_struct |
+import "core/core.gala";
+fn gx(a: $T): i64 { return a.x; }
+fn main() {
+    z := gx(5);
+}
+
+//### duck_two_params_second_lacks_field |
+import "core/core.gala";
+struct HasXY { x, y: f32 }
+fn dot(a: $A, b: $B): f32 { return a.x * b.x + a.y * b.y; }
+fn main() {
+    z := dot(HasXY{1.0, 2.0}, 5);
+}
+
+//### arith_on_struct |
+import "core/core.gala";
+struct P { a: i32 }
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    z := add(P{1}, P{2});
+}
+
+//### compare_struct |
+import "core/core.gala";
+struct P { a: i32 }
+fn max2(a: $T, b: T): T { if a > b { return a; } return b; }
+fn main() {
+    z := max2(P{1}, P{2});
+}
+
+//### arith_on_bool |
+import "core/core.gala";
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    z := add(true, false);
+}
+
+//### arith_on_string |
+import "core/core.gala";
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    z := add("a", "b");
+}
+
+//### negate_bool |
+import "core/core.gala";
+fn neg(a: $T): T { return -a; }
+fn main() {
+    z := neg(true);
+}
+
+//### not_on_int |
+import "core/core.gala";
+fn inv(a: $T): T { return !a; }
+fn main() {
+    z := inv(5);
+}
+
+//### deref_non_pointer |
+import "core/core.gala";
+fn d(a: $T): T { return a^; }
+fn main() {
+    z := d(5);
+}
+
+//### index_non_indexable |
+import "core/core.gala";
+fn ix(a: $T): i64 { return a[0]; }
+fn main() {
+    z := ix(5);
+}
+
+//### call_non_function |
+import "core/core.gala";
+fn cl(a: $T) { a(); }
+fn main() {
+    cl(1);
+}
+
+//### shadowing_in_body |
+import "core/core.gala";
+fn f(a: $T): T {
+    a := a;
+    return a;
+}
+fn main() {
+    z := f(1);
+}
+
+//### wrong_arg_count_in_recursion |
+import "core/core.gala";
+fn r(a: $T): T { return r(a, a); }
+fn main() {
+    z := r(1);
+}
+
+//### undefined_name_in_body |
+import "core/core.gala";
+fn f(a: $T): T { return nothing_here(a); }
+fn main() {
+    z := f(1);
+}
+
+//### body_error_only_in_second_instantiation |
+import "core/core.gala";
+fn f(a: $T): T { return a % a; }
+fn main() {
+    x := f(7);
+    y := f(7.5);
+}
+
+// ------------------------------------------------------------------ use sites
+
+//### assign_generic_result_to_wrong_type |
+import "core/core.gala";
+fn id(a: $T): T { return a; }
+fn main() {
+    x : i32 = id(cast(i64)5);
+}
+
+//### generic_in_fn_type_vardec |
+import "core/core.gala";
+fn main() {
+    f : fn(a: $T): T;
+}
+
+//### generic_in_struct_field |
+import "core/core.gala";
+struct S { a: $T }
+fn main() { }
+
+//### generic_in_global |
+import "core/core.gala";
+x : $T = 1;
+fn main() { }
+
+//### generic_return_fn_type |
+import "core/core.gala";
+fn f(a: i32): fn(x: $T): T { return fn(x: i32): i32 => x; }
+fn main() { }
+
+//### take_address_of_generic |
+import "core/core.gala";
+fn id(a: $T): T { return a; }
+fn main() {
+    p := &id;
+}
+
+//### call_with_too_few_in_nested |
+import "core/core.gala";
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    z := add(add(1), 2);
+}
+
+//### void_result_as_generic_arg_nested |
+import "core/core.gala";
+fn id(a: $T): T { return a; }
+fn noop() { }
+fn main() {
+    z := id(id(noop()));
+}
+
+//### duplicate_generic_name_in_different_params |
+import "core/core.gala";
+fn f(a: $T, b: []$T): T { return a; }
+fn main() {
+    z := f(1, 2);
+}
+
+//### type_param_shadows_struct |
+import "core/core.gala";
+struct T { a: i32 }
+fn f(a: $T): T { return a; }
+fn main() {
+    z := f(1);
+}
+
+//### generic_fn_defined_twice |
+import "core/core.gala";
+fn id(a: $T): T { return a; }
+fn id(a: $T): T { return a; }
+fn main() {
+    z := id(1);
+}
+
+//### generic_and_plain_same_name |
+import "core/core.gala";
+fn id(a: $T): T { return a; }
+fn id(a: i32): i32 { return a; }
+fn main() {
+    z := id(1);
+}
+
+// ------------------------------------------------------------------ instantiation limits
+
+//### polymorphic_recursion_slice |
+// f<T> instantiates f<[]T> forever
+import "core/core.gala";
+fn f(a: $T) {
+    x := [1]T{a};
+    f(x[:]);
+}
+fn main() {
+    f(1);
+}
+
+//### polymorphic_recursion_mutual |
+// ping<T> -> pong<^T> -> ping<^^T> ... must hit the limit, not hang
+import "core/core.gala";
+fn ping(a: $T) { pong(&a); }
+fn pong(a: $T) { ping(&a); }
+fn main() {
+    ping(1);
+}
+
+// ------------------------------------------------------------------ imports
+
+//### import_conflicting_bindings |
+import "core/core.gala";
+import "tests/generics_lib.gala";
+fn main() {
+    x : i32 = 1;
+    y : i64 = 2;
+    z := lib_add(x, y);
+}
+
+//### import_float_into_int_binding |
+import "core/core.gala";
+import "tests/generics_lib.gala";
+fn main() {
+    x : i32 = 1;
+    z := lib_add(x, 2.5);
+}
+
+//### import_too_few_args | Missing argument
+import "core/core.gala";
+import "tests/generics_lib.gala";
+fn main() {
+    z := lib_add(1);
+}
+
+//### import_too_many_args | args count
+import "core/core.gala";
+import "tests/generics_lib.gala";
+fn main() {
+    z := lib_add(1, 2, 3);
+}
+
+//### import_duck_type_missing_field |
+import "core/core.gala";
+import "tests/generics_lib.gala";
+fn main() {
+    z := lib_dot(1, 2);
+}
+
+//### import_non_slice_for_slice_param |
+import "core/core.gala";
+import "tests/generics_lib.gala";
+fn main() {
+    z := lib_sum(5);
+}
+
+//### import_generic_body_error |
+import "core/core.gala";
+import "tests/generics_lib_bad.gala";
+fn main() {
+    z := lib_bad(1);
+}
+
+//### import_cast_string_in_lib_generic |
+import "core/core.gala";
+import "tests/generics_lib.gala";
+fn main() {
+    z := lib_uses_helper("nope");
+}
+
+//### import_generic_fn_as_value |
+import "core/core.gala";
+import "tests/generics_lib.gala";
+fn main() {
+    p := lib_id;
+}
+
+//### import_local_redeclares_lib_generic |
+import "core/core.gala";
+import "tests/generics_lib.gala";
+fn lib_id(a: $T): T { return a; }
+fn main() {
+    z := lib_id(1);
 }

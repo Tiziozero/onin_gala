@@ -278,6 +278,7 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         // build the fn type from the signature, resolve the body in the
         // signature's scope, and stash the type for the type checker.
         fnty, fnscope := resolve_fn_dec_signature(enclosing_module_scope(s), e.signature)
+        if fnty.fn.is_generic { return };
 
         body := e.block
         resolve_block(&fnscope, &body)
@@ -459,8 +460,27 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier, no_declare_generic :
                 gala_panic("Default values aren't allowed in function types.")
             }
         }
+        // `fn(x: $T): T` in a return position would declare a generic nobody can bind
+        if no_declare_generic && bindings == nil && is_fn_signature_generic(k.signature^) {
+            highlight_lines(get_ctx().current_file, k.signature.args[0].span)
+            gala_panic("Can't specify generic in return type.")
+        }
+
         fnty, fnscope := resolve_fn_dec_signature(s, k.signature^, bindings = bindings)
+
+        // Generics declared inside the fn type (`$T`) belong to the enclosing
+        // signature, so later params and the return type can use them.
+        // (also covers the bindings != nil clone path, which binds names into fnscope)
+        for name, tid in fnscope.types {
+            if _, exists := s.types[name]; !exists {
+                s.types[name] = tid
+            }
+        }
         free_scope(&fnscope)
+
+        // a function-typed *value* is never itself a generic function; its
+        // generic-ness comes from the enclosing signature
+        fnty.fn.is_generic = false
         return new_fn_type(fnty)
     }
     case: panic("impl");
@@ -699,7 +719,43 @@ is_type_specifier_generic :: proc(t: TypeSpecifier) -> bool {
     }
     return false
 }
-is_fn_signature_generic :: proc(fndec: FnDecSignature) -> bool {
+specifier_has_generic :: proc(t: TypeSpecifier) -> bool {
+    switch k in t {
+    case GenericSpecifier:
+        return true
+    case SliceSpecifier:
+        return specifier_has_generic(k.base^)
+    case PointerType:
+        return specifier_has_generic(k.ptr^)
+    case FixedArreySpecifier:
+        return specifier_has_generic(k.base^)
+    case FnSpecifier:
+        for a in k.signature.args {
+            if !a.inferred && specifier_has_generic(a.t) do return true
+        }
+        if k.signature.is_variadic && specifier_has_generic(k.signature.variadic_ty) {
+            return true
+        }
+        if r, ok := k.signature.ret_ty.(TypeSpecifier); ok {
+            return specifier_has_generic(r)
+        }
+        return false
+    case BaseType, AnySpecifier:
+        return false
+    }
+    return false
+}
+
+is_fn_signature_generic :: proc(sig: FnDecSignature) -> bool {
+    for a in sig.args {
+        if !a.inferred && specifier_has_generic(a.t) do return true
+    }
+    if sig.is_variadic && specifier_has_generic(sig.variadic_ty) do return true
+    // a generic only in the return type is an error elsewhere
+    // ("Can't specify generic in return type"), so it isn't checked here
+    return false
+}
+_is_fn_signature_generic :: proc(fndec: FnDecSignature) -> bool {
     for a in fndec.args {
         if is_type_specifier_generic(a.t) do return true;
     }
@@ -744,7 +800,11 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 
     fnty, fnscope := resolve_fn_dec_signature(s, fndec);
 
-    resolve_block(&fnscope, &fndec.block);
+    // Generic bodies are resolved lazily, per clone, in resolve_generic_clone
+    // (in the declaring module's scope). Only the signature is resolved here.
+    if !fnty.fn.is_generic {
+        resolve_block(&fnscope, &fndec.block);
+    }
     free_scope(&fnscope);
 
     // intern type
@@ -974,6 +1034,7 @@ resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
     return mid;
 }
 // Walks a generic specifier against a concrete type to recover `$T`.
+// Walks a generic specifier against a concrete type to recover `$T`.
 bind_generics :: proc(spec: TypeSpecifier, concrete: TypeId, out: ^map[string]TypeId) {
     ty := get_type(concrete)
     #partial switch k in spec {
@@ -985,6 +1046,18 @@ bind_generics :: proc(spec: TypeSpecifier, concrete: TypeId, out: ^map[string]Ty
         if ty.kind == .Slice do bind_generics(k.base^, ty.slice.type, out)
     case FixedArreySpecifier:
         if ty.kind == .FixedSizeArray do bind_generics(k.base^, ty.fixed_size_array.type, out)
+    case FnSpecifier:
+        if ty.kind != .Function do return
+        for a, i in k.signature.args {
+            if a.inferred || i >= len(ty.fn.args) do continue
+            bind_generics(a.t, ty.fn.args[i].type, out)
+        }
+        if k.signature.is_variadic && ty.fn.is_variadic {
+            bind_generics(k.signature.variadic_ty, ty.fn.variadic_ty, out)
+        }
+        if r, ok := k.signature.ret_ty.(TypeSpecifier); ok {
+            bind_generics(r, ty.fn.ret_ty, out)
+        }
     }
 }
 

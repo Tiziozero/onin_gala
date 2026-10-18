@@ -29,16 +29,6 @@ fn filter(m: []$T, ff: fn(a: T): bool): []T {
     return data[:l];
 }
 
-// Allocates a T, copies `v` into it. Returns NULL (as ^T) on failure.
-fn new(v: $T, a: Allocator = base_allocator): ^T {
-    size := cast(u64)sizeof(T);
-    raw := alloc(size, align_for_size(size), a);
-    p := transmute(^T)raw;
-    if raw != NULL {
-        p^ = v;
-    }
-    return p;
-}
 
 fn sum(data: []$T, a, b: $B): T {
     t : T = 0;
@@ -75,5 +65,12 @@ fn main() {
     generic_fn("Hello!");
     v: i32 = len(dirty);
     println(type_id(i32), type_id(v), type_id(i64), type_id(len(dirty)));
+
+    d := len(dirty) - 1;
+    println("d:", d, type_id(d));
 }
 
+fn fff() {
+    xs := [3]i64{1, 2, 3};
+    p := &xs[len(xs) - 1];
+}

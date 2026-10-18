@@ -245,7 +245,7 @@ fn free_string(s: string, a: Allocator = base_allocator) {
 // ============================================================
 
 // Allocates a T, copies `v` into it. Returns NULL (as ^T) on failure.
-fn _new(v: $T, a: Allocator = base_allocator): ^T {
+fn new(v: $T, a: Allocator = base_allocator): ^T {
     size := cast(u64)sizeof(T);
     raw := alloc(size, align_for_size(size), a);
     p := transmute(^T)raw;

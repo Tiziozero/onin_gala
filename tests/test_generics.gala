@@ -173,5 +173,6 @@ fn main() {
     noop_gen(2.5);
     noop_gen(pr);
 
+    check("param binding", apply(5, fn(x: f64): f64 => x) == 5);
     println("all passed");
 }

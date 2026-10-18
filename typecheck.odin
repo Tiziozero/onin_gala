@@ -470,11 +470,10 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             tc_expr(tc, e.start)
             s_ty := expr_ty(e.start)
 
-
             if is_untyped(s_ty) {
                 if get(s_ty).kind == .UntypedInteger {
                     s_ty = integer_type()
-                    get_ctx().expr_types[e.start] = s_ty
+                    propagate_type(s_ty, e.start)
                 } else {
                     gala_panic("array index must be an integer")
                 }
@@ -491,7 +490,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             if is_untyped(e_ty) {
                 if get(e_ty).kind == .UntypedInteger {
                     e_ty = integer_type()
-                    get_ctx().expr_types[e.end] = e_ty
+                    propagate_type(e_ty, e.end)
                 } else {
                     gala_panic("array index must be an integer")
                 }
@@ -528,7 +527,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         if is_untyped(i_ty) {
             if get(i_ty).kind == .UntypedInteger {
                 i_ty = integer_type()
-                get_ctx().expr_types[e.index] = i_ty
+                propagate_type(i_ty, e.index)
             } else {
                 gala_panic("array index must be an integer")
             }
@@ -903,6 +902,11 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             idx, added := get_or_add_fn_version(fn_tid, key_tys, ret_ty)
             if added {
                 debugln("NEW VARIATION FOR GENERIC FUNCRTION!")
+                MAX_GENERIC_VERSIONS :: 64
+                if len(get_type(fn_tid).fn.versions) > MAX_GENERIC_VERSIONS {
+                    highlight_lines(get_span(id))
+                    gala_panic("Generic instantiation limit reached; this looks like infinite recursion (e.g. f<T> instantiating f<^T>).")
+                }
             }
             get_ctx().expr_fn_version[id] = FnVersionRef{fn = fn_tid, idx = idx}
         }
@@ -1203,7 +1207,7 @@ tc_item :: proc(tc: ^TcContext, id: ItemId) {
     }
 }
 // "f" + params [f64, ^i32] -> "f.f64.p_i32"; only [A-Za-z0-9_] survive, LLVM-safe
-mangle_version :: proc(base: string, params: []TypeId) -> string {
+mangle_version :: proc(base: string, params: []TypeId, idx: int) -> string {
     b: strings.Builder
     strings.builder_init(&b, get_ctx().allocator)
     strings.write_string(&b, base)
@@ -1220,6 +1224,9 @@ mangle_version :: proc(base: string, params: []TypeId) -> string {
             }
         }
     }
+    // names are for readability only; the index is what makes them unique
+    strings.write_string(&b, ".v")
+    strings.write_int(&b, idx)
     return strings.to_string(b)
 }
 typecheck_module :: proc(ast: ^AST, mid: ModId, file: string) {
@@ -1319,7 +1326,7 @@ typecheck_generics :: proc() {
                 iid := clone_item(g)
                 // unique name per version, kept on the version too
                 fd := c.items[iid].(FnDec)
-                fd.name = mangle_version(fd.name, get_type(fn_tid).fn.versions[idx].params)
+                fd.name = mangle_version(fd.name, get_type(fn_tid).fn.versions[idx].params, idx)
                 c.items[iid] = Item(fd)
                 get_type(fn_tid).fn.versions[idx].llvm_fn_name = fd.name
 
