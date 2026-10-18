@@ -41,7 +41,11 @@ Transmute :: struct {
     to: TypeSpecifier,
     target: ExprId,
 }
-TypeIdOf :: struct { t: TypeSpecifier }
+TypeIdOf :: struct {
+    t:          Maybe(TypeSpecifier), // set when written with type-only syntax
+    expr:       Maybe(ExprId),   // set otherwise
+    names_type: bool,            // resolver: `expr` was a bare type name
+}
 ZeroInit :: struct {}
 BreakStmt :: struct {label: string};
 ContinueStmt :: struct {label: string};
@@ -462,9 +466,15 @@ parse_compiler_op :: proc(p: ^Parser) -> ExprId {
     } else if current_token(p).kind == .TypeIdOf {
         token := consume_token(p); // "type_id"
         expect_symbol(p, "(");
-        ty := parse_type(p);
+        node := TypeIdOf{}
+        // type-only syntax; a bare name is left to the resolver
+        if is_symbol(next_token(p), "^") || is_symbol(next_token(p), "[") || is_kw(current_token(p), .Fn) {
+            node.t = parse_type(p)
+        } else {
+            node.expr = parse_expr(p)
+        }
         end := expect_symbol(p, ")");
-        id := new_expr(Expr(TypeIdOf{ty}));
+        id := new_expr(Expr(node));
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
             span={token.span.start, end.span.end},
@@ -1237,10 +1247,14 @@ parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
             gala_panic("A parameter without a default value can't come after one with a default.")
         }
 
-        // every name in the group gets the same type
-        for n in names {
+        // all names share the type; only the first may declare a `$T`
+        for n, i in names {
+            arg_ty := ty
+            if g, is_generic := ty.(GenericSpecifier); is_generic && i > 0 {
+                arg_ty = TypeSpecifier(BaseType{ident=g.name, span=g.span})
+            }
             append(&args, FnDecArg{
-                name=n.text, t=ty, span=n.span,
+                name=n.text, t=arg_ty, span=n.span,
                 default=default, inferred=inferred, default_src=default_src,
             })
         }

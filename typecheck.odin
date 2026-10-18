@@ -394,6 +394,23 @@ order_call_args :: proc(id: ExprId, args: [dynamic]FnCallArg, params: []Arg) -> 
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     switch e in get_expr(id) {
     case TypeIdOf: {
+        _, syntactic := e.t.(TypeSpecifier)
+        if !syntactic && !e.names_type {
+            ex := e.expr.(ExprId)
+            tc_expr(tc, ex)
+            t := expr_ty(ex)
+            if get_type(t).kind == .ZeroInit {
+                highlight_lines(get_span(ex))
+                gala_panic("Can't take the type_id of a zero initialiser: it has no type.")
+            }
+            // type_id(1) is i64, like `x := 1`
+            if is_untyped(t) {
+                t = get_untyped_default(t)
+                propagate_type(t, ex)
+            }
+            // codegen reads the id from here, same as for the type form
+            get_ctx().expr_resolution_types[id] = t
+        }
         get_ctx().expr_types[id] = intern_type(Type{kind=.UntypedInteger})
     }
     case UnNegative: {
@@ -649,7 +666,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             gala_panicf("Can not take len of expression of type %s.",
                 tts(expr_ty(e.target)));
         }
-        get_ctx().expr_types[id] = integer_type()
+        get_ctx().expr_types[id] = intern_type({kind=.UntypedInteger});
     }
     case Sizeof: {
         get_ctx().expr_types[id] = intern_type({kind=.UntypedInteger})
@@ -812,15 +829,14 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             gala_panicf("Can't call a value of type %s.", tts(fn_tid))
         }
 
-        // Read the signature only now, after the arguments are typed: typing
-        // them can intern types, which may move the type table and leave a
-        // pointer taken earlier dangling.
+        // Read the signature only now: typing can intern types, which may move
+        // the type table and leave an earlier pointer dangling.
         ty := get_type(fn_tid);
         fargs := ty.fn.args;
-        variadic_ty := ty.fn.variadic_ty
+        declared_var_ty := ty.fn.variadic_ty
         is_variadic := ty.fn.is_variadic
         is_generic := ty.fn.is_generic
-        declared_ret := ty.fn.ret_ty   // copied now: substitution below can intern types
+        declared_ret := ty.fn.ret_ty   // copied: substitution below can intern types
 
         // make sure inferred parameter types are known before reading them
         tc_default_args(tc, fn_tid)
@@ -856,23 +872,38 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             get_ctx().exprs[id] = Expr(new_call)
         }
 
-        // Concrete parameter types for this call, and the return type.
-        // Non-generic: straight from the signature. Generic: inferred from the
-        // arguments, then the matching version is found or created.
+        // Concrete parameter types for this call, the variadic element type and
+        // the return type. Generic: inferred from the arguments, then the
+        // matching version is found or created.
         param_tys := make([]TypeId, len(fargs), context.temp_allocator)
         ret_ty: TypeId
+        var_ty: TypeId
 
         if !is_generic {
             for farg, i in fargs do param_tys[i] = farg.type
+            var_ty = declared_var_ty
             ret_ty = declared_ret
         } else {
             bound := infer_generic_bindings(id, call_args, fn_tid)
             for farg, i in fargs {
                 param_tys[i] = gen_subst(farg.type, bound, id)
             }
+            if is_variadic {
+                var_ty = gen_subst(declared_var_ty, bound, id)
+            }
             ret_ty = gen_subst(declared_ret, bound, id)
 
-            idx, _ := get_or_add_fn_version(fn_tid, param_tys, ret_ty)
+            // the variadic element is part of the version key (goes last)
+            key_tys := param_tys
+            if is_variadic {
+                key_tys = make([]TypeId, len(param_tys) + 1, context.temp_allocator)
+                copy(key_tys, param_tys)
+                key_tys[len(param_tys)] = var_ty
+            }
+            idx, added := get_or_add_fn_version(fn_tid, key_tys, ret_ty)
+            if added {
+                debugln("NEW VARIATION FOR GENERIC FUNCRTION!")
+            }
             get_ctx().expr_fn_version[id] = FnVersionRef{fn = fn_tid, idx = idx}
         }
 
@@ -889,16 +920,16 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             mark_arg(&call_args[i], expected, r);
         }
 
-        // default for rest (variadic tail)
+        // variadic tail, checked against the concrete element type
         if is_variadic do for i in len(fargs)..<len(call_args) {
             earg := call_args[i].expr;
-            r, ok, err := assignable(variadic_ty, expr_ty(earg));
+            r, ok, err := assignable(var_ty, expr_ty(earg));
             if !ok {
                 highlight_lines(get_span(earg));
                 gala_panicf("Type Mismatch: %s (expected %s, got %s)",
-                    err, tts(variadic_ty), tts(expr_ty(earg)));
+                    err, tts(var_ty), tts(expr_ty(earg)));
             }
-            mark_arg(&call_args[i], variadic_ty, r);
+            mark_arg(&call_args[i], var_ty, r);
         }
 
         get_ctx().expr_types[id] = ret_ty
@@ -1191,7 +1222,7 @@ mangle_version :: proc(base: string, params: []TypeId) -> string {
     }
     return strings.to_string(b)
 }
-typecheck_module :: proc(ast: ^AST) {
+typecheck_module :: proc(ast: ^AST, mid: ModId, file: string) {
     generic_items := make([dynamic]ItemId, allocator=get_ctx().allocator);
     generic_exprs := make([dynamic]ExprId, allocator=get_ctx().allocator);
     tc := TcContext{
@@ -1231,64 +1262,104 @@ typecheck_module :: proc(ast: ^AST) {
     for i in ast.items {
         tc_item(&tc, i);
     }
-    // Generic bodies are checked per version, now that every call is known.
-    done := make(map[ItemId]int, allocator=get_ctx().allocator)
+
+    // Generic bodies aren't checked here: other modules may still add
+    // versions of them. Hand them to typecheck_generics along with their
+    // owner, and take the generic originals out of this module (only their
+    // clones get emitted).
+    for g in generic_items {
+        append(&get_ctx().generic_items, g)
+        get_ctx().generic_owner[g] = GenericOwner{ast = ast, mod = mid, file = file}
+    }
+    kept := make([dynamic]ItemId, allocator=get_ctx().allocator)
+    for i in ast.items {
+        if slice.contains(generic_items[:], i) {
+            continue
+        }
+        append(&kept, i)
+    }
+    ast.items = kept
+}
+
+// Instantiates every requested version of every generic function, across
+// all modules. Run once, after all modules are type-checked. A clone is
+// resolved and checked in its owner's scope and added to the owner's
+// items, so the owner's object file defines it and importers call it like
+// any other function. Checking a clone can request more versions (of this
+// or another generic), hence the loop.
+typecheck_generics :: proc() {
+    c := get_ctx()
+
+    // clones are never generic, so these stay empty
+    scratch_items := make([dynamic]ItemId, allocator=c.allocator)
+    scratch_exprs := make([dynamic]ExprId, allocator=c.allocator)
+    tc := TcContext{
+        generic_items=&scratch_items,
+        generic_exprs=&scratch_exprs,
+    }
+
+    prev_file := c.current_file
+    prev_mod  := c.current_module_id
+
     progress := true
     for progress {
         progress = false
-        for g in tc.generic_items {
-            fn_tid := get_obj(get_ctx().item_objects[g]).type.(TypeId)
-            for done[g] < len(get_type(fn_tid).fn.versions) {
-                idx := done[g]
-                done[g] += 1
+        for g in c.generic_items {
+            owner := c.generic_owner[g]
+            fn_tid := get_obj(c.item_objects[g]).type.(TypeId)
+
+            for c.generic_done[g] < len(get_type(fn_tid).fn.versions) {
+                idx := c.generic_done[g]
+                c.generic_done[g] += 1
+
+                // names and spans must resolve in the owner's module
+                c.current_file = owner.file
+                c.current_module_id = owner.mod
 
                 iid := clone_item(g)
-
                 // unique name per version, kept on the version too
-                fd := get_ctx().items[iid].(FnDec)
+                fd := c.items[iid].(FnDec)
                 fd.name = mangle_version(fd.name, get_type(fn_tid).fn.versions[idx].params)
-                get_ctx().items[iid] = Item(fd)
+                c.items[iid] = Item(fd)
                 get_type(fn_tid).fn.versions[idx].llvm_fn_name = fd.name
 
                 // fetched fresh each time: cloning/resolving appends to the tables
                 get_type(fn_tid).fn.versions[idx].item = iid
                 v := get_type(fn_tid).fn.versions[idx]
 
-                append(&ast.items, iid)
+                append(&owner.ast.items, iid)
                 resolve_generic_clone(g, iid, v)
-                c := get_ctx()
-                t := get_type(get(c.item_objects[iid]).type.(TypeId))
+                c.obj_modules[c.item_objects[iid]] = owner.mod
+
                 tc_item(&tc, iid)
                 progress = true
             }
         }
     }
-    // update objects as well
-    // point every generic call at its clone, so codegen sees a plain call
+
+    c.current_file = prev_file
+    c.current_module_id = prev_mod
+
+    retarget_generic_calls()
+}
+
+// Points every generic call at its clone, so codegen sees a plain call.
+retarget_generic_calls :: proc() {
     for call_id, ref in get_ctx().expr_fn_version {
         v := get_type(ref.fn).fn.versions[ref.idx]
-        if v.llvm_fn_name == "" do continue // not instantiated in this module yet
+        if v.llvm_fn_name == "" do continue
 
-            call := get_expr(call_id).(FnCall)
-            oid := get_ctx().item_objects[v.item]
-            get_ctx().expr_objects[call.target] = oid
-            get_ctx().expr_types[call.target] = get_obj(oid).type.(TypeId)
+        call := get_expr(call_id).(FnCall)
+        oid := get_ctx().item_objects[v.item]
+        get_ctx().expr_objects[call.target] = oid
+        get_ctx().expr_types[call.target] = get_obj(oid).type.(TypeId)
 
-            // codegen resolves callees by name, so rename the symbol too
-            if sym, ok := get_expr(call.target).(Symbol); ok {
-                sym.name = get_obj(oid).name
-                get_ctx().exprs[call.target] = Expr(sym)
-            }
+        // codegen resolves callees by name, so rename the symbol too
+        if sym, ok := get_expr(call.target).(Symbol); ok {
+            sym.name = get_obj(oid).name
+            get_ctx().exprs[call.target] = Expr(sym)
         }
-    // the generic originals have no types; only their clones go on
-    kept := make([dynamic]ItemId, allocator=get_ctx().allocator)
-    for i in ast.items {
-        if slice.contains(tc.generic_items[:], i) {
-            continue
-        }
-        append(&kept, i)
     }
-    ast.items = kept
 }
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
     switch e in get_expr(expr) {
@@ -1302,7 +1373,6 @@ propagate_type :: proc(ty: TypeId, expr: ExprId) {
     }
     case BoolLitFalse, BoolLitTrue: return // already typed
     case Len: {
-        return // always an int
     }
     // just porpatae as they're untyped int by default
     case Sizeof: {

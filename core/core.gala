@@ -126,3 +126,7 @@ fn str_cmp(a: string, b: string): bool {
     while i < len(a) { if a[i] != b[i] { return false; } }
     return true;
 }
+
+fn generic_fn(a: $T) {
+    println("a:", a);
+}

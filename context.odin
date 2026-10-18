@@ -14,6 +14,21 @@ TypeId  :: distinct u64
 ObjId   :: distinct u64
 ModId   :: distinct u64
 
+// where a generic function was declared; its clones are resolved,
+// type-checked and emitted there
+GenericOwner :: struct {
+    ast:  ^AST,
+    mod:  ModId,
+    file: string,
+}
+
+// a module that has been parsed, resolved and type-checked
+ModuleUnit :: struct {
+    ast:  ^AST,
+    mod:  ModId,
+    file: string,
+}
+
 Context :: struct {
     program_name:       string,
     arena:              virtual.Arena,
@@ -48,6 +63,14 @@ Context :: struct {
     // generics: call expr -> the instantiation it uses
     expr_fn_version:        map[ExprId]FnVersionRef,
     fn_generic_variations:  map[TypeId]struct{},
+
+    // every generic fn item of every module, who owns it, and how many of
+    // its versions have been instantiated so far
+    generic_items:          [dynamic]ItemId,
+    generic_owner:          map[ItemId]GenericOwner,
+    generic_done:           map[ItemId]int,
+    // type-checked modules, imports first
+    units:                  [dynamic]ModuleUnit,
 
     // for other stuff that need to know things only available
     // at resolution phase

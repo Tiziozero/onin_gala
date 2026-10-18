@@ -39,6 +39,11 @@ init_context :: proc(debug := false) -> ^Context {
     ctx.stmt_types   = make(map[StmtId]TypeId, allocator = al)
     ctx.expr_resolution_types = make(map[ExprId]TypeId, allocator = al)
 
+    ctx.generic_items = make([dynamic]ItemId, allocator = al)
+    ctx.generic_owner = make(map[ItemId]GenericOwner, allocator = al)
+    ctx.generic_done  = make(map[ItemId]int, allocator = al)
+    ctx.units         = make([dynamic]ModuleUnit, allocator = al)
+
     ctx.spans.exprs = make(map[ExprId]SpanStruct, allocator = al)
     ctx.spans.items = make(map[ItemId]SpanStruct, allocator = al)
     ctx.spans.stmts = make(map[StmtId]SpanStruct, allocator = al)
@@ -99,7 +104,6 @@ resolve_import_path :: proc(importer_path: string, import_path: string) -> strin
     if abs_ok != .NONE {
         abs_path = joined
     }
-    debugln("abs_path", abs_path);
 
     cleaned, cerr := filepath.clean(abs_path, allocator=get_ctx().allocator)
     assert(cerr == .None)
@@ -119,6 +123,9 @@ resolve_import_path :: proc(importer_path: string, import_path: string) -> strin
 // It's resolved with resolve_import_path against `ctx.current_file`, and
 // the resolved path is the key everywhere (ctx.files, ctx.parsing,
 // ctx.modules). Returns the resolved path.
+//
+// Only parses, resolves and type-checks. Generic instantiation and
+// lowering happen once the whole import graph is done (see main).
 handle_file :: proc(file_name: string) -> string {
     resolved := resolve_import_path(get_ctx().current_file, file_name)
 
@@ -148,10 +155,9 @@ handle_file :: proc(file_name: string) -> string {
     ast := new(AST, get_ctx().allocator)
     ast^ = parse_tokens(resolved, tokens[:])
     mid := resolve_module_ast(ast, resolved)
-    typecheck_module(ast)
-    lower_module(ast)
+    typecheck_module(ast, mid, resolved)
+    append(&get_ctx().units, ModuleUnit{ast = ast, mod = mid, file = resolved})
     // get_ctx().mods[mid].ast = ast   // the module holds a copy; sync it
-    cg_module(mid)
 
     get_ctx().modules[resolved] = mid
     delete_key(&get_ctx().parsing, resolved)
@@ -410,6 +416,24 @@ main :: proc() { // odins context is passed down, not up, or some shi
     get_ctx().entry_file = resolve_import_path("", cli.entry_file)
     handle_file(cli.entry_file)
 
+    // every module is type-checked now, so all generic calls are known
+    typecheck_generics()
+
+    // lowering runs after generics so the clones get lowered too
+    for u in get_ctx().units {
+        get_ctx().current_file = u.file
+        get_ctx().current_module_id = u.mod
+        lower_module(u.ast)
+    }
+
+    // then generate
+    for m, mid in get_ctx().modules {
+        // set for codegen
+        get_ctx().current_file = m;
+        debugln("CG MOD:", m, mid);
+        cg_module(mid)
+    }
+
     link_executable(ctx, cli.extra_libs[:])
 
     debugln("modules:       ", len(get_ctx().mods));
@@ -424,7 +448,7 @@ main :: proc() { // odins context is passed down, not up, or some shi
         for t in get_ctx().types do counts[t.kind] += 1
         for k, n in counts do fmt.println(k, n)
     }
-    dump_type_stats()
+    if get_ctx().debug  do dump_type_stats()
     destroy_context(ctx, heap);
     free_all(context.temp_allocator);
     debugln("Finished compiling");

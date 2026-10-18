@@ -1637,7 +1637,9 @@ cg_module :: proc(m: ModId) {
         gala_panic("Failed make .gala_build directory:", dir_err)
     }
 
+
     name := mod_prefix_from_path(get_ctx().current_file, "gala_")
+
     ll_name  := aprintf(&cgctx, ".gala_build/%s.ll", name)
     opt_name := aprintf(&cgctx, ".gala_build/%s.opt.ll", name)
     o_name   := aprintf(&cgctx, ".gala_build/%s.o", name)
@@ -1652,6 +1654,7 @@ cg_module :: proc(m: ModId) {
     // debugln("compiling:", name)
     run_tool("llc", {"llc", "-filetype=obj", "-O2", opt_name, "-o", o_name})
 
+    debugln("ADDING:", o_name)
     append(&get_ctx().o_files, o_name)
 }
 

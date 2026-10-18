@@ -4,8 +4,8 @@ package main
 // against the type of the argument passed, record what every generic name
 // stands for, then substitute those into the return type.
 //
-// Everything works on resolved TypeIds, so `$T` and a later plain `T` are the
-// same thing as long as they share a name.
+// Works on resolved TypeIds, so `$T` and a later plain `T` are the same
+// thing as long as they share a name.
 
 // The one place that knows how a generic param looks once resolved.
 // ASSUMPTION: Type{kind=.Generic, name="T"}. Change this proc if yours differs.
@@ -13,6 +13,16 @@ generic_param_name :: proc(t: TypeId) -> (string, bool) {
     ty := get_type(t)
     if ty.kind == .Generic do return ty.name, true
     return "", false
+}
+
+// The one place that knows how a variadic param looks in a function type.
+// Returns the element type (the `$T` of `..$T`).
+// ASSUMPTION: fn type has `is_variadic: bool` and `variadic_ty: TypeId`
+// (element type), and the variadic param is NOT in fn.args.
+// Change this proc (and the writes in gen_subst) if yours differs.
+fn_variadic_elem :: proc(ty: ^Type) -> (TypeId, bool) {
+    if ty.fn.is_variadic do return ty.fn.variadic_ty, true
+    return {}, false
 }
 
 // Does this type mention a generic param anywhere?
@@ -27,6 +37,7 @@ gen_has :: proc(t: TypeId) -> bool {
         for a in ty.fn.args {
             if gen_has(a.type) do return true
         }
+        if v, ok := fn_variadic_elem(&ty); ok && gen_has(v) do return true
         return gen_has(ty.fn.ret_ty)
     }
     }
@@ -80,6 +91,13 @@ gen_unify :: proc(param, got: TypeId, bound: ^map[string]TypeId) -> (bool, strin
             ok, msg := gen_unify(a.type, gt.fn.args[i].type, bound)
             if !ok do return false, msg
         }
+        pv, p_var := fn_variadic_elem(&pt)
+        gv, g_var := fn_variadic_elem(&gt)
+        if p_var != g_var do return false, "variadic parameters don't match"
+        if p_var {
+            ok, msg := gen_unify(pv, gv, bound)
+            if !ok do return false, msg
+        }
         return gen_unify(pt.fn.ret_ty, gt.fn.ret_ty, bound)
     }
     }
@@ -124,6 +142,9 @@ gen_subst :: proc(t: TypeId, bound: map[string]TypeId, call: ExprId) -> TypeId {
             args[i].type = gen_subst(a.type, bound, call)
         }
         nt.fn.args = args
+        if v, ok := fn_variadic_elem(&ty); ok {
+            nt.fn.variadic_ty = gen_subst(v, bound, call)
+        }
         nt.fn.ret_ty = gen_subst(ty.fn.ret_ty, bound, call)
         nt.fn.is_generic = false
         return new_fn_type(nt)
@@ -136,7 +157,9 @@ gen_subst :: proc(t: TypeId, bound: map[string]TypeId, call: ExprId) -> TypeId {
 // The arguments must already be type checked.
 infer_generic_bindings :: proc(call: ExprId, args: [dynamic]FnCallArg, fn_tid: TypeId) -> map[string]TypeId {
     bound := make(map[string]TypeId, allocator=get_ctx().allocator)
-    params := get_type(fn_tid).fn.args // slice header copy; the data doesn't move
+    fn_ty := get_type(fn_tid)
+    params := fn_ty.fn.args // slice header copy; the data doesn't move
+    velem, is_variadic := fn_variadic_elem(fn_ty)
 
     // pass 0: typed arguments. pass 1: untyped literals for a bare `$T` that
     // is still unbound, which take their default type (i64 / f64). A literal
@@ -154,9 +177,21 @@ infer_generic_bindings :: proc(call: ExprId, args: [dynamic]FnCallArg, fn_tid: T
                 }
             }
             // wrong names / too many args are reported by order_call_args
-            if pi < 0 || pi >= len(params) do continue
+            if pi < 0 do continue
 
-            ptype := params[pi].type
+            ptype: TypeId
+            pname: string
+            if pi < len(params) {
+                ptype = params[pi].type
+                pname = params[pi].name
+            } else if is_variadic && len(a.name) == 0 {
+                // extra positional args all match the variadic element type
+                ptype = velem
+                pname = "variadic argument"
+            } else {
+                continue
+            }
+
             t := expr_ty(a.expr)
             name, direct := generic_param_name(ptype)
 
@@ -176,7 +211,7 @@ infer_generic_bindings :: proc(call: ExprId, args: [dynamic]FnCallArg, fn_tid: T
             if !ok {
                 highlight_lines(get_span(a.expr))
                 gala_panicf("Generic argument mismatch for parameter \"%s\": %s (got %s).",
-                    params[pi].name, msg, tts(t))
+                    pname, msg, tts(t))
             }
         }
     }
@@ -190,4 +225,10 @@ infer_ty_from_generic_fn_call :: proc(call: ExprId, args: [dynamic]FnCallArg, fn
     bound := infer_generic_bindings(call, args, fn_tid)
     ret := get_type(fn_tid).fn.ret_ty
     return gen_subst(ret, bound, call)
+}
+// The concrete fn type for this call: params, variadic element and return
+// type all substituted with what was inferred.
+instantiate_generic_fn_type :: proc(call: ExprId, args: [dynamic]FnCallArg, fn_tid: TypeId) -> TypeId {
+    bound := infer_generic_bindings(call, args, fn_tid)
+    return gen_subst(fn_tid, bound, call)
 }

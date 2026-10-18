@@ -168,7 +168,28 @@ enclosing_module_scope :: proc(s: ^Scope) -> ^Scope {
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
     case TypeIdOf: {
-        get_ctx().expr_resolution_types[id] = resolve_type_specifier(s, e.t);
+        // written with type-only syntax (`^T`, `[]T`, `fn(..)`)
+        if spec, is_ty := e.t.(TypeSpecifier); is_ty {
+            get_ctx().expr_resolution_types[id] = resolve_type_specifier(s, spec)
+            return
+        }
+
+        inner := e.expr.(ExprId)
+
+        // a bare name is a type if one is in scope, otherwise a variable
+        // (no shadowing, so a name can't be both)
+        node := get_expr(id).(TypeIdOf)
+        node.names_type = false
+        if sym, is_sym := get_expr(inner).(Symbol); is_sym {
+            if tid, is_ty := scope_find_type(s, sym.name); is_ty {
+                node.names_type = true
+                get_ctx().expr_resolution_types[id] = tid
+            }
+        }
+        get_expr(id)^ = node
+
+        // a type name has nothing to resolve; anything else is a real expression
+        if !node.names_type do resolve_expr(s, inner)
     }
     case UnNegative: {
         resolve_expr(s, e.expr);
@@ -355,7 +376,8 @@ scope_get_object :: proc(s: ^Scope, n: string) -> (ObjId, bool) {
     }
     return 0, false
 }
-scope_get_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
+// silent lookup: a miss is a normal answer here (see TypeIdOf)
+scope_find_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
     scope := s
     for scope != nil {
         id, ok := scope.types[n];
@@ -365,8 +387,12 @@ scope_get_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
         if ok { return id, true }
         scope = scope.parent
     }
-    debugln(n, "Not found")
     return 0, false
+}
+scope_get_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
+    id, ok := scope_find_type(s, n)
+    if !ok do debugln(n, "Not found")
+    return id, ok
 }
 new_generic_ty :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
     type := Type{
@@ -979,6 +1005,10 @@ resolve_generic_clone :: proc(g, iid: ItemId, v: FnVersion) {
     bindings := make(map[string]TypeId, allocator=ctx.allocator)
     for a, i in orig.signature.args {
         bind_generics(a.t, v.params[i], &bindings)
+    }
+    // the variadic element is the last entry of the version key
+    if orig.signature.is_variadic {
+        bind_generics(orig.signature.variadic_ty, v.params[len(orig.signature.args)], &bindings)
     }
 
     fnty, fnscope := resolve_fn_dec_signature(ms, fndec.signature, bindings = bindings)

@@ -261,7 +261,7 @@ fn del(p: ^$T, a: Allocator = base_allocator) {
 
 // `like` is only used to infer T: make_slice(0.0, 10) gives a []f64 of
 // ten zeroes. On failure the slice is empty.
-fn _make_slice(like: $T, n: i64, a: Allocator = base_allocator): []T {
+fn make_slice(like: $T, n: i64, a: Allocator = base_allocator): []T {
     esz := cast(u64)sizeof(T);
     raw: rawptr = NULL;
     count: i64 = 0;
