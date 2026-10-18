@@ -1034,7 +1034,6 @@ resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
     return mid;
 }
 // Walks a generic specifier against a concrete type to recover `$T`.
-// Walks a generic specifier against a concrete type to recover `$T`.
 bind_generics :: proc(spec: TypeSpecifier, concrete: TypeId, out: ^map[string]TypeId) {
     ty := get_type(concrete)
     #partial switch k in spec {
