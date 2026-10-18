@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:strings"
 Field :: struct {
     name: string,
     type: TypeId,
@@ -182,6 +183,12 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         node.names_type = false
         if sym, is_sym := get_expr(inner).(Symbol); is_sym {
             if tid, is_ty := scope_find_type(s, sym.name); is_ty {
+                // `type_id(Box)`: a generic struct is only a type once it has arguments
+                if bt := get_type(tid); bt.kind == .Struct && bt.structure.is_generic {
+                    highlight_lines(get_span(id))
+                    gala_panicf("Generic struct \"%s\" needs type arguments, e.g. %s(i64).",
+                        sym.name, sym.name)
+                }
                 node.names_type = true
                 get_ctx().expr_resolution_types[id] = tid
             }
@@ -278,7 +285,11 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         // build the fn type from the signature, resolve the body in the
         // signature's scope, and stash the type for the type checker.
         fnty, fnscope := resolve_fn_dec_signature(enclosing_module_scope(s), e.signature)
-        if fnty.fn.is_generic { return };
+        if fnty.fn.is_generic {
+            free_scope(&fnscope)
+            highlight_lines(get_span(id))
+            gala_panic("Function literals can't be generic.")
+        }
 
         body := e.block
         resolve_block(&fnscope, &body)
@@ -294,13 +305,9 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
 resolve_struct_lit :: proc(s: ^Scope, id: ExprId) {
     e := get_expr(id).(StructLit)
 
-    // a typo'd or non-struct name is a user error, not an assertion failure
-    tid, ok := scope_get_type(s, e.name)
-    if !ok {
-        highlight_lines(get_ctx().current_file, get_span(id).span)
-        gala_panicf("Unknown struct type \"%s\".", e.name)
-    }
-    ty := get_type(tid);
+    // `Foo` or `Foo(i64)`
+    tid := resolve_type_specifier(s, e.ty)
+    ty := get_type(tid)
     if ty.kind != .Struct {
         highlight_lines(get_ctx().current_file, get_span(id).span)
         gala_panicf("\"%s\" is not a struct type.", e.name)
@@ -425,13 +432,15 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier, no_declare_generic :
             highlight_lines({get_ctx().current_file, k.span})
             gala_panicf("Can't specify generic in return type.");
         }
-        return new_generic_ty(s, t);
+        return new_generic_ty(s, t)
     }
     case AnySpecifier: {
         return intern_type({kind=.Any})
     }
     case SliceSpecifier: {
-        base := resolve_type_specifier(s, k.base^, bindings = bindings)
+        // no_declare_generic must reach the element type: `fn f(): []$T` is as
+        // wrong as `fn f(): $T`
+        base := resolve_type_specifier(s, k.base^, no_declare_generic, bindings)
         return intern_type({kind=.Slice, slice={type=base}})
     }
     case BaseType: { // will get declared type id
@@ -442,14 +451,47 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier, no_declare_generic :
             gala_panic("type doesn't exist");
         }
         assert(ok)
+        if bt := get_type(ty); bt.kind == .Struct && bt.structure.is_generic {
+            highlight_lines({get_ctx().current_file, k.span})
+            gala_panicf("Generic struct \"%s\" needs type arguments, e.g. %s(i64).",
+                k.ident, k.ident)
+        }
         return ty
     }
+    case GenericInstSpecifier: { // Name(args)
+        tmpl_id, ok := scope_get_type(s, k.name)
+        if !ok {
+            highlight_lines({get_ctx().current_file, k.span})
+            gala_panic("type doesn't exist")
+        }
+        tmpl := get_type(tmpl_id)
+        if tmpl.kind != .Struct || !tmpl.structure.is_generic {
+            highlight_lines({get_ctx().current_file, k.span})
+            gala_panicf("\"%s\" is not a generic struct.", k.name)
+        }
+        if len(k.args) != len(tmpl.structure.generic_names) {
+            highlight_lines({get_ctx().current_file, k.span})
+            gala_panicf("\"%s\" takes %d type argument(s), got %d.",
+                k.name, len(tmpl.structure.generic_names), len(k.args))
+        }
+        args := make([]TypeId, len(k.args), allocator=get_ctx().allocator)
+        for a, i in k.args {
+            // same flags as the outer type: `Box($T)` in a return type is still an error
+            args[i] = resolve_type_specifier(s, a, no_declare_generic, bindings)
+            if args[i] == void_type() {
+                highlight_lines({get_ctx().current_file, k.span})
+                gala_panicf("\"void\" can't be a type argument of \"%s\".", k.name)
+            }
+        }
+        tid := get_or_add_struct_instance(tmpl_id, args)
+        return tid
+    }
     case PointerType: {
-        id := resolve_type_specifier(s, k.ptr^, bindings = bindings)
+        id := resolve_type_specifier(s, k.ptr^, no_declare_generic, bindings)
         return intern_type({kind=.Pointer, ptr=id})
     }
     case FixedArreySpecifier: {
-        id := resolve_type_specifier(s, k.base^, bindings = bindings)
+        id := resolve_type_specifier(s, k.base^, no_declare_generic, bindings)
         return intern_type({kind=.FixedSizeArray,
             fixed_size_array={type=id, size=k.size}})
     }
@@ -485,6 +527,166 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier, no_declare_generic :
     }
     case: panic("impl");
     }
+}
+
+// How deep instances nest inside each other: `i32` is 0, `^i32` is 1,
+// `Box(^i32)` is 2. Polymorphic recursion (`next: ^Bad(^T)`,
+// `kids: []Bad(Box(T))`) makes this grow forever, so it needs a ceiling.
+MAX_STRUCT_INSTANCE_DEPTH :: 32
+
+type_nesting_depth :: proc(t: TypeId) -> int {
+    ty := get_type(t)
+    #partial switch ty.kind {
+    case .Pointer:        return 1 + type_nesting_depth(ty.ptr)
+    case .Slice:          return 1 + type_nesting_depth(ty.slice.type)
+    case .FixedSizeArray: return 1 + type_nesting_depth(ty.fixed_size_array.type)
+    case .Struct: {
+        deepest := 0
+        for a in ty.structure.args {
+            deepest = max(deepest, type_nesting_depth(a))
+        }
+        return 1 + deepest
+    }
+    }
+    return 0
+}
+
+// The one instance of generic struct `tmpl_id` for these args (made on first use).
+get_or_add_struct_instance :: proc(tmpl_id: TypeId, args: []TypeId) -> TypeId {
+    ctx := get_ctx()
+
+    for inst in get_type(tmpl_id).structure.instances {
+        same := len(inst.args) == len(args)
+        for a, i in args {
+            if !same do break
+            if !types_equal(inst.args[i], a) do same = false
+        }
+        if same do return inst.type
+    }
+
+    // a new instance: refuse the ones that only a runaway expansion asks for
+    for a in args {
+        if type_nesting_depth(a) > MAX_STRUCT_INSTANCE_DEPTH {
+            highlight_lines(ctx.spans.ty_decs[tmpl_id])
+            gala_panicf("Generic struct \"%s\" is instantiated with ever deeper types (polymorphic recursion?).",
+                get_type(tmpl_id).name)
+        }
+    }
+
+    tmpl := get_type(tmpl_id)^ // copy: the type table can move below
+    // not intern_type: structs are nominal
+    append(&ctx.types, Type{
+        kind = .Struct,
+        name = mangle_struct_instance(tmpl.name, args),
+        structure = {is_instance = true, origin = tmpl_id, args = args},
+    })
+    new_id := TypeId(len(ctx.types) - 1)
+    ctx.spans.ty_decs[new_id] = ctx.spans.ty_decs[tmpl_id]
+    ctx.ty_modules[new_id] = ctx.ty_modules[tmpl_id]
+
+    // register BEFORE filling the fields: a field may name this very
+    // instance (`next: ^Node(T)`), which must find it and not recurse
+    append(&get_type(tmpl_id).structure.instances, StructInstance{args = args, type = new_id})
+
+    fill_struct_instance(tmpl_id, new_id)
+    return new_id
+}
+
+// True for the struct types that exist at runtime and so may be sized, laid
+// out and emitted: plain structs and fully concrete instances. False for a
+// template (`Box`, its fields still hold `Generic` types) and for a
+// placeholder instance (`Box(T)` while a generic signature is resolved, no
+// fields). Codegen, type_size and struct_field_offsets must skip those.
+struct_is_concrete :: proc(tid: TypeId) -> bool {
+    ty := get_type(tid)
+    if ty.kind != .Struct do return false
+    if ty.structure.is_generic do return false
+    if ty.structure.is_instance {
+        for a in ty.structure.args {
+            if gen_has(a) do return false
+        }
+    }
+    return true
+}
+
+// Lowers the template's fields into the instance. Does nothing for a
+// placeholder (an arg is still generic) or while the template's own fields
+// aren't resolved yet; finish_struct_instances catches those later.
+fill_struct_instance :: proc(tmpl_id, inst_id: TypeId) {
+    ctx := get_ctx()
+    inst := get_type(inst_id)^
+    if inst.structure.fields != nil do return
+    for a in inst.structure.args {
+        if gen_has(a) do return
+    }
+    tmpl := get_type(tmpl_id)^ // copy: gen_subst can append types
+    if len(tmpl.structure.fields) == 0 do return
+
+    bound := make(map[string]TypeId, allocator = ctx.allocator)
+    for n, i in tmpl.structure.generic_names {
+        bound[n] = inst.structure.args[i]
+    }
+    fields := make([]Field, len(tmpl.structure.fields), allocator = ctx.allocator)
+    for f, i in tmpl.structure.fields {
+        fields[i] = f
+        fields[i].type = gen_subst(f.type, bound, {})
+    }
+    get_type(inst_id).structure.fields = fields // fetched fresh: gen_subst appends
+}
+
+// Instances made before their template was resolved (`A { b: Box(i64) }`
+// above `Box`). Instances made while filling go on the end of the list, so
+// this loops by index.
+finish_struct_instances :: proc(ast: ^AST) {
+    for id in ast.items {
+        if _, is_struct := get(id).(StructDec); !is_struct do continue
+        tid := get_ctx().item_types[id]
+        if !get_type(tid).structure.is_generic do continue
+        for i := 0; i < len(get_type(tid).structure.instances); i += 1 {
+            fill_struct_instance(tid, get_type(tid).structure.instances[i].type)
+        }
+    }
+}
+
+// Appends `t` to `b` using only [A-Za-z0-9_]: `^i32` -> `p_i32`, `[]f64` -> `a_f64`.
+// Anything else (including the `.` in an instance name) becomes `_`.
+mangle_ty :: proc(b: ^strings.Builder, t: TypeId) {
+    for r in tts(t) {
+        switch {
+        case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+            strings.write_rune(b, r)
+        case r == '^': strings.write_string(b, "p_")
+        case r == '[': strings.write_string(b, "a_")
+        case r == ']': // dropped
+        case: strings.write_byte(b, '_')
+        }
+    }
+}
+
+// "f" + params [f64, ^i32] -> "f.f64.p_i32.v0"
+mangle_version :: proc(base: string, params: []TypeId, idx: int) -> string {
+    b: strings.Builder
+    strings.builder_init(&b, get_ctx().allocator)
+    strings.write_string(&b, base)
+    for p in params {
+        strings.write_byte(&b, '.')
+        mangle_ty(&b, p)
+    }
+    // names are for readability only; the index is what makes them unique
+    strings.write_string(&b, ".v")
+    strings.write_int(&b, idx)
+    return strings.to_string(b)
+}
+
+// `DynArray.i64`, `Pair.i64.p_f64`, `Box.Box_i64`
+mangle_struct_instance :: proc(name: string, args: []TypeId) -> string {
+    b := strings.builder_make(allocator = get_ctx().allocator)
+    strings.write_string(&b, name)
+    for a in args {
+        strings.write_byte(&b, '.')
+        mangle_ty(&b, a)
+    }
+    return strings.to_string(b)
 }
 get_untyped_default :: proc(t: TypeId) -> TypeId {
     #partial switch get_type(t).kind {
@@ -592,37 +794,60 @@ ty_from_name :: proc(name:string) -> TypeId {
     return v;
 }
 
-resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
-    sd, ok := get_item(id).(StructDec); assert(ok); // assert it's a fn dec
-    tid, iok := s.ty_foreward[sd.name]; assert(iok); // make sure fd exists
-    // ty := get_type(tid); // gets pointer, so modify that
-    // check duplicate fields
-    fields := make([]Field, len(sd.fields), allocator=get_ctx().allocator)
-    declared := make(map[string]Field, allocator=get_ctx().allocator);
-
-    for f,i in sd.fields {
-        if d, ok := declared[f.name]; ok {
-            highlight_lines(get_ctx().current_file, f.span);
-            gala_panic("Field already exists.");
+// `$` names in order of first appearance (this is the order of `Name(a, b)`)
+collect_generic_names :: proc(t: TypeSpecifier, out: ^[dynamic]string) {
+    #partial switch k in t {
+    case GenericSpecifier: {
+        for n in out^ {
+            if n == k.name do return
         }
-        if is_type_specifier_generic(f.t) {
-            panic("Impl");
-        }
-        t := resolve_type_specifier(s, f.t);
-        field := Field{name=f.name, type=t, span=f.span}
-        fields[i] = field;
-        declared[f.name] = field;
+        append(out, k.name)
     }
+    case SliceSpecifier:        collect_generic_names(k.base^, out)
+    case PointerType:           collect_generic_names(k.ptr^, out)
+    case FixedArreySpecifier:   collect_generic_names(k.base^, out)
+    case GenericInstSpecifier: {
+        for a in k.args do collect_generic_names(a, out)
+    }
+    case FnSpecifier: {
+        for a in k.signature.args {
+            if !a.inferred do collect_generic_names(a.t, out)
+        }
+        if k.signature.is_variadic do collect_generic_names(k.signature.variadic_ty, out)
+        if r, ok := k.signature.ret_ty.(TypeSpecifier); ok do collect_generic_names(r, out)
+    }
+    }
+}
 
+resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
+    sd, ok := get_item(id).(StructDec); assert(ok)
+    tid, iok := s.ty_foreward[sd.name]; assert(iok) // make sure fd exists
 
-    // redefine type
-    t := Type{name=sd.name, kind=.Struct, structure={fields=fields}}
-    get_ctx().types[tid] = t;
+    // the first `$T` declares T in this scope, plain `T` refers to it after
+    scope := new_scope(s)
+    fields := make([]Field, len(sd.fields), allocator=get_ctx().allocator)
+    declared := make(map[string]Field, allocator=get_ctx().allocator)
+
+    for f, i in sd.fields {
+        if _, ok := declared[f.name]; ok {
+            highlight_lines(get_ctx().current_file, f.span)
+            gala_panic("Field already exists.")
+        }
+        t := resolve_type_specifier(&scope, f.t)
+        field := Field{name=f.name, type=t, span=f.span}
+        fields[i] = field
+        declared[f.name] = field
+    }
+    free_scope(&scope)
+
+    // fill the forward-declared type in place: it already carries
+    // is_generic / generic_names and any instances made so far
+    get_type(tid).structure.fields = fields
 
     // link item to type
-    delete_key(&s.ty_foreward, sd.name); // delete fd and create object
-    s.types[sd.name] = tid;
-    get_ctx().item_types[id] = tid;
+    delete_key(&s.ty_foreward, sd.name) // delete fd and create object
+    s.types[sd.name] = tid
+    get_ctx().item_types[id] = tid
 }
 
 // for gala functions, add an aditional arg to function body of type slice of var arg type
@@ -716,11 +941,22 @@ is_type_specifier_generic :: proc(t: TypeSpecifier) -> bool {
         case FixedArreySpecifier: { // no size yet.
             if is_type_specifier_generic(k.base^) do return true
         }
+        case GenericInstSpecifier: {
+            for a in k.args {
+                if is_type_specifier_generic(a) do return true
+            }
+        }
+
     }
     return false
 }
 specifier_has_generic :: proc(t: TypeSpecifier) -> bool {
-    switch k in t {
+    #partial switch k in t {
+    case GenericInstSpecifier:
+        for a in k.args {
+            if specifier_has_generic(a) do return true
+        }
+        return false
     case GenericSpecifier:
         return true
     case SliceSpecifier:
@@ -856,7 +1092,7 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
         resolved := resolve_import_path(get_ctx().current_file, i.fname)
         modid, ok := get_ctx().modules[resolved];
         if !ok {
-            fmt.panicf("File import \"%s\" doesn't have a module id associated with it.\n", resolved);
+            gala_panicf("File import \"%s\" doesn't have a module id associated with it.\n", resolved);
         }
         decs:= get_ctx().mods[modid];
 
@@ -961,13 +1197,25 @@ Module :: struct {
 // and fixed arrays. Pointers, slices and functions break the cycle. Run once
 // all of a module's structs are resolved, so declaration order doesn't matter.
 // state: 0 = unvisited, 1 = in progress, 2 = done
+
+// The struct that a field type contains by value, if any (looking through
+// fixed arrays). A placeholder instance (`Node(T)` inside Node's own
+// declaration, or `B(T)` inside A's) has no fields yet; it stands for its
+// template, and that is what closes the cycle: Node -> Node(T) -> Node.
 by_value_struct :: proc(t: TypeId) -> (TypeId, bool) {
     cur := t
     for {
         ty := get_type(cur)
         #partial switch ty.kind {
         case .FixedSizeArray: cur = ty.fixed_size_array.type
-        case .Struct:         return cur, true
+        case .Struct: {
+            if ty.structure.is_instance {
+                for a in ty.structure.args {
+                    if gen_has(a) do return ty.structure.origin, true
+                }
+            }
+            return cur, true
+        }
         case:                 return TypeId(0), false
         }
     }
@@ -982,7 +1230,7 @@ visit_struct :: proc(tid: TypeId, state: ^map[TypeId]int) {
         if !ok do continue
         if state^[inner] == 1 {
             highlight_lines(get_ctx().current_file, f.span)
-            gala_panicf("Struct \"%s\" would contain itself by value: field \"%s\" (type \"%s\") closes a cycle. Use a pointer.",
+            gala_panicf("Struct \"%s\" would contain itself by value (infinite size): field \"%s\" (type \"%s\") closes a cycle. Use a pointer.",
                 ty.name, f.name, get_type(inner).name)
         }
         visit_struct(inner, state)
@@ -1010,6 +1258,19 @@ resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
         forward_item(&global_scope, id)
     }
 
+    // Which structs are generic, before any field is resolved, so
+    // `Box(i64)` works above `Box`'s declaration.
+    for id in ast.items {
+        sd, is_struct := get(id).(StructDec)
+        if !is_struct do continue
+        names := make([dynamic]string, allocator=get_ctx().allocator)
+        for f in sd.fields do collect_generic_names(f.t, &names)
+        if len(names) == 0 do continue
+        ty := get_type(global_scope.ty_foreward[sd.name])
+        ty.structure.is_generic = true
+        ty.structure.generic_names = names[:]
+    }
+
     // Structs first: a struct literal in a function body or a global
     // initialiser asserts that the struct's fields are already filled in,
     // so it mustn't matter whether the struct is declared before or after
@@ -1019,12 +1280,36 @@ resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
             resolve_item(&global_scope, id)
         }
     }
+    finish_struct_instances(ast)
     check_struct_cycles(ast)
     for id in ast.items {
         if _, is_struct := get(id).(StructDec); !is_struct {
             resolve_item(&global_scope, id)
         }
     }
+
+    // filter generics like functions
+    // Generic struct declarations are templates, not runtime structs.
+    // Keep them available throughout resolution, then remove their AST items.
+    write := 0
+    for id in ast.items {
+        is_generic_struct := false
+
+        if _, ok := get(id).(StructDec); ok {
+            if tid, exists := get_ctx().item_types[id]; exists {
+                is_generic_struct = get_type(tid).structure.is_generic
+            }
+        }
+
+        if is_generic_struct {
+            continue
+        }
+
+        ast.items[write] = id
+        write += 1
+    }
+    resize(&ast.items, write)
+
     // assign module
     get_ctx().mods[mid] = Module {
         declarations=global_scope,
@@ -1037,6 +1322,10 @@ resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
 bind_generics :: proc(spec: TypeSpecifier, concrete: TypeId, out: ^map[string]TypeId) {
     ty := get_type(concrete)
     #partial switch k in spec {
+    case GenericInstSpecifier:
+        if ty.kind == .Struct && ty.structure.is_instance {
+            for a, i in k.args do bind_generics(a, ty.structure.args[i], out)
+        }
     case GenericSpecifier:
         out^[k.name] = concrete
     case PointerType:

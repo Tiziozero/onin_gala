@@ -1,7 +1,6 @@
 package main
 
 import "core:slice"
-import "core:strings"
 
 TcContext :: struct {
     in_function: bool,
@@ -391,6 +390,29 @@ order_call_args :: proc(id: ExprId, args: [dynamic]FnCallArg, params: []Arg) -> 
     return ordered
 }
 
+
+check_not_argument :: proc(id: ExprId) {
+    #partial switch e in get_expr(id) {
+    case Symbol: {
+        oid, ok := get_ctx().expr_objects[id]
+        if !ok do return
+
+        obj := get_obj(oid)
+        if obj.kind == .Argument {
+            highlight_lines(get_span(id))
+            gala_panic("Can't modify or reference a function argument directly.")
+        }
+    }
+    case FieldAccess: {
+        // arg.field modifies the argument's value.
+        check_not_argument(e.target)
+    }
+    // Index and Deref deliberately stop the check:
+    // arg[0] and *arg modify the referenced memory,
+    // not the argument variable itself.
+    }
+}
+
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     switch e in get_expr(id) {
     case TypeIdOf: {
@@ -455,7 +477,10 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             highlight_lines(get_span_expr(id));
             gala_panic("Can't reference expression.");
         }
-        t := Type{ kind=.Pointer, ptr=expr_ty(e.expr)}
+
+        check_not_argument(e.expr);
+
+        t := Type{ kind = .Pointer, ptr = expr_ty(e.expr) }
         get_ctx().expr_types[id] = intern_type(t);
     }
     case TakeSlice: {
@@ -901,7 +926,6 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             }
             idx, added := get_or_add_fn_version(fn_tid, key_tys, ret_ty)
             if added {
-                debugln("NEW VARIATION FOR GENERIC FUNCRTION!")
                 MAX_GENERIC_VERSIONS :: 64
                 if len(get_type(fn_tid).fn.versions) > MAX_GENERIC_VERSIONS {
                     highlight_lines(get_span(id))
@@ -1114,12 +1138,18 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
     case Assignment: {
         tc_expr(tc, stmt.target);
         tc_expr(tc, stmt.value);
+
         if !can_assign_to(stmt.target) {
             highlight_lines(get_span(stmt.target));
             gala_panic("Can't assign to this expression.");
         }
+
+        check_not_argument(stmt.target);
+
         // target must have a type
-        _, tyok := get_ctx().expr_types[stmt.target]; assert(tyok);
+        _, tyok := get_ctx().expr_types[stmt.target];
+        assert(tyok);
+
         t, ok, err := assignable(expr_ty(stmt.target), expr_ty(stmt.value))
         if !ok {
             highlight_lines(get_span(s));
@@ -1127,7 +1157,6 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             gala_panic("Assignment error.", err);
         }
         propagate_type(t, stmt.value);
-
     }
     case: panic("impl");
     }
@@ -1205,29 +1234,6 @@ tc_item :: proc(tc: ^TcContext, id: ItemId) {
     }
     case: panic("impl")
     }
-}
-// "f" + params [f64, ^i32] -> "f.f64.p_i32"; only [A-Za-z0-9_] survive, LLVM-safe
-mangle_version :: proc(base: string, params: []TypeId, idx: int) -> string {
-    b: strings.Builder
-    strings.builder_init(&b, get_ctx().allocator)
-    strings.write_string(&b, base)
-    for p in params {
-        strings.write_byte(&b, '.')
-        for r in tts(p) {
-            switch {
-            case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
-                strings.write_rune(&b, r)
-            case r == '^': strings.write_string(&b, "p_")
-            case r == '[': strings.write_string(&b, "a_")
-            case r == ']': // dropped
-            case: strings.write_byte(&b, '_')
-            }
-        }
-    }
-    // names are for readability only; the index is what makes them unique
-    strings.write_string(&b, ".v")
-    strings.write_int(&b, idx)
-    return strings.to_string(b)
 }
 typecheck_module :: proc(ast: ^AST, mid: ModId, file: string) {
     generic_items := make([dynamic]ItemId, allocator=get_ctx().allocator);

@@ -51,6 +51,8 @@ BreakStmt :: struct {label: string};
 ContinueStmt :: struct {label: string};
 StructLit :: struct {
     name: string,
+    // `Foo` or `Foo(i64)`; resolve this to get the struct type, `name` is for messages
+    ty: TypeSpecifier,
     fields: map[string]struct{expr:ExprId,span:Span},
     // `Foo{1, 2}` form, in source order. The resolver moves these into
     // `fields`; unused after that.
@@ -147,6 +149,11 @@ FixedArreySpecifier :: struct { size: int, base: ^TypeSpecifier, span: Span };
 SliceSpecifier :: struct {base : ^TypeSpecifier, span: Span }
 AnySpecifier :: struct { span: Span }
 GenericSpecifier :: struct { name: string, span: Span }
+GenericInstSpecifier :: struct {
+    name: string,
+    args: [dynamic]TypeSpecifier,
+    span: Span,
+}
 FnSpecifier :: struct { span: Span, using signature: ^FnDecSignature }
 TypeSpecifier :: union {
     BaseType,
@@ -156,6 +163,7 @@ TypeSpecifier :: union {
     AnySpecifier,
     FnSpecifier,
     GenericSpecifier,
+    GenericInstSpecifier,
 }
 VarDec :: struct {
     name: string,
@@ -340,7 +348,20 @@ parse_nested_expr :: proc(p: ^Parser) -> ExprId {
 
 // `Name{x=1, y=2}` or `Name{1, 2}` (not both in one literal)
 parse_struct_lit :: proc(p: ^Parser) -> ExprId {
-    name := expect_ident(p);
+    name: string
+    ty: TypeSpecifier
+    start: int // ASSUMPTION: your span positions are ints, use whatever type Span.start has
+    if is_generic_lit_ahead(p) {
+        ty = parse_type(p) // Name(args) -> GenericInstSpecifier
+        inst := ty.(GenericInstSpecifier)
+        name = inst.name
+        start = inst.span.start
+    } else {
+        tok := expect_ident(p);
+        name = tok.text
+        ty = TypeSpecifier(BaseType({tok.text, tok.span}))
+        start = tok.span.start
+    }
     consume_token(p); // "{"
     fields := make(map[string]struct{expr: ExprId, span: Span}, allocator=get_ctx().allocator);
     positional := make([dynamic]struct{expr: ExprId, span: Span}, allocator=get_ctx().allocator);
@@ -376,10 +397,10 @@ parse_struct_lit :: proc(p: ^Parser) -> ExprId {
     }
     end := expect_symbol(p, "}");
 
-    id := new_expr(StructLit{name=name.text, fields=fields, positional=positional[:]})
+    id := new_expr(StructLit{name=name, ty=ty, fields=fields, positional=positional[:]})
     get_ctx().spans.exprs[id] = {
         file_name=get_ctx().current_file,
-        span={name.span.start, end.span.end}
+        span={start, end.span.end}
     }
     return id;
 }
@@ -431,7 +452,12 @@ parse_array_lit :: proc(p: ^Parser) -> ExprId {
 // start of an expression (so `a == Foo{}` and `"abc"[0]` don't parse).
 parse_expr :: proc(p: ^Parser) -> ExprId {
     cur := current_token(p)
-    if cur.kind == .Ident && is_symbol(next_token(p), "{") && !p.ignore_struct_lit {
+    // Name(args){...}: generic struct literal
+    if (current_token(p).kind == .Ident && is_symbol(next_token(p), "{") || is_generic_lit_ahead(p)) &&
+        !p.ignore_struct_lit {
+        // spec := parse_type(p) // gives GenericInstSpecifier
+        return parse_struct_lit(p) // your existing literal parsing, taking a TypeSpecifier
+    } else if cur.kind == .Ident && is_symbol(next_token(p), "{") && !p.ignore_struct_lit {
         return parse_struct_lit(p)
     } else if is_symbol(cur, "[") {
         return parse_array_lit(p)
@@ -568,11 +594,33 @@ current_token :: proc(p: ^Parser) -> Token {
         return Token{kind=.EOF}
     }
 }
+// n tokens ahead of the current one (0 = current)
+peek_token :: proc(p: ^Parser, n: int) -> Token {
+    i := p.i + n
+    if i >= 0 && i < len(p.tokens) {
+        return p.tokens[i]
+    }
+    return Token{kind=.EOF}
+}
+
 next_token :: proc(p: ^Parser) -> Token {
-    if p.i + 1 < len(p.tokens) {
-        return p.tokens[p.i + 1];
-    } else {
-        return Token{kind=.EOF}
+    return peek_token(p, 1)
+}
+
+// Current token is an ident and the next is "(": is the matching ")" followed by "{"?
+// Only reads tokens, so it can't panic like parse_type would on `f(1 + 2)`.
+is_generic_lit_ahead :: proc(p: ^Parser) -> bool {
+    if current_token(p).kind != .Ident || !is_symbol(peek_token(p, 1), "(") do return false
+    depth := 0
+    for i := 1; ; i += 1 {
+        t := peek_token(p, i)
+        if t.kind == .EOF || is_symbol(t, ";") do return false
+        if is_symbol(t, "(") {
+            depth += 1
+        } else if is_symbol(t, ")") {
+            depth -= 1
+            if depth == 0 do return is_symbol(peek_token(p, i + 1), "{")
+        }
     }
 }
 // span of the most recently consumed token (used to find the end of a block)
@@ -1045,6 +1093,7 @@ base_span :: proc(t: ^TypeSpecifier) -> Span {
     case AnySpecifier: return t.span;
     case FnSpecifier: return t.span;
     case GenericSpecifier: return t.span;
+    case GenericInstSpecifier: return t.span;
     }
     panic("impl")
 }
@@ -1056,6 +1105,25 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
     }
     if current_token(p).kind == .Ident {
         token := consume_token(p)
+        if is_symbol(current_token(p), "(") { // Name(args): generic struct instance
+            consume_token(p) // "("
+            if is_symbol(current_token(p), ")") {
+                highlight_lines(get_ctx().current_file, current_token(p).span)
+                gala_panic("Expected at least one generic argument.")
+            }
+            args := make([dynamic]TypeSpecifier, allocator=get_ctx().allocator)
+            for {
+                append(&args, parse_type(p))
+                if !is_symbol(current_token(p), ",") do break
+                consume_token(p) // ","
+            }
+            close := current_token(p)
+            expect_symbol(p, ")")
+            return TypeSpecifier(GenericInstSpecifier{
+                name=token.text, args=args,
+                span={start=token.span.start, end=close.span.end},
+            })
+        }
         return TypeSpecifier(BaseType({token.text, token.span}));
     }
     if is_kw(current_token(p), .Fn) {
@@ -1329,8 +1397,14 @@ parse_module_kw :: proc(p: ^Parser) -> ItemId {
             names := parse_ident_group(p) // `a, b: type`
             expect_symbol(p, ":");
             ty := parse_type(p);
-            for n in names {
-                append(&fields, StructField{name=n.text, t=ty, span=n.span});
+
+            // all names share the type; only the first may declare a `$T`
+            for n, i in names {
+                field_ty := ty
+                if g, is_generic := ty.(GenericSpecifier); is_generic && i > 0 {
+                    field_ty = TypeSpecifier(BaseType{ident=g.name, span=g.span})
+                }
+                append(&fields, StructField{name=n.text, t=field_ty, span=n.span});
             }
             if is_symbol(current_token(p), ",") {
                 consume_token(p); // ","

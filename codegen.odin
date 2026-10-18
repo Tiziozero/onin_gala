@@ -198,7 +198,7 @@ mod_item_type_name :: proc(c: ^CGCtx, id: ItemId) -> string {
 ensure_type_declared :: proc(c: ^CGCtx, id: TypeId) {
     ty := get_type(id)
     #partial switch ty.kind {
-case .Struct:
+    case .Struct:
         if ty.name == "" || c.declared_types[id] do return
         c.declared_types[id] = true
         llvm_name := type_llvm_name(id)
@@ -1483,7 +1483,10 @@ cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import := false) {
         case StructDec: {
             if ctx.declared_items[id] do continue
             ctx.declared_items[id] = true
-            ensure_type_declared(ctx, get_ctx().item_types[id])
+            t := get_ctx().item_types[id]
+            ty := get_type(t).structure;
+
+            ensure_type_declared(ctx, t)
         }
         case GlobalVarDec: {
             if ctx.declared_items[id] do continue

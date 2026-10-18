@@ -1,0 +1,27 @@
+import "core/core.gala";
+import "core/mem.gala";
+struct abc { i: $T, l: i64 }
+struct DynArray { items: []$T, length: i64 }   // items.len is the capacity
+
+fn dyn_make(cap: i64, fill: $T): DynArray(T) {
+    return DynArray(T){make_slice(fill, cap), 0};
+}
+
+fn dyn_push(a: ^DynArray($T), v: T) {
+    if a^.length == len(a^.items) {
+        new_cap := len(a^.items) * 2;
+        if new_cap == 0 { new_cap = 4; }
+        bigger := make_slice(v, new_cap);
+        i := 0;
+        while i < a^.length {
+            bigger[i] = a^.items[i];
+            i += 1;
+        }
+        a^.items = bigger;
+    }
+    a^.items[a^.length] = v;
+    a^.length += 1;
+}
+
+fn dyn_get(a: ^DynArray($T), idx: i64): T { return a^.items[idx]; }
+fn dyn_slice(a: ^DynArray($T)): []T { return a^.items[0:a^.length]; }

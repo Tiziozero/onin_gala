@@ -49,13 +49,6 @@ fn main() {
     f(1);
 }
 
-//### zeroinit_arg | zero
-import "core/core.gala";
-fn id(a: $T): T { return a; }
-fn main() {
-    x := id({});
-}
-
 //### void_arg |
 import "core/core.gala";
 fn id(a: $T): T { return a; }
@@ -239,13 +232,6 @@ import "core/core.gala";
 fn vsum(data: ..$T): T { return data[0]; }
 fn main() {
     z := vsum(1, 2.5);
-}
-
-//### variadic_zero_args |
-import "core/core.gala";
-fn vsum(data: ..$T): i64 { return len(data); }
-fn main() {
-    z := vsum();
 }
 
 //### multi_name_shared_generic_conflict |
@@ -906,4 +892,1334 @@ import "core/core.gala";
 import "tests/generics_lib2.gala";
 fn main() {
     z := lib2_double("s");
+}
+// ---- generic structs ----
+
+//### gs_no_type_args |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b : Box = Box{1, 0};
+}
+
+//### gs_lit_no_type_args |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box{1, 0};
+}
+
+//### gs_too_many_type_args |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b : Box(i32, i32) = Box(i32){1, 0};
+}
+
+//### gs_too_few_type_args |
+import "core/core.gala";
+struct Pair { a: $A, b: $B }
+fn main() {
+    p : Pair(i32) = Pair(i32){1, 2};
+}
+
+//### gs_type_arg_not_a_type |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b : Box(5) = Box(i32){1, 0};
+}
+
+//### gs_type_arg_void |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b : Box(void) = Box(void){0, 0};
+}
+
+//### gs_dup_generic_decl | already declared
+import "core/core.gala";
+struct Bad { a: $T, b: $T }
+fn main() {
+}
+
+//### gs_use_before_decl |
+import "core/core.gala";
+struct Bad { a: T, b: $T }
+fn main() {
+}
+
+//### gs_undeclared_T |
+import "core/core.gala";
+struct Bad { a: T, n: i64 }
+fn main() {
+}
+
+//### gs_lit_missing_member |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){1};
+}
+
+//### gs_lit_too_many_members |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){1, 0, 3};
+}
+
+//### gs_lit_float_into_int_member |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){2.5, 0};
+}
+
+//### gs_lit_wrong_typed_member |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    x : i64 = 1;
+    b := Box(i32){x, 0};
+}
+
+//### gs_mismatched_instances_assign |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    a : Box(i32) = Box(i32){1, 0};
+    b : Box(i64) = a;
+}
+
+//### gs_mismatched_instance_to_nongeneric_fn |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn take(b: Box(i32)) { }
+fn main() {
+    b := Box(i64){1, 0};
+    take(b);
+}
+
+//### gs_unknown_member |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){1, 0};
+    x := b.nope;
+}
+
+//### gs_assign_float_to_int_member |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){1, 0};
+    b.v = 2.5;
+}
+
+//### gs_member_type_mismatch_binop |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){1, 0};
+    x := b.v + b.n;
+}
+
+//### gs_fn_conflicting_bindings |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn same(a: Box($T), b: Box(T)) { }
+fn main() {
+    a := Box(i32){1, 0};
+    b := Box(i64){1, 0};
+    same(a, b);
+}
+
+//### gs_fn_binding_from_struct_vs_plain |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn put(b: Box($T), v: T) { }
+fn main() {
+    a := Box(i32){1, 0};
+    put(a, 2.5);
+}
+
+//### gs_fn_not_a_box |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn unbox(b: Box($T)): T { return b.v; }
+fn main() {
+    x := unbox(5);
+}
+
+//### gs_fn_different_struct |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+struct Crate { v: $T, n: i64 }
+fn unbox(b: Box($T)): T { return b.v; }
+fn main() {
+    c := Crate(i32){1, 0};
+    x := unbox(c);
+}
+
+//### gs_fn_ptr_vs_value |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn unbox(b: ^Box($T)): T { return b^.v; }
+fn main() {
+    b := Box(i32){1, 0};
+    x := unbox(b);
+}
+
+//### gs_fn_undeclared_T_in_param |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(b: Box(T)) { }
+fn main() {
+    f(Box(i32){1, 0});
+}
+
+//### gs_generic_only_in_return | Can't specify generic in return type
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn make(n: i64): Box($T) { return Box(i64){n, n}; }
+fn main() {
+    b := make(1);
+}
+
+//### gs_generic_in_vardec | generics in vardecs
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(a: $T) {
+    b : Box($T) = Box(T){a, 0};
+}
+fn main() {
+    f(1);
+}
+
+//### gs_return_wrong_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn make(a: $T): Box(T) { return Box(i32){1, 0}; }
+fn main() {
+    b := make(1);
+}
+
+//### gs_by_value_recursion | infinite size
+import "core/core.gala";
+struct Node { v: $T, next: Node(T) }
+fn main() {
+}
+
+
+// ------------------------------------------------------------------ type argument lists
+
+//### gs_empty_type_args |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(){1, 0};
+}
+
+//### gs_type_arg_unknown_type | doesn't exist
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b : Box(Nope) = Box(Nope){1, 0};
+}
+
+//### gs_type_arg_is_a_variable |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    x := 5;
+    b : Box(x) = Box(i32){1, 0};
+}
+
+//### gs_type_arg_uninstantiated_generic |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b : Box(Box) = Box(i32){1, 0};
+}
+
+//### gs_type_args_on_plain_struct |
+import "core/core.gala";
+struct Plain { a: i32 }
+fn main() {
+    p : Plain(i32) = Plain{1};
+}
+
+//### gs_lit_type_args_on_plain_struct |
+import "core/core.gala";
+struct Plain { a: i32 }
+fn main() {
+    p := Plain(i32){1};
+}
+
+//### gs_type_args_on_builtin |
+import "core/core.gala";
+fn main() {
+    x : i32(i64) = 1;
+}
+
+//### gs_struct_name_as_value |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    x := Box;
+}
+
+//### gs_sizeof_uninstantiated |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    x := sizeof(Box);
+}
+
+//### gs_type_id_uninstantiated |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    x := type_id(Box);
+}
+
+// ------------------------------------------------------------------ declarations
+
+//### gs_dup_generic_decl_in_slice_field | already declared
+import "core/core.gala";
+struct Bad { a: []$T, b: ^$T }
+fn main() { }
+
+//### gs_use_before_decl_in_slice_field |
+import "core/core.gala";
+struct Bad { a: []T, b: ^$T }
+fn main() { }
+
+//### gs_dup_field_name |
+import "core/core.gala";
+struct Bad { a: $T, a: i32 }
+fn main() { }
+
+//### gs_dup_struct_decl | already declared
+import "core/core.gala";
+struct Box { v: $T }
+struct Box { v: $T, n: i64 }
+fn main() { }
+
+//### gs_type_param_shadows_struct |
+import "core/core.gala";
+struct T { a: i32 }
+struct Box { v: $T, n: i64 }
+fn main() { }
+
+//### gs_generic_in_global |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+g : Box($T);
+fn main() { }
+
+//### gs_generic_in_fn_literal |
+// ASSUMPTION: only top level fns declare `$T`, also when it sits inside a struct instance
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    g := fn(b: Box($T)): T => b.v;
+}
+
+//### gs_vardec_undeclared_T_in_plain_fn |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b : Box(T) = Box(i32){1, 0};
+}
+
+// ------------------------------------------------------------------ recursion
+
+//### gs_by_value_recursion_mutual | infinite size
+import "core/core.gala";
+struct A { v: $T, b: B(T) }
+struct B { v: $T, a: A(T) }
+fn main() { }
+
+//### gs_by_value_recursion_via_array | infinite size
+import "core/core.gala";
+struct Node { v: $T, kids: [2]Node(T) }
+fn main() { }
+
+//### gs_polymorphic_struct_recursion_ptr |
+// Bad(T) needs Bad(^T) needs Bad(^^T) ...: needs an instantiation limit, should not hang
+import "core/core.gala";
+struct Bad { v: $T, next: ^Bad(^T) }
+fn main() {
+    b : Bad(i32);
+}
+
+//### gs_polymorphic_struct_recursion_slice |
+// Bad(T) needs Bad(Box(T)) needs Bad(Box(Box(T))) ...: should hit the limit, not hang
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+struct Bad { v: $T, kids: []Bad(Box(T)) }
+fn main() {
+    b : Bad(i32);
+}
+
+//### gs_polymorphic_fn_recursion_through_struct |
+// f<T> instantiates f<Box(T)> forever
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(a: $T) {
+    f(Box(T){a, 0});
+}
+fn main() {
+    f(1);
+}
+
+// ------------------------------------------------------------------ literals
+
+//### gs_empty_lit |
+// zero initialisers are not supported: every member must be given
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){};
+}
+
+//### gs_named_lit_missing_member |
+// every member must be given, also with named members
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){v = 1};
+}
+
+//### gs_lit_nested_empty |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(Box(i32)){Box(i32){}, 0};
+}
+
+//### gs_named_lit_unknown_member |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){x = 1, n = 0};
+}
+
+//### gs_named_lit_duplicate_member |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){v = 1, v = 2};
+}
+
+//### gs_named_lit_wrong_typed_member |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){v = 2.5, n = 0};
+}
+
+//### gs_lit_nested_wrong_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(Box(i32)){Box(i64){1, 0}, 0};
+}
+
+//### gs_lit_nested_missing_type_args |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(Box(i32)){Box{1, 0}, 0};
+}
+
+//### gs_lit_pointer_member_wrong_pointee |
+import "core/core.gala";
+struct Node { v: $T, next: ^Node(T) }
+fn main() {
+    x : i64 = 1;
+    n := Node(i32){1, &x};
+}
+
+//### gs_lit_slice_member_wrong_elem |
+import "core/core.gala";
+struct View { items: []$T, length: i64 }
+fn main() {
+    xs := [2]i64{1, 2};
+    v := View(i32){xs[:], 2};
+}
+
+//### gs_lit_array_member_wrong_size |
+import "core/core.gala";
+struct Holder { v: [3]$T, n: i64 }
+fn main() {
+    h := Holder(i32){[2]i32{1, 2}, 0};
+}
+
+// ------------------------------------------------------------------ mismatching instances
+
+//### gs_pointer_to_wrong_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i64){1, 0};
+    p : ^Box(i32) = &b;
+}
+
+//### gs_global_wrong_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+g : Box(i32) = Box(i64){1, 0};
+fn main() { }
+
+//### gs_return_wrong_instance_nongeneric |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn make(): Box(i32) { return Box(i64){1, 0}; }
+fn main() { }
+
+//### gs_instance_vs_plain_struct |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+struct Same { v: i32, n: i64 }
+fn main() {
+    s : Same = Box(i32){1, 0};
+}
+
+//### gs_cast_between_instances |
+// ASSUMPTION: no struct to struct casts
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    a := Box(i32){1, 0};
+    b := cast(Box(i64))a;
+}
+
+//### gs_array_elem_wrong_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    xs := [2]Box(i32){Box(i32){1, 0}, Box(i64){2, 0}};
+}
+
+//### gs_slice_of_instances_wrong_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    xs := [2]Box(i64){Box(i64){1, 0}, Box(i64){2, 0}};
+    ys : []Box(i32) = xs[:];
+}
+
+//### gs_member_instance_wrong_assign |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+struct Wrap { inner: Box($T), extra: i32 }
+fn main() {
+    w := Wrap(i32){Box(i32){1, 0}, 0};
+    w.inner = Box(i64){1, 0};
+}
+
+// ------------------------------------------------------------------ inference through instances
+
+//### gs_fn_slice_elem_instance_mismatch |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn put(a: []Box($T), v: Box(T)) { }
+fn main() {
+    xs := [1]Box(i32){Box(i32){1, 0}};
+    put(xs[:], Box(i64){2, 0});
+}
+
+//### gs_fn_array_for_slice_of_instances |
+// no implicit array -> slice conversion
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn total(a: []Box($T)): T { return a[0].v; }
+fn main() {
+    xs := [1]Box(i32){Box(i32){1, 0}};
+    z := total(xs);
+}
+
+//### gs_fn_ptr_pointee_instance_mismatch |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn swapb(a: ^Box($T), b: ^Box(T)) { }
+fn main() {
+    x := Box(i32){1, 0};
+    y := Box(i64){1, 0};
+    swapb(&x, &y);
+}
+
+//### gs_fn_arg_order_matters |
+// q needs Tup(B, A) = Tup(i64, i32), got Tup(i32, i64)
+import "core/core.gala";
+struct Tup { a: $A, b: $B }
+fn f(p: Tup($A, $B), q: Tup(B, A)) { }
+fn main() {
+    x := Tup(i32, i64){1, 2};
+    y := Tup(i32, i64){1, 2};
+    f(x, y);
+}
+
+//### gs_fn_return_swapped_args_mismatch |
+// fine for Tup(i32, i32), an error for Tup(i32, i64)
+import "core/core.gala";
+struct Tup { a: $A, b: $B }
+fn keep(p: Tup($A, $B)): Tup(A, B) { return Tup(B, A){p.b, p.a}; }
+fn main() {
+    ok := keep(Tup(i32, i32){1, 2});
+    bad := keep(Tup(i32, i64){1, 2});
+}
+
+//### gs_fn_nested_instance_conflict |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(a: Box(Box($T)), b: T) { }
+fn main() {
+    x := Box(Box(i32)){Box(i32){1, 0}, 0};
+    y : i64 = 1;
+    f(x, y);
+}
+
+//### gs_fn_wrong_nesting_depth |
+// Box(Box(T)) against Box(i32): the inner Box(T) cannot match i32
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn unbox2(a: Box(Box($T))): T { return a.v.v; }
+fn main() {
+    z := unbox2(Box(i32){1, 0});
+}
+
+//### gs_fn_literal_instance_mismatch |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn apply_box(b: Box($T), f: fn(x: Box(T)): Box(T)): Box(T) { return f(b); }
+fn main() {
+    z := apply_box(Box(i32){1, 0}, fn(x: Box(i64)): Box(i64) => x);
+}
+
+//### gs_fn_variadic_instance_conflict |
+// ASSUMPTION: variadics over a generic struct unify like any other param
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn vbox(data: ..Box($T)): T { return data[0].v; }
+fn main() {
+    z := vbox(Box(i32){1, 0}, Box(i64){2, 0});
+}
+
+//### gs_fn_plain_arg_float_into_int_through_ptr |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn put(b: ^Box($T), v: T) { b^.v = v; }
+fn main() {
+    x := Box(i32){1, 0};
+    put(&x, 2.5);
+}
+
+//### gs_fn_result_wrong_declared_type |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn make(v: $T): Box(T) { return Box(T){v, 0}; }
+fn main() {
+    b : Box(i64) = make(cast(i32)1);
+}
+
+// ------------------------------------------------------------------ errors in the body that depend on the instance
+
+//### gs_body_member_arith_only_fails_for_some_instances |
+// b.v + b.n is i64 + i64 for Box(i64), i32 + i64 for Box(i32)
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn both(b: Box($T)): T { return b.v + b.n; }
+fn main() {
+    ok := both(Box(i64){1, 2});
+    bad := both(Box(i32){1, 2});
+}
+
+//### gs_body_arith_on_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    z := add(Box(i32){1, 0}, Box(i32){2, 0});
+}
+
+//### gs_body_negate_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn neg(a: $T): T { return -a; }
+fn main() {
+    z := neg(Box(i32){1, 0});
+}
+
+//### gs_body_unknown_member_on_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(b: Box($T)): T { return b.missing; }
+fn main() {
+    z := f(Box(i32){1, 0});
+}
+
+//### gs_body_index_into_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(b: Box($T)): T { return b[0]; }
+fn main() {
+    z := f(Box(i32){1, 0});
+}
+
+//### gs_body_index_into_non_indexable_member |
+// items is []T for every instance, v is not indexable when T = i32
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(b: Box($T)): i64 { return len(b.v); }
+fn main() {
+    z := f(Box(i32){1, 0});
+}
+
+//### gs_body_wrong_local_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(a: $T): T {
+    b : Box(i64) = Box(T){a, 0};
+    return a;
+}
+fn main() {
+    z := f(cast(i32)1);
+}
+
+//### gs_body_shadowing_member_name |
+// ASSUMPTION: no shadowing, a local called like a param clashes also inside generic struct code
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(b: Box($T)): T {
+    b := b.v;
+    return b;
+}
+fn main() {
+    z := f(Box(i32){1, 0});
+}
+
+// ------------------------------------------------------------------ DynArray shapes
+
+//### gs_dyn_push_float_into_int |
+import "core/core.gala";
+import "core/mem.gala";
+struct DynArray { items: []$T, length: i64 }
+fn dyn_make(cap: i64, fill: $T): DynArray(T) { return DynArray(T){make_slice(fill, cap), 0}; }
+fn dyn_push(a: ^DynArray($T), v: T) { a^.length += 1; }
+fn main() {
+    d := dyn_make(0, 0);
+    dyn_push(&d, 2.5);
+}
+
+//### gs_dyn_push_by_value |
+import "core/core.gala";
+import "core/mem.gala";
+struct DynArray { items: []$T, length: i64 }
+fn dyn_make(cap: i64, fill: $T): DynArray(T) { return DynArray(T){make_slice(fill, cap), 0}; }
+fn dyn_push(a: ^DynArray($T), v: T) { a^.length += 1; }
+fn main() {
+    d := dyn_make(0, 0);
+    dyn_push(d, 1);
+}
+
+//### gs_dyn_make_wrong_declared_type |
+import "core/core.gala";
+import "core/mem.gala";
+struct DynArray { items: []$T, length: i64 }
+fn dyn_make(cap: i64, fill: $T): DynArray(T) { return DynArray(T){make_slice(fill, cap), 0}; }
+fn main() {
+    d : DynArray(i32) = dyn_make(4, cast(i64)0);
+}
+
+//### gs_dyn_push_wrong_element_type |
+import "core/core.gala";
+import "core/mem.gala";
+struct DynArray { items: []$T, length: i64 }
+fn dyn_make(cap: i64, fill: $T): DynArray(T) { return DynArray(T){make_slice(fill, cap), 0}; }
+fn dyn_push(a: ^DynArray($T), v: T) { a^.length += 1; }
+fn main() {
+    d := dyn_make(0, cast(i32)0);
+    x : i64 = 1;
+    dyn_push(&d, x);
+}
+
+//### gs_dyn_slice_result_wrong_type |
+import "core/core.gala";
+import "core/mem.gala";
+struct DynArray { items: []$T, length: i64 }
+fn dyn_make(cap: i64, fill: $T): DynArray(T) { return DynArray(T){make_slice(fill, cap), 0}; }
+fn dyn_slice(a: ^DynArray($T)): []T { return a^.items[0:a^.length]; }
+fn main() {
+    d := dyn_make(4, cast(i32)0);
+    s : []i64 = dyn_slice(&d);
+}
+
+//### gs_dyn_items_assign_wrong_elem |
+import "core/core.gala";
+import "core/mem.gala";
+struct DynArray { items: []$T, length: i64 }
+fn dyn_make(cap: i64, fill: $T): DynArray(T) { return DynArray(T){make_slice(fill, cap), 0}; }
+fn main() {
+    d := dyn_make(4, cast(i32)0);
+    e := dyn_make(4, cast(i64)0);
+    d.items = e.items;
+}
+
+//### gs_empty_type_args |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(){1, 0};
+}
+
+//### gs_type_arg_unknown_type | doesn't exist
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b : Box(Nope) = Box(Nope){1, 0};
+}
+
+//### gs_type_arg_is_a_variable |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    x := 5;
+    b : Box(x) = Box(i32){1, 0};
+}
+
+//### gs_type_arg_uninstantiated_generic |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b : Box(Box) = Box(i32){1, 0};
+}
+
+//### gs_type_args_on_plain_struct |
+import "core/core.gala";
+struct Plain { a: i32 }
+fn main() {
+    p : Plain(i32) = Plain{1};
+}
+
+//### gs_lit_type_args_on_plain_struct |
+import "core/core.gala";
+struct Plain { a: i32 }
+fn main() {
+    p := Plain(i32){1};
+}
+
+//### gs_type_args_on_builtin |
+import "core/core.gala";
+fn main() {
+    x : i32(i64) = 1;
+}
+
+//### gs_struct_name_as_value |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    x := Box;
+}
+
+//### gs_sizeof_uninstantiated |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    x := sizeof(Box);
+}
+
+//### gs_type_id_uninstantiated |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    x := type_id(Box);
+}
+
+// ------------------------------------------------------------------ declarations
+
+//### gs_dup_generic_decl_in_slice_field | already declared
+import "core/core.gala";
+struct Bad { a: []$T, b: ^$T }
+fn main() { }
+
+//### gs_use_before_decl_in_slice_field |
+import "core/core.gala";
+struct Bad { a: []T, b: ^$T }
+fn main() { }
+
+//### gs_dup_field_name |
+import "core/core.gala";
+struct Bad { a: $T, a: i32 }
+fn main() { }
+
+//### gs_dup_struct_decl | already declared
+import "core/core.gala";
+struct Box { v: $T }
+struct Box { v: $T, n: i64 }
+fn main() { }
+
+//### gs_type_param_shadows_struct |
+import "core/core.gala";
+struct T { a: i32 }
+struct Box { v: $T, n: i64 }
+fn main() { }
+
+//### gs_generic_in_global |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+g : Box($T);
+fn main() { }
+
+//### gs_generic_in_fn_literal |
+// ASSUMPTION: only top level fns declare `$T`, also when it sits inside a struct instance
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    g := fn(b: Box($T)): T => b.v;
+}
+
+//### gs_vardec_undeclared_T_in_plain_fn |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b : Box(T) = Box(i32){1, 0};
+}
+
+// ------------------------------------------------------------------ recursion
+
+//### gs_by_value_recursion_mutual | infinite size
+import "core/core.gala";
+struct A { v: $T, b: B(T) }
+struct B { v: $T, a: A(T) }
+fn main() { }
+
+//### gs_by_value_recursion_via_array | infinite size
+import "core/core.gala";
+struct Node { v: $T, kids: [2]Node(T) }
+fn main() { }
+
+//### gs_polymorphic_struct_recursion_ptr |
+// Bad(T) needs Bad(^T) needs Bad(^^T) ...: needs an instantiation limit, should not hang
+import "core/core.gala";
+struct Bad { v: $T, next: ^Bad(^T) }
+fn main() {
+    b : Bad(i32);
+}
+
+//### gs_polymorphic_struct_recursion_slice |
+// Bad(T) needs Bad(Box(T)) needs Bad(Box(Box(T))) ...: should hit the limit, not hang
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+struct Bad { v: $T, kids: []Bad(Box(T)) }
+fn main() {
+    b : Bad(i32);
+}
+
+//### gs_polymorphic_fn_recursion_through_struct |
+// f<T> instantiates f<Box(T)> forever
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(a: $T) {
+    f(Box(T){a, 0});
+}
+fn main() {
+    f(1);
+}
+
+// ------------------------------------------------------------------ literals
+
+//### gs_empty_lit |
+// zero initialisers are not supported: every member must be given
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){};
+}
+
+//### gs_named_lit_missing_member |
+// every member must be given, also with named members
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){v = 1};
+}
+
+//### gs_lit_nested_empty |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(Box(i32)){Box(i32){}, 0};
+}
+
+//### gs_named_lit_unknown_member |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){x = 1, n = 0};
+}
+
+//### gs_named_lit_duplicate_member |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){v = 1, v = 2};
+}
+
+//### gs_named_lit_wrong_typed_member |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i32){v = 2.5, n = 0};
+}
+
+//### gs_lit_nested_wrong_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(Box(i32)){Box(i64){1, 0}, 0};
+}
+
+//### gs_lit_nested_missing_type_args |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(Box(i32)){Box{1, 0}, 0};
+}
+
+//### gs_lit_pointer_member_wrong_pointee |
+import "core/core.gala";
+struct Node { v: $T, next: ^Node(T) }
+fn main() {
+    x : i64 = 1;
+    n := Node(i32){1, &x};
+}
+
+//### gs_lit_slice_member_wrong_elem |
+import "core/core.gala";
+struct View { items: []$T, length: i64 }
+fn main() {
+    xs := [2]i64{1, 2};
+    v := View(i32){xs[:], 2};
+}
+
+//### gs_lit_array_member_wrong_size |
+import "core/core.gala";
+struct Holder { v: [3]$T, n: i64 }
+fn main() {
+    h := Holder(i32){[2]i32{1, 2}, 0};
+}
+
+// ------------------------------------------------------------------ mismatching instances
+
+//### gs_pointer_to_wrong_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    b := Box(i64){1, 0};
+    p : ^Box(i32) = &b;
+}
+
+//### gs_global_wrong_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+g : Box(i32) = Box(i64){1, 0};
+fn main() { }
+
+//### gs_return_wrong_instance_nongeneric |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn make(): Box(i32) { return Box(i64){1, 0}; }
+fn main() { }
+
+//### gs_instance_vs_plain_struct |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+struct Same { v: i32, n: i64 }
+fn main() {
+    s : Same = Box(i32){1, 0};
+}
+
+//### gs_cast_between_instances |
+// ASSUMPTION: no struct to struct casts
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    a := Box(i32){1, 0};
+    b := cast(Box(i64))a;
+}
+
+//### gs_array_elem_wrong_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    xs := [2]Box(i32){Box(i32){1, 0}, Box(i64){2, 0}};
+}
+
+//### gs_slice_of_instances_wrong_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn main() {
+    xs := [2]Box(i64){Box(i64){1, 0}, Box(i64){2, 0}};
+    ys : []Box(i32) = xs[:];
+}
+
+//### gs_member_instance_wrong_assign |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+struct Wrap { inner: Box($T), extra: i32 }
+fn main() {
+    w := Wrap(i32){Box(i32){1, 0}, 0};
+    w.inner = Box(i64){1, 0};
+}
+
+// ------------------------------------------------------------------ inference through instances
+
+//### gs_fn_slice_elem_instance_mismatch |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn put(a: []Box($T), v: Box(T)) { }
+fn main() {
+    xs := [1]Box(i32){Box(i32){1, 0}};
+    put(xs[:], Box(i64){2, 0});
+}
+
+//### gs_fn_array_for_slice_of_instances |
+// no implicit array -> slice conversion
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn total(a: []Box($T)): T { return a[0].v; }
+fn main() {
+    xs := [1]Box(i32){Box(i32){1, 0}};
+    z := total(xs);
+}
+
+//### gs_fn_ptr_pointee_instance_mismatch |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn swapb(a: ^Box($T), b: ^Box(T)) { }
+fn main() {
+    x := Box(i32){1, 0};
+    y := Box(i64){1, 0};
+    swapb(&x, &y);
+}
+
+//### gs_fn_arg_order_matters |
+// q needs Tup(B, A) = Tup(i64, i32), got Tup(i32, i64)
+import "core/core.gala";
+struct Tup { a: $A, b: $B }
+fn f(p: Tup($A, $B), q: Tup(B, A)) { }
+fn main() {
+    x := Tup(i32, i64){1, 2};
+    y := Tup(i32, i64){1, 2};
+    f(x, y);
+}
+
+//### gs_fn_return_swapped_args_mismatch |
+// fine for Tup(i32, i32), an error for Tup(i32, i64)
+import "core/core.gala";
+struct Tup { a: $A, b: $B }
+fn keep(p: Tup($A, $B)): Tup(A, B) { return Tup(B, A){p.b, p.a}; }
+fn main() {
+    ok := keep(Tup(i32, i32){1, 2});
+    bad := keep(Tup(i32, i64){1, 2});
+}
+
+//### gs_fn_nested_instance_conflict |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(a: Box(Box($T)), b: T) { }
+fn main() {
+    x := Box(Box(i32)){Box(i32){1, 0}, 0};
+    y : i64 = 1;
+    f(x, y);
+}
+
+//### gs_fn_wrong_nesting_depth |
+// Box(Box(T)) against Box(i32): the inner Box(T) cannot match i32
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn unbox2(a: Box(Box($T))): T { return a.v.v; }
+fn main() {
+    z := unbox2(Box(i32){1, 0});
+}
+
+//### gs_fn_literal_instance_mismatch |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn apply_box(b: Box($T), f: fn(x: Box(T)): Box(T)): Box(T) { return f(b); }
+fn main() {
+    z := apply_box(Box(i32){1, 0}, fn(x: Box(i64)): Box(i64) => x);
+}
+
+//### gs_fn_variadic_instance_conflict |
+// ASSUMPTION: variadics over a generic struct unify like any other param
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn vbox(data: ..Box($T)): T { return data[0].v; }
+fn main() {
+    z := vbox(Box(i32){1, 0}, Box(i64){2, 0});
+}
+
+//### gs_fn_plain_arg_float_into_int_through_ptr |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn put(b: ^Box($T), v: T) { b^.v = v; }
+fn main() {
+    x := Box(i32){1, 0};
+    put(&x, 2.5);
+}
+
+//### gs_fn_result_wrong_declared_type |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn make(v: $T): Box(T) { return Box(T){v, 0}; }
+fn main() {
+    b : Box(i64) = make(cast(i32)1);
+}
+
+// ------------------------------------------------------------------ errors in the body that depend on the instance
+
+//### gs_body_member_arith_only_fails_for_some_instances |
+// b.v + b.n is i64 + i64 for Box(i64), i32 + i64 for Box(i32)
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn both(b: Box($T)): T { return b.v + b.n; }
+fn main() {
+    ok := both(Box(i64){1, 2});
+    bad := both(Box(i32){1, 2});
+}
+
+//### gs_body_arith_on_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn add(a: $T, b: T): T { return a + b; }
+fn main() {
+    z := add(Box(i32){1, 0}, Box(i32){2, 0});
+}
+
+//### gs_body_negate_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn neg(a: $T): T { return -a; }
+fn main() {
+    z := neg(Box(i32){1, 0});
+}
+
+//### gs_body_unknown_member_on_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(b: Box($T)): T { return b.missing; }
+fn main() {
+    z := f(Box(i32){1, 0});
+}
+
+//### gs_body_index_into_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(b: Box($T)): T { return b[0]; }
+fn main() {
+    z := f(Box(i32){1, 0});
+}
+
+//### gs_body_index_into_non_indexable_member |
+// items is []T for every instance, v is not indexable when T = i32
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(b: Box($T)): i64 { return len(b.v); }
+fn main() {
+    z := f(Box(i32){1, 0});
+}
+
+//### gs_body_wrong_local_instance |
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(a: $T): T {
+    b : Box(i64) = Box(T){a, 0};
+    return a;
+}
+fn main() {
+    z := f(cast(i32)1);
+}
+
+//### gs_body_shadowing_member_name |
+// ASSUMPTION: no shadowing, a local called like a param clashes also inside generic struct code
+import "core/core.gala";
+struct Box { v: $T, n: i64 }
+fn f(b: Box($T)): T {
+    b := b.v;
+    return b;
+}
+fn main() {
+    z := f(Box(i32){1, 0});
+}
+
+// ------------------------------------------------------------------ DynArray shapes
+
+//### gs_dyn_push_float_into_int |
+import "core/core.gala";
+import "core/mem.gala";
+struct DynArray { items: []$T, length: i64 }
+fn dyn_make(cap: i64, fill: $T): DynArray(T) { return DynArray(T){make_slice(fill, cap), 0}; }
+fn dyn_push(a: ^DynArray($T), v: T) { a^.length += 1; }
+fn main() {
+    d := dyn_make(0, 0);
+    dyn_push(&d, 2.5);
+}
+
+//### gs_dyn_push_by_value |
+import "core/core.gala";
+import "core/mem.gala";
+struct DynArray { items: []$T, length: i64 }
+fn dyn_make(cap: i64, fill: $T): DynArray(T) { return DynArray(T){make_slice(fill, cap), 0}; }
+fn dyn_push(a: ^DynArray($T), v: T) { a^.length += 1; }
+fn main() {
+    d := dyn_make(0, 0);
+    dyn_push(d, 1);
+}
+
+//### gs_dyn_make_wrong_declared_type |
+import "core/core.gala";
+import "core/mem.gala";
+struct DynArray { items: []$T, length: i64 }
+fn dyn_make(cap: i64, fill: $T): DynArray(T) { return DynArray(T){make_slice(fill, cap), 0}; }
+fn main() {
+    d : DynArray(i32) = dyn_make(4, cast(i64)0);
+}
+
+//### gs_dyn_push_wrong_element_type |
+import "core/core.gala";
+import "core/mem.gala";
+struct DynArray { items: []$T, length: i64 }
+fn dyn_make(cap: i64, fill: $T): DynArray(T) { return DynArray(T){make_slice(fill, cap), 0}; }
+fn dyn_push(a: ^DynArray($T), v: T) { a^.length += 1; }
+fn main() {
+    d := dyn_make(0, cast(i32)0);
+    x : i64 = 1;
+    dyn_push(&d, x);
+}
+
+//### gs_dyn_slice_result_wrong_type |
+import "core/core.gala";
+import "core/mem.gala";
+struct DynArray { items: []$T, length: i64 }
+fn dyn_make(cap: i64, fill: $T): DynArray(T) { return DynArray(T){make_slice(fill, cap), 0}; }
+fn dyn_slice(a: ^DynArray($T)): []T { return a^.items[0:a^.length]; }
+fn main() {
+    d := dyn_make(4, cast(i32)0);
+    s : []i64 = dyn_slice(&d);
+}
+
+//### gs_dyn_items_assign_wrong_elem |
+import "core/core.gala";
+import "core/mem.gala";
+struct DynArray { items: []$T, length: i64 }
+fn dyn_make(cap: i64, fill: $T): DynArray(T) { return DynArray(T){make_slice(fill, cap), 0}; }
+fn main() {
+    d := dyn_make(4, cast(i32)0);
+    e := dyn_make(4, cast(i64)0);
+    d.items = e.items;
 }

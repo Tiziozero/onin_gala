@@ -212,6 +212,8 @@ scalar_llvm_str :: proc(type_id: TypeId) -> string {
     case .Rune: return "i32"
     case .Bool: return "i1"
     case:
+        debugln(type_id, ty, get_span(type_id))
+        highlight_lines(get_span(type_id))
         gala_panic("scalar_llvm_str: unhandled scalar kind", ty.kind)
     }
     return ""

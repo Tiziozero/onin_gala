@@ -71,7 +71,7 @@ def run_captured(cmd, timeout=None):
 
 
 def build_galac():
-    code, out = run_captured(["odin", "build", ".", "-out=galac"])
+    code, out = run_captured(["odin", "build", ".", "-out=galac", "-debug"])
     if out.strip():
         print(out.rstrip())
     print("odin returned", code)
@@ -108,7 +108,7 @@ def run_program():
 
 def memcheck():
     result = subprocess.run(
-        ["valgrind", "--leak-check=full", PROGRAM], env=ENV
+        ["valgrind", "--leak-check=full", "./" + PROGRAM], env=ENV
     ).returncode
     print("memcheck returned", result)
     return result

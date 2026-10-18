@@ -30,7 +30,7 @@ TypeKind :: enum {
     // pointer stuff
     Slice, // { ptr, i64 }
     Pointer,
-    Function,
+    Function, // ptr
     // literals
     UntypedInteger,
     UntypedFloat,
@@ -40,6 +40,13 @@ TypeKind :: enum {
     Any,
     Void,
 }
+
+// one instantiation of a generic struct, looked up by args
+StructInstance :: struct {
+    args: []TypeId,
+    type: TypeId,
+}
+
 Type :: struct {
     name: string,
     kind: TypeKind,
@@ -60,7 +67,22 @@ Type :: struct {
         is_generic: bool,
         versions: [dynamic]FnVersion,
     },
-    structure: struct {fields: []Field},
+    structure: struct {
+        fields: []Field,
+
+        // for generics
+        // template: has $T fields, never lowered, can't be used as a bare type
+        is_generic: bool,
+        // $ names in order of first appearance, this is the order of Name(a, b)
+        generic_names: []string,
+        // on a template: one entry per distinct args
+        instances: [dynamic]StructInstance,
+
+        // on an instance (named like `Box.i64`)
+        is_instance: bool,
+        origin: TypeId,  // its template
+        args: []TypeId,  // one per generic_names entry
+    },
     fixed_size_array: struct { type: TypeId, size: int },
     slice: struct{type: TypeId},
 }

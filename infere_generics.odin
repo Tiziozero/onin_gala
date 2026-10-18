@@ -33,6 +33,14 @@ gen_has :: proc(t: TypeId) -> bool {
     case .Pointer:        return gen_has(ty.ptr)
     case .Slice:          return gen_has(ty.slice.type)
     case .FixedSizeArray: return gen_has(ty.fixed_size_array.type)
+    case .Struct: {
+        // only an instance with a generic arg (`Box(T)`) mentions one
+        if ty.structure.is_instance {
+            for a in ty.structure.args {
+                if gen_has(a) do return true
+            }
+        }
+    }
     case .Function: {
         for a in ty.fn.args {
             if gen_has(a.type) do return true
@@ -81,6 +89,18 @@ gen_unify :: proc(param, got: TypeId, bound: ^map[string]TypeId) -> (bool, strin
             return false, "array sizes don't match"
         }
         return gen_unify(pt.fixed_size_array.type, gt.fixed_size_array.type, bound)
+    }
+    case .Struct: {
+        // gen_has said yes, so this is an instance like `Box(T)`
+        if gt.kind != .Struct || !gt.structure.is_instance ||
+           gt.structure.origin != pt.structure.origin {
+            return false, "expected a different struct type"
+        }
+        for a, i in pt.structure.args {
+            ok, msg := gen_unify(a, gt.structure.args[i], bound)
+            if !ok do return false, msg
+        }
+        return true, ""
     }
     case .Function: {
         if gt.kind != .Function do return false, "expected a function"
@@ -133,6 +153,14 @@ gen_subst :: proc(t: TypeId, bound: map[string]TypeId, call: ExprId) -> TypeId {
         inner := gen_subst(ty.fixed_size_array.type, bound, call)
         return intern_type(Type{kind=.FixedSizeArray,
             fixed_size_array={type=inner, size=ty.fixed_size_array.size}})
+    }
+    case .Struct: {
+        // `Box(T)` -> `Box(i64)`
+        args := make([]TypeId, len(ty.structure.args), allocator=get_ctx().allocator)
+        for a, i in ty.structure.args {
+            args[i] = gen_subst(a, bound, call)
+        }
+        return get_or_add_struct_instance(ty.structure.origin, args)
     }
     case .Function: {
         nt := ty
