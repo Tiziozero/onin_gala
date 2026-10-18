@@ -1,0 +1,5 @@
+struct Map {
+    keys:       ^$K,
+    data:       ^$V,
+
+}
