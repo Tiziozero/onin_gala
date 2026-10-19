@@ -37,7 +37,7 @@ fn modulo(a: $T, b: T): T { return a % b; }
 fn lt(a: $T, b: T): bool { return a < b; }
 fn neg(a: $T): T { return -a; }
 fn max2(a: $T, b: T): T { if a > b { return a; } return b; }
-fn size_of_t(a: $T): i64 { return sizeof(T); }
+fn size_of_t(a: $T): i64 { return size_of(T); }
 fn tid(a: $T): i64 { return type_id(T); }
 
 // generic param is not the first one / not used by every param
@@ -152,7 +152,7 @@ fn lvl3(a: $T): T { return a; }
 
 // finite instantiation chain: depth<T> -> depth<i32> -> depth<i32> ...
 fn depth(a: $T, n: i64): i64 {
-    if n == 0 { return sizeof(T); }
+    if n == 0 { return size_of(T); }
     return depth(cast(i32)1, n - 1);
 }
 
@@ -187,20 +187,20 @@ fn main() {
     check("id neg literal", id(-1) == -1);
     check("id zero", id(0) == 0);
 
-    // ---- sizeof(T) per instantiation
-    check("sizeof i8", size_of_t(cast(i8)1) == 1);
-    check("sizeof i16", size_of_t(cast(i16)1) == 2);
-    check("sizeof u16", size_of_t(cast(u16)1) == 2);
-    check("sizeof u32", size_of_t(cast(u32)1) == 4);
-    check("sizeof u64", size_of_t(cast(u64)1) == 8);
-    check("sizeof f32", size_of_t(cast(f32)1.0) == 4);
-    check("sizeof bool", size_of_t(true) == 1);
-    check("sizeof string", size_of_t("abc") == 16);
-    check("sizeof V2", size_of_t(V2{1.0, 2.0}) == 8);
-    check("sizeof V3", size_of_t(V3{1.0, 2.0, 3.0}) == 12);
-    check("sizeof Big", size_of_t(Big{1, 2, 3, 4, 5}) == 40);
-    check("sizeof Mixed (padding)", size_of_t(Mixed{cast(byte)1, 2, 3.0, true}) == 24);
-    check("sizeof Nested", size_of_t(Nested{Pair{1, 2}, V2{3.0, 4.0}}) == 16);
+    // ---- size_of(T) per instantiation
+    check("size_of i8", size_of_t(cast(i8)1) == 1);
+    check("size_of i16", size_of_t(cast(i16)1) == 2);
+    check("size_of u16", size_of_t(cast(u16)1) == 2);
+    check("size_of u32", size_of_t(cast(u32)1) == 4);
+    check("size_of u64", size_of_t(cast(u64)1) == 8);
+    check("size_of f32", size_of_t(cast(f32)1.0) == 4);
+    check("size_of bool", size_of_t(true) == 1);
+    check("size_of string", size_of_t("abc") == 16);
+    check("size_of V2", size_of_t(V2{1.0, 2.0}) == 8);
+    check("size_of V3", size_of_t(V3{1.0, 2.0, 3.0}) == 12);
+    check("size_of Big", size_of_t(Big{1, 2, 3, 4, 5}) == 40);
+    check("size_of Mixed (padding)", size_of_t(Mixed{cast(byte)1, 2, 3.0, true}) == 24);
+    check("size_of Nested", size_of_t(Nested{Pair{1, 2}, V2{3.0, 4.0}}) == 16);
 
     // ---- signedness / width is per instantiation
     check("wrap byte", add(cast(byte)200, cast(byte)100) == cast(byte)44);

@@ -238,8 +238,8 @@ infer_generic_bindings :: proc(call: ExprId, args: [dynamic]FnCallArg, fn_tid: T
             ok, msg := gen_unify(ptype, t, &bound)
             if !ok {
                 highlight_lines(get_span(a.expr))
-                gala_panicf("Generic argument mismatch for parameter \"%s\": %s (got %s).",
-                    pname, msg, tts(t))
+                gala_panicf("Generic argument mismatch for parameter \"%s\": %s (expected %s got %s).",
+                    pname, msg, tts(ptype), tts(t))
             }
         }
     }
@@ -259,4 +259,55 @@ infer_ty_from_generic_fn_call :: proc(call: ExprId, args: [dynamic]FnCallArg, fn
 instantiate_generic_fn_type :: proc(call: ExprId, args: [dynamic]FnCallArg, fn_tid: TypeId) -> TypeId {
     bound := infer_generic_bindings(call, args, fn_tid)
     return gen_subst(fn_tid, bound, call)
+}
+
+// `Box{1, 2}` / `Map{a, b, ...}`: the instance a literal of a generic struct
+// makes, inferred from the types of its values (so no `Box(i64){..}`).
+// `tmpl_id` is the generic struct itself. The values must already be type
+// checked. Same two passes as infer_generic_bindings: typed values first,
+// then untyped literals for a bare `$T` that is still unbound (default type).
+// Any other untyped value (`0` for a pointer field, `{}`) adapts to its field
+// later, in the normal field check.
+infer_struct_lit_type :: proc(id: ExprId, tmpl_id: TypeId, lit: StructLit) -> TypeId {
+    tmpl := get_type(tmpl_id)^ // copy: unify and instancing can append types
+    bound := make(map[string]TypeId, allocator=get_ctx().allocator)
+
+    for pass in 0..<2 {
+        for sf in tmpl.structure.fields {
+            val := lit.fields[sf.name]
+            t := expr_ty(val.expr)
+            name, direct := generic_param_name(sf.type)
+
+            if is_untyped(t) {
+                if pass == 0 || !direct do continue
+                if name in bound do continue
+                if get_type(t).kind == .ZeroInit {
+                    highlight_lines(get_ctx().current_file, val.span)
+                    gala_panicf("Can't infer \"%s\" from a zero initialiser.", name)
+                }
+                t = get_untyped_default(t)
+            } else if pass == 1 {
+                continue
+            }
+
+            ok, msg := gen_unify(sf.type, t, &bound)
+            if !ok {
+                highlight_lines(get_ctx().current_file, val.span)
+                gala_panicf("Generic field mismatch for \"%s\": %s (expected %s got %s).",
+                    sf.name, msg, tts(sf.type), tts(t))
+            }
+        }
+    }
+
+    args := make([]TypeId, len(tmpl.structure.generic_names), allocator=get_ctx().allocator)
+    for n, i in tmpl.structure.generic_names {
+        b, found := bound[n]
+        if !found {
+            highlight_lines(get_span(id))
+            gala_panicf("Can't infer type parameter \"%s\" of \"%s\" from the literal, write %s(...){...} instead.",
+                n, tmpl.name, tmpl.name)
+        }
+        args[i] = b
+    }
+    return get_or_add_struct_instance(tmpl_id, args)
 }

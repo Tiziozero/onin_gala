@@ -75,7 +75,7 @@ clone_expr :: proc(id: ExprId) -> ExprId {
     case String:
     case Len:
         v.target = clone_expr(v.target)
-    case Sizeof:
+    case SizeOf:
     case ZeroInit:
     case BoolLitTrue:
     case BoolLitFalse:

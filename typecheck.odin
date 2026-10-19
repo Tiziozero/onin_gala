@@ -616,10 +616,20 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     }
     case StructLit: {
         tid := get_ctx().expr_resolution_types[id]
+        typed_already := false
+        if get_type(tid).structure.is_generic {
+            // `Box{..}`: type the values first, then infer which instance this is
+            for sf in get_type(tid).structure.fields {
+                tc_expr(tc, e.fields[sf.name].expr)
+            }
+            typed_already = true
+            tid = infer_struct_lit_type(id, tid, e)
+            get_ctx().expr_resolution_types[id] = tid
+        }
         s := get_type(tid)
         for sf in s.structure.fields {
             f := e.fields[sf.name].expr
-            tc_expr(tc, f);
+            if !typed_already do tc_expr(tc, f);
             r, ok, err := assignable(sf.type, expr_ty(f))
             if !ok {
                 span := e.fields[sf.name].span
@@ -692,8 +702,31 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         }
         get_ctx().expr_types[id] = intern_type({kind=.UntypedInteger});
     }
-    case Sizeof: {
-        get_ctx().expr_types[id] = intern_type({kind=.UntypedInteger})
+    case SizeOf: {
+        _, syntactic := e.t.(TypeSpecifier)
+        if !syntactic && !e.names_type {
+            ex := e.expr.(ExprId)
+            tc_expr(tc, ex)
+            t := expr_ty(ex)
+            #partial switch get_type(t).kind {
+            case .ZeroInit: {
+                highlight_lines(get_span(ex))
+                gala_panic("Can't take the size_of a zero initialiser: it has no type.")
+            }
+            case .Void: {
+                highlight_lines(get_span(ex))
+                gala_panic("Can't take the size_of an expression with no value.")
+            }
+            }
+            // size_of(1) is i64, like `x := 1`
+            if is_untyped(t) {
+                t = get_untyped_default(t)
+                propagate_type(t, ex)
+            }
+            // codegen reads the type from here, same as for the type form
+            get_ctx().expr_resolution_types[id] = t
+        }
+        get_ctx().expr_types[id] = intern_type(Type{kind=.UntypedInteger})
     }
     case Binop: {
         tc_expr(tc, e.left);
@@ -1388,7 +1421,7 @@ propagate_type :: proc(ty: TypeId, expr: ExprId) {
     case Len: {
     }
     // just porpatae as they're untyped int by default
-    case Sizeof: {
+    case SizeOf: {
     }
     case String:  {
         return; // once a string, always a string (for now at least)

@@ -38,7 +38,7 @@ g_tup : Tup(i32, f64) = Tup(i32, f64){1, 2.5};
 g_calls := 0;
 
 // ---------------------------------------------------------------- helpers
-fn size_of_t(a: $T): i64 { return sizeof(T); }
+fn size_of_t(a: $T): i64 { return size_of(T); }
 fn tid(a: $T): i64 { return type_id(T); }
 fn id(a: $T): T { return a; }
 fn sum(a: []$T): T {
@@ -245,39 +245,39 @@ fn main() {
     check("copy keeps other member", cp_b.n == 2);
 
     // ---------------------------------------------------------------- sizes and layout per instance
-    check("sizeof Box(i32)", size_of_t(b_i32) == 16);
-    check("sizeof Box(i64)", size_of_t(b_i64) == 16);
-    check("sizeof Box(byte)", size_of_t(b_byte) == 16);
-    check("sizeof Box(f64)", size_of_t(b_f64) == 16);
-    check("sizeof Box(Pair)", size_of_t(b_pair) == 16);
-    check("sizeof Box(Big)", size_of_t(b_big) == 48);
-    check("sizeof Box([3]i32)", size_of_t(b_arr) == 24);
-    check("sizeof Box([]i64)", size_of_t(b_sl) == 24);
+    check("size_of Box(i32)", size_of_t(b_i32) == 16);
+    check("size_of Box(i64)", size_of_t(b_i64) == 16);
+    check("size_of Box(byte)", size_of_t(b_byte) == 16);
+    check("size_of Box(f64)", size_of_t(b_f64) == 16);
+    check("size_of Box(Pair)", size_of_t(b_pair) == 16);
+    check("size_of Box(Big)", size_of_t(b_big) == 48);
+    check("size_of Box([3]i32)", size_of_t(b_arr) == 24);
+    check("size_of Box([]i64)", size_of_t(b_sl) == 24);
 
     // padding is computed per instance, not once for the struct
-    check("sizeof Tagged(byte)", size_of_t(Tagged(byte){cast(byte)1, true}) == 2);
-    check("sizeof Tagged(bool)", size_of_t(Tagged(bool){true, true}) == 2);
-    check("sizeof Tagged(i32)", size_of_t(Tagged(i32){1, true}) == 8);
-    check("sizeof Tagged(f32)", size_of_t(Tagged(f32){cast(f32)1.0, true}) == 8);
-    check("sizeof Tagged(i64)", size_of_t(Tagged(i64){1, true}) == 16);
-    check("sizeof Tagged(Pair)", size_of_t(Tagged(Pair){Pair{1, 2}, true}) == 12);
-    check("sizeof Tagged(V2)", size_of_t(Tagged(V2){V2{1.0, 2.0}, true}) == 12);
-    check("sizeof Tagged(Big)", size_of_t(Tagged(Big){Big{1, 2, 3, 4, 5}, true}) == 48);
+    check("size_of Tagged(byte)", size_of_t(Tagged(byte){cast(byte)1, true}) == 2);
+    check("size_of Tagged(bool)", size_of_t(Tagged(bool){true, true}) == 2);
+    check("size_of Tagged(i32)", size_of_t(Tagged(i32){1, true}) == 8);
+    check("size_of Tagged(f32)", size_of_t(Tagged(f32){cast(f32)1.0, true}) == 8);
+    check("size_of Tagged(i64)", size_of_t(Tagged(i64){1, true}) == 16);
+    check("size_of Tagged(Pair)", size_of_t(Tagged(Pair){Pair{1, 2}, true}) == 12);
+    check("size_of Tagged(V2)", size_of_t(Tagged(V2){V2{1.0, 2.0}, true}) == 12);
+    check("size_of Tagged(Big)", size_of_t(Tagged(Big){Big{1, 2, 3, 4, 5}, true}) == 48);
 
-    check("sizeof Tup(i32, i32)", size_of_t(Tup(i32, i32){1, 2}) == 8);
-    check("sizeof Tup(i32, f64)", size_of_t(Tup(i32, f64){1, 2.5}) == 16);
-    check("sizeof Tup(byte, byte)", size_of_t(Tup(byte, byte){cast(byte)1, cast(byte)2}) == 2);
-    check("sizeof Tup(i32, byte)", size_of_t(Tup(i32, byte){1, cast(byte)2}) == 8);
-    check("sizeof Tup(i64, byte)", size_of_t(Tup(i64, byte){1, cast(byte)2}) == 16);
-    check("sizeof Tup(f32, f32)", size_of_t(Tup(f32, f32){cast(f32)1.0, cast(f32)2.0}) == 8);
-    check("sizeof Twin(i32)", size_of_t(Twin(i32){1, 2}) == 8);
-    check("sizeof Twin(byte)", size_of_t(Twin(byte){cast(byte)1, cast(byte)2}) == 2);
-    check("sizeof Twin(f64)", size_of_t(Twin(f64){1.0, 2.0}) == 16);
-    check("sizeof Node(i64)", size_of_t(Node(i64){1, 0}) == 16);
-    check("sizeof Node(byte)", size_of_t(Node(byte){cast(byte)1, 0}) == 16);
-    check("sizeof Tree(i32)", size_of_t(Tree(i32){1, 0, 0}) == 24);
-    check("sizeof Wrap(i32)", size_of_t(Wrap(i32){Box(i32){1, 2}, 3}) == 24);
-    check("sizeof nested Box(Box(i32))", size_of_t(Box(Box(i32)){Box(i32){1, 2}, 3}) == 24);
+    check("size_of Tup(i32, i32)", size_of_t(Tup(i32, i32){1, 2}) == 8);
+    check("size_of Tup(i32, f64)", size_of_t(Tup(i32, f64){1, 2.5}) == 16);
+    check("size_of Tup(byte, byte)", size_of_t(Tup(byte, byte){cast(byte)1, cast(byte)2}) == 2);
+    check("size_of Tup(i32, byte)", size_of_t(Tup(i32, byte){1, cast(byte)2}) == 8);
+    check("size_of Tup(i64, byte)", size_of_t(Tup(i64, byte){1, cast(byte)2}) == 16);
+    check("size_of Tup(f32, f32)", size_of_t(Tup(f32, f32){cast(f32)1.0, cast(f32)2.0}) == 8);
+    check("size_of Twin(i32)", size_of_t(Twin(i32){1, 2}) == 8);
+    check("size_of Twin(byte)", size_of_t(Twin(byte){cast(byte)1, cast(byte)2}) == 2);
+    check("size_of Twin(f64)", size_of_t(Twin(f64){1.0, 2.0}) == 16);
+    check("size_of Node(i64)", size_of_t(Node(i64){1, 0}) == 16);
+    check("size_of Node(byte)", size_of_t(Node(byte){cast(byte)1, 0}) == 16);
+    check("size_of Tree(i32)", size_of_t(Tree(i32){1, 0, 0}) == 24);
+    check("size_of Wrap(i32)", size_of_t(Wrap(i32){Box(i32){1, 2}, 3}) == 24);
+    check("size_of nested Box(Box(i32))", size_of_t(Box(Box(i32)){Box(i32){1, 2}, 3}) == 24);
 
     // ---------------------------------------------------------------- type identity
     check("same instance, same type id", tid(b_i32) == tid(Box(i32){1, 2}));
@@ -432,7 +432,7 @@ fn main() {
     h := Holder{Box(i32){1, 2}, Tup(i64, f64){3, 4.5}, &h_box};
     check("Holder fields", h.b.v == 1 && h.b.n == 2 && h.t.a == 3 && h.t.b == 4.5);
     check("Holder pointer", h.p^.v == 70);
-    check("sizeof Holder", size_of_t(h) == 40);
+    check("size_of Holder", size_of_t(h) == 40);
     h.b.v = 11;
     h.t.a += 1;
     h.p^.n = 99;
@@ -523,7 +523,7 @@ fn main() {
     check("dyn_slice elements", ds[10] == 20 && ds[99] == 198);
     check("sum of dyn_slice", sum(ds) == 9900);
     check("dyn element size", size_of_t(dyn_get(&da, 1)) == 8);
-    check("sizeof DynArray(i64)", size_of_t(da) == 24);
+    check("size_of DynArray(i64)", size_of_t(da) == 24);
 
     da_cap := dyn_make(4, 0);
     check("dyn given capacity", da_cap.length == 0 && len(da_cap.items) == 4);
@@ -579,7 +579,7 @@ fn main() {
     check("dyn of Box(i32) through boxes_n", boxes_n(dyn_slice(&da_b)) == 570);
     check("dyn element is the instance", size_of_t(dyn_get(&da_b, 0)) == 16);
     check("dyn of Box(i32) type id", tid(dyn_get(&da_b, 0)) == tid(Box(i32){0, 0}));
-    check("sizeof DynArray(Box(i32))", size_of_t(da_b) == 24);
+    check("size_of DynArray(Box(i32))", size_of_t(da_b) == 24);
 
     // a DynArray of DynArrays
     outer := dyn_make(0, dyn_make(0, 0));

@@ -25,7 +25,7 @@ fn lib_sum(a: []$T): T {
     return total;
 }
 fn lib_apply(a: $T, f: fn(x: T): T): T { return f(a); }
-fn lib_size(a: $T): i64 { return sizeof(T); }
+fn lib_size(a: $T): i64 { return size_of(T); }
 fn lib_type_tag(a: $T): i64 { return type_id(T); }
 
 // generic -> generic inside the module

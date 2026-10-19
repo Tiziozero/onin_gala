@@ -143,9 +143,9 @@ fn test_casts() {
     check(transmute(u32) pos == 5, "transmute i32 to u32");
     check(transmute(i32) transmute(u32) pos == 5, "nested transmute");
 
-    check(sizeof(i32) == 4, "sizeof i32");
-    check(sizeof(i64) == 8, "sizeof i64");
-    check(sizeof(u8) == 1, "sizeof u8");
+    check(size_of(i32) == 4, "size_of i32");
+    check(size_of(i64) == 8, "size_of i64");
+    check(size_of(u8) == 1, "size_of u8");
 }
 
 fn test_arrays_and_slices() {

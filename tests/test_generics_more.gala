@@ -17,7 +17,7 @@ fn max2(a: $T, b: T): T {
     if a > b { return a; }
     return b;
 }
-fn size_of_t(a: $T): i64 { return sizeof(T); }
+fn size_of_t(a: $T): i64 { return size_of(T); }
 fn apply(a: $T, f: fn(x: T): T): T { return f(a); }
 
 // U is bound only through the return type of the function argument

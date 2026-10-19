@@ -892,12 +892,6 @@ fn main() {
     b : Box = Box{1, 0};
 }
 
-//### gs_lit_no_type_args |
-import "core/core.gala";
-struct Box { v: $T, n: i64 }
-fn main() {
-    b := Box{1, 0};
-}
 
 //### gs_too_many_type_args |
 import "core/core.gala";
@@ -1164,7 +1158,7 @@ fn main() {
 import "core/core.gala";
 struct Box { v: $T, n: i64 }
 fn main() {
-    x := sizeof(Box);
+    x := size_of(Box);
 }
 
 //### gs_type_id_uninstantiated |
@@ -1719,7 +1713,7 @@ fn main() {
 import "core/core.gala";
 struct Box { v: $T, n: i64 }
 fn main() {
-    x := sizeof(Box);
+    x := size_of(Box);
 }
 
 //### gs_type_id_uninstantiated |

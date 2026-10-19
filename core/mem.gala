@@ -30,7 +30,7 @@
 //
 //   set_allocator(a);                                // make `a` the default
 //
-// Typed helpers (new, make_slice, del, del_slice) use sizeof(T). The
+// Typed helpers (new, make_slice, del, del_slice) use size_of(T). The
 // value you pass to `new` is copied in; the value you pass to make_slice
 // is only there so the compiler can infer T.
 
@@ -246,7 +246,7 @@ fn free_string(s: string, a: Allocator = base_allocator) {
 
 // Allocates a T, copies `v` into it. Returns NULL (as ^T) on failure.
 fn new(v: $T, a: Allocator = base_allocator): ^T {
-    size := cast(u64)sizeof(T);
+    size := cast(u64)size_of(T);
     raw := alloc(size, align_for_size(size), a);
     p := transmute(^T)raw;
     if raw != NULL {
@@ -256,13 +256,13 @@ fn new(v: $T, a: Allocator = base_allocator): ^T {
 }
 
 fn del(p: ^$T, a: Allocator = base_allocator) {
-    dealloc(transmute(rawptr)p, cast(u64)sizeof(T), a);
+    dealloc(transmute(rawptr)p, cast(u64)size_of(T), a);
 }
 
 // `like` is only used to infer T: make_slice(0.0, 10) gives a []f64 of
 // ten zeroes. On failure the slice is empty.
 fn make_slice(like: $T, n: i64, a: Allocator = base_allocator): []T {
-    esz := cast(u64)sizeof(T);
+    esz := cast(u64)size_of(T);
     raw: rawptr = NULL;
     count: i64 = 0;
     if n > 0 {
@@ -281,7 +281,7 @@ fn del_slice(s: []$T, a: Allocator = base_allocator) {
     if n == 0 {
         return;
     }
-    esz := cast(u64)sizeof(T);
+    esz := cast(u64)size_of(T);
     total := esz * cast(u64)n;
     dealloc(transmute(rawptr)&s[0], total, a);
 }

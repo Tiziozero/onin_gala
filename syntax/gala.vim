@@ -12,7 +12,7 @@ syn keyword galaKeyword fn struct return if else while otherwise
 syn keyword galaKeyword extern break continue import
 
 " Builtin compiler/type operations
-syn keyword galaBuiltin cast transmute len sizeof any type_id
+syn keyword galaBuiltin cast transmute len size_of any type_id
 
 " Boolean literals
 syn keyword galaBoolean true false

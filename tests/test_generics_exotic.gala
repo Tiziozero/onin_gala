@@ -16,7 +16,7 @@ struct V2 { x, y: f32 }
 
 fn id(a: $T): T { return a; }
 fn add(a: $T, b: T): T { return a + b; }
-fn size_of_t(a: $T): i64 { return sizeof(T); }
+fn size_of_t(a: $T): i64 { return size_of(T); }
 
 // ---- globals initialised with a generic call (assumes globals may call functions)
 g_gen := add(40, 2);
@@ -54,7 +54,7 @@ fn n_default(): i64 { return 100; }
 fn call_with( f: fn(x: $T): T, v: T): T { return f(v); }
 
 // ---- arrays by value as T
-fn tag(a: $T): i64 { return sizeof(T); }
+fn tag(a: $T): i64 { return size_of(T); }
 fn arr_first(a: $T): i64 { return 0; }
 
 // ---- slices of slices
@@ -66,7 +66,7 @@ fn filled(v: $T, n: i64): []T { return make_slice(v, n); }
 
 // ---- declared-later generic used from a generic declared earlier, with different T
 fn outer_a(a: $T): i64 { return inner_b(cast(i32)1) + inner_b(a); }
-fn inner_b(a: $T): i64 { return sizeof(T); }
+fn inner_b(a: $T): i64 { return size_of(T); }
 
 // ---- generic inside generic argument position, different T at each level
 fn conv(a: $A, b: $B): f64 { return cast(f64)a + cast(f64)b; }
@@ -128,7 +128,7 @@ fn main() {
     // literal binding order: literal first, typed second (assumes the typed arg decides T)
     a32 : i32 = 10;
     check("literal first, typed second", add(2, a32) == 12);
-    check("literal first, typed second sizeof", size_of_t(add(2, a32)) == 4);
+    check("literal first, typed second size_of", size_of_t(add(2, a32)) == 4);
 
     // mem.gala generics
     bp := boxed(Pair{3, 4});

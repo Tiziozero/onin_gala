@@ -166,6 +166,28 @@ enclosing_module_scope :: proc(s: ^Scope) -> ^Scope {
     if sc == nil do return s // shouldn't happen, fall back to the given scope
     return sc
 }
+// `Box(i32)` where an expression is parsed is a call to `Box`. When the callee
+// names a generic struct, turn it back into a type specifier. Only works for
+// args that are plain names or the same shape again; anything with `^`/`[]`
+// was already parsed as a type.
+expr_as_type_spec :: proc(id: ExprId) -> (TypeSpecifier, bool) {
+    #partial switch e in get_expr(id) {
+    case Symbol:
+        return TypeSpecifier(BaseType{e.name, get_span(id).span}), true
+    case FnCall:
+        sym, is_sym := get_expr(e.target).(Symbol)
+        if !is_sym do return {}, false
+        args := make([dynamic]TypeSpecifier, allocator=get_ctx().allocator)
+        for a in e.args {
+            if len(a.name) > 0 do return {}, false
+            spec, ok := expr_as_type_spec(a.expr)
+            if !ok do return {}, false
+            append(&args, spec)
+        }
+        return TypeSpecifier(GenericInstSpecifier{name=sym.name, args=args, span=get_span(id).span}), true
+    }
+    return {}, false
+}
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
     case TypeIdOf: {
@@ -211,9 +233,48 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     case Len: {
         resolve_expr(s, e.target);
     }
-    case Sizeof: {
-        t := resolve_type_specifier(s, e.t);
-        get_ctx().expr_resolution_types[id] = t
+    case SizeOf: {
+        // written with type-only syntax (`^T`, `[]T`, `fn(..)`)
+        if spec, is_ty := e.t.(TypeSpecifier); is_ty {
+            get_ctx().expr_resolution_types[id] = resolve_type_specifier(s, spec)
+            return
+        }
+
+        inner := e.expr.(ExprId)
+        node := get_expr(id).(SizeOf)
+        node.names_type = false
+
+        // `sizeof(Box(i32))` parses as a call; if the callee is a generic struct it's a type
+        if call, is_call := get_expr(inner).(FnCall); is_call {
+            if sym, is_sym := get_expr(call.target).(Symbol); is_sym {
+                if tid, is_ty := scope_find_type(s, sym.name); is_ty &&
+                   get_type(tid).kind == .Struct && get_type(tid).structure.is_generic {
+                    if spec, ok := expr_as_type_spec(inner); ok {
+                        node.t = spec
+                        get_expr(id)^ = node
+                        get_ctx().expr_resolution_types[id] = resolve_type_specifier(s, spec)
+                        return
+                    }
+                }
+            }
+        }
+
+        // a bare name is a type if one is in scope, otherwise a variable
+        // (no shadowing, so a name can't be both)
+        if sym, is_sym := get_expr(inner).(Symbol); is_sym {
+            if tid, is_ty := scope_find_type(s, sym.name); is_ty {
+                if bt := get_type(tid); bt.kind == .Struct && bt.structure.is_generic {
+                    highlight_lines(get_span(id))
+                    gala_panicf("Generic struct \"%s\" needs type arguments, e.g. %s(i64).",
+                        sym.name, sym.name)
+                }
+                node.names_type = true
+                get_ctx().expr_resolution_types[id] = tid
+            }
+        }
+        get_expr(id)^ = node
+
+        if !node.names_type do resolve_expr(s, inner)
     }
     case String: // ok
     case Deref: {
@@ -305,8 +366,21 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
 resolve_struct_lit :: proc(s: ^Scope, id: ExprId) {
     e := get_expr(id).(StructLit)
 
-    // `Foo` or `Foo(i64)`
-    tid := resolve_type_specifier(s, e.ty)
+    // `Foo`, `Foo(i64)`, or a generic struct named without arguments (`Box{..}`):
+    // the latter keeps the template's id, the type checker infers the instance.
+    tid: TypeId
+    inferred := false
+    if bt, is_base := e.ty.(BaseType); is_base {
+        if tmpl, found := scope_find_type(s, string(bt.ident)); found {
+            tt := get_type(tmpl)
+            if tt.kind == .Struct && tt.structure.is_generic {
+                tid = tmpl
+                inferred = true
+            }
+        }
+    }
+    if !inferred do tid = resolve_type_specifier(s, e.ty)
+
     ty := get_type(tid)
     if ty.kind != .Struct {
         highlight_lines(get_ctx().current_file, get_span(id).span)

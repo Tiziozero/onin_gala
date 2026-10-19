@@ -1,7 +1,9 @@
 import "core/core.gala";
+import "core/mem.gala";
+import "core/dynarray.gala";
+import "core/map.gala";
 
-// Passes iff there are no FAIL lines and it prints "all passed" (a failing case prints "FAIL: <name>").
-// `$T` declares a generic once per signature, plain `T` uses it.
+// Passes iff there are no FAIL lines and it prints "all passed".
 
 fn check(name: string, ok: bool) {
     if !ok {
@@ -11,168 +13,168 @@ fn check(name: string, ok: bool) {
 
 struct Pair { a: i32, b: i32 }
 
-fn id(a: $T): T { return a; }
-fn add(a: $T, b: T): T { return a + b; }
-fn sub(a: $T, b: T): T { return a - b; }
-fn max2(a: $T, b: T): T {
-    if a > b { return a; }
-    return b;
-}
-fn modulo(a: $T, b: T): T { return a % b; }
-fn zero_of(a: $T): T {
-    z : T = cast(T)0;
-    return z;
-}
-fn size_of_t(a: $T): i64 { return sizeof(T); }
-fn tag(a: $T): i64 { return sizeof(T); }
-fn swap(a: ^$T, b: ^T) {
-    tmp : T = a^;
-    a^ = b^;
-    b^ = tmp;
-}
-fn sum(a: []$T): T {
-    total : T = cast(T)0;
-    for i in a { total = total + i; }
-    return total;
-}
-fn first(a: []$T): T { return a[0]; }
-fn tail(a: []$T): []T { return a[1:]; }
-fn apply(a: $T, f: fn(x: T): T): T { return f(a); }
-fn twice(a: $T, f: fn(x: T): T): T { return f(f(a)); }
-fn add3(a: $T, b: T, c: T): T { return add(add(a, b), c); }
-fn id_twice(a: $T): T { return id(id(a)); }
-fn noop_gen(a: $T) { }
-fn fact(n: $T): T {
-    if n <= 1 { return n; }
-    return n * fact(n - 1);
-}
-fn is_even(n: $T): bool {
-    if n == 0 { return true; }
-    return is_odd(n - 1);
-}
-fn is_odd(n: $T): bool {
-    if n == 0 { return false; }
-    return is_even(n - 1);
-}
-fn plain(a: i32): i32 { return id(a); }
+fn size_of_t(a: $T): i64 { return size_of(T); }
 
 fn main() {
-    // identity over many types (untyped literals default to i64 / f64)
-    check("id int literal", id(41) == 41);
-    check("id i32", id(cast(i32)7) == cast(i32)7);
-    check("id f64", id(2.5) == 2.5);
-    check("id f32", id(cast(f32)1.5) == cast(f32)1.5);
-    check("id byte", id(cast(byte)200) == cast(byte)200);
-    check("id bool", id(true) == true);
-    check("id string", len(id("hello")) == 5);
-    x := 9;
-    p := &x;
-    q := id(p);
-    check("id pointer", q^ == 9);
-    pr := id(Pair{1, 2});
-    check("id struct", pr.a == 1 && pr.b == 2);
-    check("id struct field direct", id(Pair{3, 4}).b == 4);
+    // ---------------------------------------------------------------- DynArray
+    da := dyn_make(0, 0);
+    check("empty", da.length == 0 && dyn_cap(&da) == 0);
+    i := 0;
+    while i < 100 {
+        dyn_push(&da, i * 2);
+        i += 1;
+    }
+    check("length", da.length == 100);
+    check("capacity doubles", dyn_cap(&da) == 128);
+    check("get", dyn_get(&da, 0) == 0 && dyn_get(&da, 50) == 100 && dyn_last(&da) == 198);
+    check("pop", dyn_pop(&da) == 198 && da.length == 99);
+    dyn_set(&da, 0, 7);
+    check("set", dyn_get(&da, 0) == 7);
+    check("slice len", len(dyn_slice(&da)) == 99);
 
-    // two params sharing T
-    a32 : i32 = 10;
-    b32 : i32 = 4;
-    check("add i64", add(1, 2) == 3);
-    check("add f64", add(1.5, 2.25) == 3.75);
-    check("add i32", add(a32, b32) == 14);
-    check("sub i32", sub(a32, b32) == 6);
-    check("max2 i32", max2(a32, b32) == 10);
-    check("max2 f64", max2(1.5, 0.5) == 1.5);
-    check("modulo i32", modulo(a32, b32) == 2);
-    check("modulo i64", modulo(17, 5) == 2);
+    da_small := dyn_make(0, 0);
+    dyn_push(&da_small, 1);
+    dyn_push(&da_small, 2);
+    dyn_push(&da_small, 3);
+    check("insert middle", dyn_insert(&da_small, 1, 10) && dyn_get(&da_small, 1) == 10 && dyn_get(&da_small, 2) == 2);
+    check("insert end", dyn_insert(&da_small, 4, 99) && dyn_last(&da_small) == 99);
+    check("insert front", dyn_insert(&da_small, 0, 5) && dyn_get(&da_small, 0) == 5 && dyn_get(&da_small, 1) == 1);
+    check("length after inserts", da_small.length == 6);
+    check("remove keeps order", dyn_remove(&da_small, 1) == 1 && dyn_get(&da_small, 1) == 10);
+    check("swap_remove", dyn_swap_remove(&da_small, 0) == 5 && dyn_get(&da_small, 0) == 99);
+    check("length after removes", da_small.length == 4);
+    dyn_clear(&da_small);
+    check("clear keeps capacity", da_small.length == 0 && dyn_cap(&da_small) > 0);
 
-    // T used inside the body
-    check("zero_of i32", zero_of(a32) == 0);
-    check("zero_of f64", zero_of(3.5) == 0.0);
-    check("sizeof i32", size_of_t(a32) == 4);
-    check("sizeof i64", size_of_t(1) == 8);
-    check("sizeof f64", size_of_t(1.0) == 8);
-    check("sizeof byte", size_of_t(cast(byte)1) == 1);
+    extra := [3]i64{4, 5, 6};
+    check("extend", dyn_extend(&da_small, extra[:]) && da_small.length == 3 && dyn_get(&da_small, 2) == 6);
 
-    // pointers
-    s1 := 1;
-    s2 := 2;
-    swap(&s1, &s2);
-    check("swap i64", s1 == 2 && s2 == 1);
-    f1 := 1.5;
-    f2 := 2.5;
-    swap(&f1, &f2);
-    check("swap f64", f1 == 2.5 && f2 == 1.5);
-    pp1 := Pair{1, 2};
-    pp2 := Pair{3, 4};
-    swap(&pp1, &pp2);
-    check("swap struct", pp1.a == 3 && pp2.a == 1);
+    da_i32 := dyn_make(0, cast(i32)0);
+    dyn_push(&da_i32, 5);
+    check("i32 literal adapts", size_of_t(dyn_get(&da_i32, 0)) == 4);
 
-    // slices
-    ints := [4]i64{1, 2, 3, 4};
-    fl := [3]f32{1.5, 2.5, 3.0};
-    check("sum i64", sum(ints[:]) == 10);
-    check("sum f32", sum(fl[:]) == 7.0);
-    check("sum empty", sum(ints[0:0]) == 0);
-    check("first", first(ints[:]) == 1);
-    check("first of string", first(("Hello")[:]) == cast(byte)72);
-    t := tail(ints[:]);
-    check("tail len", len(t) == 3);
-    check("tail first", t[0] == 2);
-    check("tail of tail", first(tail(tail(ints[:]))) == 3);
+    da_pair := dyn_make(2, Pair{0, 0});
+    dyn_push(&da_pair, Pair{1, 2});
+    dyn_push(&da_pair, Pair{3, 4});
+    dyn_push(&da_pair, Pair{5, 6});
+    check("struct elements survive growth", dyn_get(&da_pair, 0).b == 2 && dyn_get(&da_pair, 2).a == 5);
 
-    // function-typed params
-    check("apply", apply(5, fn(x: i64): i64 => x * 2) == 10);
-    check("apply f64", apply(1.5, fn(x: f64): f64 => x + 1.0) == 2.5);
-    check("twice", twice(cast(i32)3, fn(x: i32): i32 => x * x) == cast(i32)81);
+    // custom allocator
+    arena := arena_make(1 * MB);
+    arena_a := arena_allocator(&arena);
+    da_arena := dyn_make(0, 0, arena_a);
+    j := 0;
+    while j < 1000 {
+        dyn_push(&da_arena, j);
+        j += 1;
+    }
+    check("arena backed", da_arena.length == 1000 && dyn_get(&da_arena, 999) == 999 && arena_used(&arena) > 0);
+    arena_destroy(&arena);
 
-    // generics calling generics, nesting
-    check("add3", add3(1, 2, 3) == 6);
-    check("add3 f64", add3(0.5, 0.25, 0.25) == 1.0);
-    check("id_twice", id_twice(cast(i32)8) == cast(i32)8);
-    check("nested call", id(id(id(5))) == 5);
-    check("generic as generic arg", add(id(1), id(2)) == 3);
+    dyn_free(&da);
+    check("free", da.length == 0 && dyn_cap(&da) == 0);
+    dyn_push(&da, 1);
+    check("push after free", da.length == 1 && dyn_get(&da, 0) == 1);
 
-    // recursion (self and mutual), one version per type
-    check("fact i64", fact(5) == 120);
-    check("fact i32", fact(cast(i32)6) == cast(i32)720);
-    check("fact f64", fact(4.0) == 24.0);
-    check("is_even", is_even(10) && !is_even(7));
-    check("is_odd i32", is_odd(cast(i32)7));
-
-    // pointer / slice / pointer-pointer / struct must all get distinct versions
-    n32 : i32 = 1;
-    pn := &n32;
-    arr3 := [3]i32{1, 2, 3};
-    arr4 := [4]i32{1, 2, 3, 4};
-    check("tag i32", tag(n32) == 4);
-    check("tag ptr", tag(&n32) == 8);
-    check("tag ptr ptr", tag(&pn) == 8);
-    check("tag slice 3", tag(arr3[:]) == 16);
-    check("tag slice 4", tag(arr4[:]) == 16);
-    check("tag struct", tag(pr) == 8);
-
-    // call sites: loops, conditions, indices, plain wrappers, void generics
-    total := 0;
+    // ---------------------------------------------------------------- Map
+    m := map_make(0, 0, 0, hash_i64, eq_i64);
+    check("map empty", m.count == 0 && !map_has(&m, 1));
     k := 0;
-    while k < 100 {
-        total = total + id(k);
-        k = k + 1;
+    while k < 1000 {
+        map_put(&m, k, k * 3);
+        k += 1;
     }
-    check("generic in while", total == 4950);
-    acc := 0;
-    for v in ints[:] {
-        acc = acc + id(v);
-    }
-    check("generic in for", acc == 10);
-    hit := false;
-    if id(true) { hit = true; }
-    check("generic in if", hit);
-    check("generic as index", ints[id(2)] == 3);
-    check("via plain fn", plain(3) == 3);
-    noop_gen(1);
-    noop_gen(2.5);
-    noop_gen(pr);
+    check("map count", m.count == 1000);
+    check("map has", map_has(&m, 0) && map_has(&m, 999) && !map_has(&m, 1000));
+    got := 0;
+    check("map get", map_get(&m, 500, &got) && got == 1500);
+    check("map get missing", !map_get(&m, -5, &got) && got == 1500);
 
-    check("param binding", apply(5, fn(x: f64): f64 => x) == 5);
+    map_put(&m, 500, 1);
+    check("overwrite", m.count == 1000 && map_get_ptr(&m, 500)^ == 1);
+    p := map_get_ptr(&m, 7);
+    p^ += 100;
+    check("get_ptr write", map_get_ptr(&m, 7)^ == 121);
+    check("get_ptr missing", map_get_ptr(&m, 5000) == 0);
+
+    removed := 0;
+    r := 0;
+    while r < 1000 {
+        if r % 2 == 0 && map_remove(&m, r) { removed += 1; }
+        r += 1;
+    }
+    check("remove count", removed == 500 && m.count == 500);
+    check("removed gone", !map_has(&m, 10) && map_has(&m, 11));
+    check("remove missing", !map_remove(&m, 10));
+
+    // tombstones are reused and don't break probing
+    t := 0;
+    while t < 1000 {
+        map_put(&m, t, t);
+        t += 1;
+    }
+    check("reinsert", m.count == 1000 && map_get_ptr(&m, 10)^ == 10 && map_get_ptr(&m, 11)^ == 11);
+
+    // churn: insert and remove repeatedly, table must not fill with tombstones
+    c := 0;
+    while c < 5000 {
+        map_put(&m, 100000 + c, c);
+        map_remove(&m, 100000 + c);
+        c += 1;
+    }
+    check("churn", m.count == 1000 && map_has(&m, 999));
+
+    // iteration
+    key_sum := 0;
+    s := 0;
+    while s < map_slots(&m) {
+        if map_slot_full(&m, s) { key_sum += m.keys[s]; }
+        s += 1;
+    }
+    check("iterate", key_sum == 499500);
+
+    map_clear(&m);
+    check("clear", m.count == 0 && !map_has(&m, 3));
+    map_put(&m, 3, 4);
+    check("put after clear", map_get_ptr(&m, 3)^ == 4);
+    map_free(&m);
+    check("free", m.count == 0 && map_slots(&m) == 0 && !map_has(&m, 3));
+
+    m_res := map_make(100, 0, 0, hash_i64, eq_i64);
+    check("reserve", map_slots(&m_res) >= 134 && m_res.count == 0);
+
+    // string keys
+    ms := map_make(0, "", 0, hash_str, eq_str);
+    map_put(&ms, "one", 1);
+    map_put(&ms, "two", 2);
+    map_put(&ms, "three", 3);
+    map_put(&ms, "", 0);
+    check("string keys", map_get_ptr(&ms, "two")^ == 2 && map_get_ptr(&ms, "three")^ == 3);
+    check("empty string key", map_has(&ms, ""));
+    check("string miss", !map_has(&ms, "four") && !map_has(&ms, "tw"));
+    map_put(&ms, "one", 11);
+    check("string overwrite", map_get_ptr(&ms, "one")^ == 11 && ms.count == 4);
+
+    // other value and key types
+    m32 := map_make(0, cast(i32)0, 0.0, hash_i32, eq_i32);
+    map_put(&m32, 4, 1.5);
+    map_put(&m32, 5, 2.5);
+    check("i32 -> f64", map_get_ptr(&m32, 4)^ == 1.5 && map_get_ptr(&m32, 5)^ == 2.5);
+
+    mp := map_make(0, 0, Pair{0, 0}, hash_i64, eq_i64);
+    map_put(&mp, 1, Pair{7, 8});
+    check("struct values", map_get_ptr(&mp, 1)^.b == 8);
+
+    // arena backed map
+    arena_m := arena_make(4 * MB);
+    ma := map_make(0, 0, 0, hash_i64, eq_i64, arena_allocator(&arena_m));
+    q := 0;
+    while q < 300 {
+        map_put(&ma, q, q);
+        q += 1;
+    }
+    check("arena map", ma.count == 300 && map_get_ptr(&ma, 299)^ == 299);
+    arena_destroy(&arena_m);
+
     println("all passed");
 }

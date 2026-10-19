@@ -461,11 +461,6 @@ cg_pointer_binop :: proc(c: ^CGCtx, e: Binop) -> CGExprRes {
 
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     switch e in get_expr(id) {
-    case TypeIdOf: {
-        // same resolution slot Sizeof uses for its type specifier
-        tid := get_ctx().expr_resolution_types[id]
-        return {kind=.Number, v=aprintf(c, "%d", tid)}
-    }
     case UnNegative: {
         v, returns := reduce_expr_to_single_value(c, cg_expr(c, e.expr))
         assert(returns)
@@ -497,9 +492,14 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         v, is_const := cg_len_of(c, e.target)
         return {kind=.Number if is_const else .Value, v=v}
     }
-    case Sizeof: {
+    case SizeOf: {
         s := type_size(get_ctx().expr_resolution_types[id])
         return {kind=.Number, v=aprintf(c, "%d", s)}
+    }
+    case TypeIdOf: {
+        // same resolution slot Sizeof uses for its type specifier
+        tid := get_ctx().expr_resolution_types[id]
+        return {kind=.Number, v=aprintf(c, "%d", tid)}
     }
     case String: {
         r := c.cg_strings[e.s] // global string thingy

@@ -59,7 +59,11 @@ StructLit :: struct {
     positional: []struct{expr:ExprId,span:Span},
 }
 Len :: struct { target: ExprId };
-Sizeof :: struct { t: TypeSpecifier };
+SizeOf :: struct {
+    t:          Maybe(TypeSpecifier), // set when written with type-only syntax
+    expr:       Maybe(ExprId),   // set otherwise
+    names_type: bool,            // resolver: `expr` was a bare type name
+}
 BoolLitTrue :: distinct struct {}
 BoolLitFalse :: distinct struct {}
 UnNegative :: struct {
@@ -93,7 +97,7 @@ Expr :: union {
     FixedSizeArray,
     String,
     Len,
-    Sizeof,
+    SizeOf,
     ZeroInit,
     BoolLitTrue,
     BoolLitFalse,
@@ -489,24 +493,7 @@ parse_compiler_op :: proc(p: ^Parser) -> ExprId {
             span={token.span.start, get_span(expr).span.end},
         }
         return id
-    } else if current_token(p).kind == .TypeIdOf {
-        token := consume_token(p); // "type_id"
-        expect_symbol(p, "(");
-        node := TypeIdOf{}
-        // type-only syntax; a bare name is left to the resolver
-        if is_symbol(next_token(p), "^") || is_symbol(next_token(p), "[") || is_kw(current_token(p), .Fn) {
-            node.t = parse_type(p)
-        } else {
-            node.expr = parse_expr(p)
-        }
-        end := expect_symbol(p, ")");
-        id := new_expr(Expr(node));
-        get_ctx().spans.exprs[id] = {
-            file_name=get_ctx().current_file,
-            span={token.span.start, end.span.end},
-        }
-        return id
-    } else if current_token(p).kind == .Transmute {
+    }else if current_token(p).kind == .Transmute {
         token := consume_token(p); // "transmute"
         expect_symbol(p, "(");
         ty := parse_type(p);
@@ -989,6 +976,45 @@ parse_postfix :: proc(p: ^Parser) -> ExprId {
     }
     return t;
 }
+// Syntax that can only be a type, never an expression.
+starts_type_only :: proc(p: ^Parser) -> bool {
+    t := current_token(p)
+    return is_symbol(t, "^") || is_symbol(t, "[") || is_symbol(t, "$") ||
+           is_kw(t, .Fn) || t.kind == .Any
+}
+
+// `Box(^i32)`, `Pair([]i64, $T)`: a call-looking `Name(...)` with an argument
+// that only makes sense as a type. Plain `Box(i32)` can't be told apart from a
+// call here, the resolver handles that (expr_as_type_spec).
+type_args_ahead :: proc(p: ^Parser) -> bool {
+    if current_token(p).kind != .Ident || !is_symbol(peek_token(p, 1), "(") do return false
+    depth := 0
+    for i := 1; ; i += 1 {
+        t := peek_token(p, i)
+        if t.kind == .EOF || is_symbol(t, ";") do return false
+        if is_symbol(t, "(") {
+            depth += 1
+        } else if is_symbol(t, ")") {
+            depth -= 1
+            if depth == 0 do return false
+        } else if depth >= 1 {
+            prev := peek_token(p, i - 1)
+            if (is_symbol(prev, "(") || is_symbol(prev, ",")) &&
+               (is_symbol(t, "^") || is_symbol(t, "[") || is_symbol(t, "$") || t.kind == .Any) {
+                return true
+            }
+        }
+    }
+}
+
+// Argument of `size_of(..)` / `type_id(..)`: type-only syntax, or an expression
+// (a bare type name parses as a Symbol, the resolver sorts it out).
+parse_type_or_expr :: proc(p: ^Parser) -> (t: Maybe(TypeSpecifier), e: Maybe(ExprId)) {
+    if starts_type_only(p) || type_args_ahead(p) {
+        return parse_type(p), nil
+    }
+    return nil, parse_expr(p)
+}
 parse_primary :: proc(p: ^Parser) -> ExprId {
     if is_kw(current_token(p), .Fn) {
         return parse_fn_lit(p)
@@ -1030,12 +1056,24 @@ parse_primary :: proc(p: ^Parser) -> ExprId {
             span={token.span.start, close.span.end}
         }
         return id
-    } else if current_token(p).kind == .Sizeof {
-        token := consume_token(p);// "sizeof"
+    } else if current_token(p).kind == .TypeIdOf {
+        token := consume_token(p); // "type_id"
         expect_symbol(p, "(");
-        t := parse_type(p);
+        node := TypeIdOf{}
+        node.t, node.expr = parse_type_or_expr(p)
+        end := expect_symbol(p, ")");
+        id := new_expr(Expr(node));
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span={token.span.start, end.span.end},
+        }
+        return id
+    } else if current_token(p).kind == .SizeOf {
+        token := consume_token(p);// "size_of"
+        expect_symbol(p, "(");
+        t, ex := parse_type_or_expr(p)
         close := expect_symbol(p, ")");
-        id := new_expr(Sizeof{t});
+        id := new_expr(SizeOf{t = t, expr = ex});
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
             span={token.span.start, close.span.end}
