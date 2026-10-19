@@ -6,7 +6,11 @@ package main
 // NOT copied: clone the parsed AST, then resolve and typecheck the copy.
 //
 // TypeSpecifiers hold no node ids, so they're copied as-is (the ^TypeSpecifier
-// pointers inside them stay shared).
+// pointers inside them stay shared). The one exception is the size expression
+// of a fixed-size array type (`[MAX_COUNT]T`, FixedArreySpecifier.size_expr):
+// that ExprId is shared between the original and its clones. That's fine
+// because it is only ever read: const_eval folds it and never resolves or
+// rewrites it.
 
 clone_expr :: proc(id: ExprId) -> ExprId {
     c := get_ctx()
@@ -62,6 +66,7 @@ clone_expr :: proc(id: ExprId) -> ExprId {
     case Transmute:
         v.target = clone_expr(v.target)
     case TypeIdOf:
+        v.expr = clone_maybe_expr(v.expr)
     case Reference:
         v.expr = clone_expr(v.expr)
     case Deref:
@@ -71,11 +76,14 @@ clone_expr :: proc(id: ExprId) -> ExprId {
     case UnNegative:
         v.expr = clone_expr(v.expr)
     case FixedSizeArray:
+        // `[MAX_COUNT]byte{}`: the size expression is folded by the resolver
+        v.size_expr = clone_maybe_expr(v.size_expr)
         v.initialiser = clone_exprs(v.initialiser)
     case String:
     case Len:
         v.target = clone_expr(v.target)
     case SizeOf:
+        v.expr = clone_maybe_expr(v.expr)
     case ZeroInit:
     case BoolLitTrue:
     case BoolLitFalse:
@@ -147,6 +155,10 @@ clone_item :: proc(id: ItemId) -> ItemId {
     case ExternFnDec:
         v.signature = clone_sig(v.signature)
     case GlobalVarDec:
+        v.value = clone_expr(v.value)
+    case ConstDec:
+        // folded and removed from the item list before anything is cloned,
+        // so this isn't reached today; here for the exhaustive switch
         v.value = clone_expr(v.value)
     }
 

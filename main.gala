@@ -5,6 +5,16 @@ struct Box {
     a: $K, b: $V,
 }
 
+a :: 1024;
+
+
+fn f(v: [a*2]$K): K {
+    t : K = 0;
+    for i in v {
+        t += i;
+    }
+    return t;
+}
 // fn map_make(cap: i64, like_k: $K, like_v: $V, hash: fn(hk: K): u64, eq: fn(ea: K, eb: K): bool, a: Allocator = base_allocator): Map(K, V) {
 fn main(): i32 {
     m := map_make(1024, "", "", hash_str, eq_str);
@@ -31,6 +41,13 @@ fn main(): i32 {
     println(size_of(Box(i32, f32)));
     println(size_of(Box(f64, f32)));
     println(size_of(Box{1.3, cast(i64)0}));
+
+    println(a);
+    h := [a*2]i32{1, 2, 3, 4, 5};
+    println(size_of(h));
+    println(len(h));
+    println(len(h)*size_of(i32));
+    println(f(h));
 
     return 0;
 }

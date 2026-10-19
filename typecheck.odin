@@ -1242,6 +1242,7 @@ tc_global_var_dec :: proc(tc: ^TcContext, id: ItemId) {
 tc_item :: proc(tc: ^TcContext, id: ItemId) {
     item := get_item(id)
     switch i in item {
+    case ConstDec: {} // ok?
     case Import: {} // ok
     case StructDec: {
         // ok?

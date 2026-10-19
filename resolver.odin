@@ -293,13 +293,24 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         resolve_expr(s, e.index);
     }
     case FixedSizeArray: {
+        // `[MAX_COUNT]byte{}`: fold the constant size into `size`
+        if se, has_size_expr := e.size_expr.(ExprId); has_size_expr {
+            node := get_expr(id).(FixedSizeArray)
+            node.size = const_array_size(s, se)
+            node.size_expr = nil
+            if len(node.initialiser) > node.size {
+                highlight_lines(get_span(id))
+                gala_panic("too many elements in array initialiser")
+            }
+            get_expr(id)^ = node
+        }
         // CHANGED: resolve the initialiser elements too
         t := resolve_type_specifier(s, e.ty);
-        get_ctx().expr_resolution_types[id] = t;
-        for el in e.initialiser {
-            resolve_expr(s, el);
-        }
-    }
+           get_ctx().expr_resolution_types[id] = t;
+           for el in e.initialiser {
+               resolve_expr(s, el);
+           }
+       }
     case FieldAccess: {
         // check field in type checking
         resolve_expr(s, e.target);
@@ -332,6 +343,11 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         if !ok {
             highlight_lines(get_span(id));
             gala_panic("Couldn't find", e.name, "in scope.");
+        }
+        // `name :: value`: this use becomes the value itself
+        if is_const_obj(obj) {
+            inline_constant(id, obj)
+            return
         }
         get_ctx().expr_objects[id] = obj
     }
@@ -566,8 +582,12 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier, no_declare_generic :
     }
     case FixedArreySpecifier: {
         id := resolve_type_specifier(s, k.base^, no_declare_generic, bindings)
+        size := k.size
+        if se, has_size_expr := k.size_expr.(ExprId); has_size_expr {
+            size = const_array_size(s, se)
+        }
         return intern_type({kind=.FixedSizeArray,
-            fixed_size_array={type=id, size=k.size}})
+            fixed_size_array={type=id, size=size}})
     }
     case FnSpecifier: {
         for a in k.signature.args {
@@ -1195,6 +1215,12 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     // kind=.Variable on purpose: a global is addressable like any local, so
     // the type checker and codegen treat its uses the same way.
     case GlobalVarDec:  new_object_fd(s, Object{kind=.Variable, name=i.name}, get_span(id));
+    // never looked up as an object: uses are rewritten, and const_table says
+    // which objects are constants
+    case ConstDec: {
+        oid := new_object_fd(s, Object{kind=.Variable, name=i.name}, get_span(id))
+        const_table[oid] = ConstEntry{item = id, scope = s}
+    }
     case:               panic("impl")
     }
 }
@@ -1222,6 +1248,10 @@ resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
         resolve_global_var_dec_item(s, id);
         oid, ok := get_ctx().item_objects[id]; assert(ok);
         s.obj_exports[i.name] = oid
+    }
+    case ConstDec: {
+        // exports itself; may already be done if another constant needed it
+        resolve_const_dec_item(s, id)
     }
     case:               panic("impl")
     }
@@ -1356,8 +1386,20 @@ resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
     }
     finish_struct_instances(ast)
     check_struct_cycles(ast)
+
+    // Constants next: they're folded here and every later use (function
+    // bodies, globals, parameter defaults) is rewritten into the value, so
+    // they must all be known before anything else is resolved. Order between
+    // constants doesn't matter (see ensure_const).
     for id in ast.items {
-        if _, is_struct := get(id).(StructDec); !is_struct {
+        if _, is_const := get(id).(ConstDec); is_const {
+            resolve_item(&global_scope, id)
+        }
+    }
+    for id in ast.items {
+        _, is_struct := get(id).(StructDec)
+        _, is_const := get(id).(ConstDec)
+        if !is_struct && !is_const {
             resolve_item(&global_scope, id)
         }
     }
@@ -1365,17 +1407,21 @@ resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
     // filter generics like functions
     // Generic struct declarations are templates, not runtime structs.
     // Keep them available throughout resolution, then remove their AST items.
+    // Constants are fully folded into their uses, so they go too.
     write := 0
     for id in ast.items {
-        is_generic_struct := false
+        drop_item := false
 
         if _, ok := get(id).(StructDec); ok {
             if tid, exists := get_ctx().item_types[id]; exists {
-                is_generic_struct = get_type(tid).structure.is_generic
+                drop_item = get_type(tid).structure.is_generic
             }
         }
+        if _, ok := get(id).(ConstDec); ok {
+            drop_item = true
+        }
 
-        if is_generic_struct {
+        if drop_item {
             continue
         }
 

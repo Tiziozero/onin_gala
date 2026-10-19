@@ -78,6 +78,16 @@ FnLit :: struct {
     span: Span,
     block: Block,
 }
+// Top-level constant:
+//   limit :: 100;
+//   ratio : f32 : 0.5;
+// The resolver folds the value and replaces every use with a literal; the
+// item is dropped afterwards, so later passes never see it.
+ConstDec :: struct {
+    name: string,
+    type: Maybe(TypeSpecifier),
+    value: ExprId,
+}
 Expr :: union {
     StructLit,
     Binop,
@@ -125,6 +135,9 @@ TakeSlice :: struct {
 }
 FixedSizeArray :: struct {
     size: int,
+    // set when the size is written as a constant expression (`[MAX_COUNT]byte{}`);
+    // the resolver folds it into `size` and clears this
+    size_expr: Maybe(ExprId),
     ty: TypeSpecifier,
     initialiser: []ExprId,
 }
@@ -149,7 +162,7 @@ FnCallArg :: struct{
 BaseType :: struct { ident: string, span: Span };
 // can't have ptr to itself
 PointerType :: struct {ptr:^TypeSpecifier, span: Span };
-FixedArreySpecifier :: struct { size: int, base: ^TypeSpecifier, span: Span };
+FixedArreySpecifier :: struct { size: int, size_expr: Maybe(ExprId), base: ^TypeSpecifier, span: Span };
 SliceSpecifier :: struct {base : ^TypeSpecifier, span: Span }
 AnySpecifier :: struct { span: Span }
 GenericSpecifier :: struct { name: string, span: Span }
@@ -271,6 +284,7 @@ Item :: union {
     FnDec,
     ExternFnDec,
     GlobalVarDec,
+    ConstDec,
 }
 op_kind :: proc(t: Token) -> (kind: BinopKind, ok: bool) {
     if t.kind != .Symbol do return {}, false
@@ -410,19 +424,11 @@ parse_struct_lit :: proc(p: ^Parser) -> ExprId {
 }
 
 // `[N]T{}` (zeroed) or `[N]T{a, b, c}` (trailing comma ok)
+// `[N]T{}` (zeroed) or `[N]T{a, b, c}` (trailing comma ok). N is a number
+// or a constant expression (`[MAX_COUNT]byte{}`).
 parse_array_lit :: proc(p: ^Parser) -> ExprId {
     open_b := consume_token(p) // "["
-    n := consume_token(p)
-    if n.kind != .Number {
-        highlight_lines(get_ctx().current_file, n.span)
-        gala_panic("Expected a number for the fixed size array size.")
-    }
-    size64, ok := parse_integer_literal(n.text)
-    size := int(size64)
-    if !ok {
-        highlight_lines(get_ctx().current_file, n.span)
-        gala_panic("Invalid array size.")
-    }
+    size, size_expr := parse_array_size(p)
     expect_symbol(p, "]")
     t := parse_type(p)
     expect_symbol(p, "{")
@@ -439,7 +445,8 @@ parse_array_lit :: proc(p: ^Parser) -> ExprId {
     end := expect_symbol(p, "}")
     span := Span{start=open_b.span.start, end=end.span.end}
 
-    if len(elems) > size {
+    // with a constant-expression size the resolver does this check
+    if size_expr == nil && len(elems) > size {
         highlight_lines(get_ctx().current_file, span)
         gala_panic("too many elements in array initialiser")
     }
@@ -447,7 +454,7 @@ parse_array_lit :: proc(p: ^Parser) -> ExprId {
     init: []ExprId // nil for `{}`
     if len(elems) > 0 do init = elems[:]
 
-    id := new_expr(Expr(FixedSizeArray{size=size, ty=t, initialiser=init}))
+    id := new_expr(Expr(FixedSizeArray{size=size, size_expr=size_expr, ty=t, initialiser=init}))
     get_ctx().spans.exprs[id] = {file_name=get_ctx().current_file, span=span}
     return id
 }
@@ -1135,6 +1142,22 @@ base_span :: proc(t: ^TypeSpecifier) -> Span {
     }
     panic("impl")
 }
+// The size inside `[N]T` / `[N]T{...}`; the "[" is already consumed, the
+// "]" is left for the caller. A plain number literal stays a plain int,
+// anything else is parsed as an expression and folded by the resolver.
+parse_array_size :: proc(p: ^Parser) -> (size: int, expr: Maybe(ExprId)) {
+    n := current_token(p)
+    if n.kind == .Number && is_symbol(next_token(p), "]") {
+        consume_token(p)
+        size64, ok := parse_integer_literal(n.text)
+        if !ok {
+            highlight_lines(get_ctx().current_file, n.span)
+            gala_panic("Invalid array size.")
+        }
+        return int(size64), nil
+    }
+    return 0, parse_binop(p, 0)
+}
 parse_type :: proc(p: ^Parser) -> TypeSpecifier {
     if is_symbol(current_token(p), "$") {
         g := consume_token(p);
@@ -1187,24 +1210,14 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
                 }
             })
         }
-        n := consume_token(p)
-        if n.kind != .Number {
-            highlight_lines(get_ctx().current_file, n.span)
-            gala_panic("Expected a number for the array size.")
-        }
-        size64, ok := parse_integer_literal(n.text)
-        size := int(size64)
-        if !ok {
-            highlight_lines(get_ctx().current_file, n.span)
-            gala_panic("Invalid array size.")
-        }
+        size, size_expr := parse_array_size(p)
         expect_symbol(p, "]");
 
         base_specifier := new(TypeSpecifier, allocator=get_ctx().allocator);
         base_specifier^ = parse_type(p);
 
         return TypeSpecifier(FixedArreySpecifier{
-            size=size,base=base_specifier,
+            size=size, size_expr=size_expr, base=base_specifier,
             span={
                 start=token.span.start,
                 end=base_span(base_specifier).end
@@ -1399,25 +1412,51 @@ parse_fn_signature :: proc(p: ^Parser) -> FnDec {
     return f;
 }
 // Top-level `name := expr;` or `name: type = expr;`
+// Top-level `name := expr;`, `name: type = expr;`, `name :: expr;` or `name : type : expr;`
 parse_global_var_dec :: proc(p: ^Parser) -> ItemId {
     name := expect_ident(p)
 
     ty: Maybe(TypeSpecifier) = nil
+    is_const := false
     if is_symbol(current_token(p), ":=") {
         consume_token(p) // ":="
+    } else if is_symbol(current_token(p), "::") {
+        consume_token(p) // "::"
+        is_const = true
     } else if is_symbol(current_token(p), ":") {
         consume_token(p) // ":"
-        ty = parse_type(p)
-        expect_symbol(p, "=")
+        if is_symbol(current_token(p), ":") { // `::` lexed as two tokens
+            consume_token(p)
+            is_const = true
+        } else {
+            ty = parse_type(p)
+            if is_symbol(current_token(p), ":") { // `name : T : value`
+                consume_token(p)
+                is_const = true
+            } else {
+                expect_symbol(p, "=")
+            }
+        }
     } else {
         highlight_lines(get_ctx().current_file, current_token(p).span)
-        gala_panic("Expected \":=\" or \":\" after a top-level name (only declarations are allowed at the top level).")
+        gala_panic("Expected \":=\", \":\" or \"::\" after a top-level name (only declarations are allowed at the top level).")
+    }
+
+    if is_const && is_kw(current_token(p), .Struct) {
+        highlight_lines(get_ctx().current_file, current_token(p).span)
+        gala_panic("`::` only declares constant values for now (use `struct Name {...}` for structs).")
     }
 
     value := parse_expr(p)
     end := expect_symbol(p, ";")
 
-    id := new_item(Item(GlobalVarDec{name=name.text, type=ty, value=value}))
+    item: Item
+    if is_const {
+        item = ConstDec{name=name.text, type=ty, value=value}
+    } else {
+        item = GlobalVarDec{name=name.text, type=ty, value=value}
+    }
+    id := new_item(item)
     get_ctx().spans.items[id] = {
         file_name=get_ctx().current_file,
         span={name.span.start, end.span.end},
