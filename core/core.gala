@@ -130,3 +130,4 @@ fn str_cmp(a: string, b: string): bool {
 fn generic_fn(a: $T) {
     println("a:", a);
 }
+

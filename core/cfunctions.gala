@@ -1,4 +1,5 @@
 // cfunctions.gala
+// cfunctions.gala
 //
 // Raw POSIX socket API.
 // Linux / Unix.
@@ -112,6 +113,14 @@ extern fn fwrite(data: ^byte, size: u64, count: u64, file: rawptr): u64;
 extern fn fread(data: ^byte, size: u64, count: u64, file: rawptr): u64;
 
 extern fn fflush(file: rawptr): i32;
+
+// file position (`whence` is one of the SEEK_* values below)
+extern fn fseek(file: rawptr, offset: i64, whence: i32): i32;
+extern fn ftell(file: rawptr): i64;
+
+SEEK_SET: i32 = 0;
+SEEK_CUR: i32 = 1;
+SEEK_END: i32 = 2;
 
 
 // ============================================================

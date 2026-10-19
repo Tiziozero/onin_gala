@@ -179,6 +179,13 @@ fn map_get(m: ^Map($K, $V), k: K, out: ^V): bool {
     out^ = m^.vals[i];
     return true;
 }
+fn map_get_m(m: Map($K, $V), k: K, out: ^V): bool {
+    _m := m;
+    i := map_find(&_m, k);
+    if i < 0 { return false; }
+    out^ = m.vals[i];
+    return true;
+}
 
 fn map_remove(m: ^Map($K, $V), k: K): bool {
     i := map_find(m, k);
