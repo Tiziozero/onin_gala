@@ -7,6 +7,7 @@ struct Box {
 
 a :: 1024;
 
+alias blue = int;
 alias int = i64;
 
 fn f(v: [a*2]$K): K {
@@ -53,7 +54,7 @@ fn main(): i32 {
     println(len(h)*size_of(i32));
     println(f(h));
     i: i64 = ret_int();
-    println(type_id(i), type_id(i64), type_id(int));
+    println(type_id(i), type_id(i64), type_id(int), type_id(blue));
 
     return 0;
 }

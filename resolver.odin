@@ -44,6 +44,7 @@ Scope :: struct {
     types:          map[string]TypeId,
     obj_forward:   map[string]ObjId,
     ty_forward:    map[string]TypeId,
+    ty_pending:     map[string]ItemId, // for type aliases resolution
     parent:         ^Scope,
 }
 
@@ -77,6 +78,10 @@ name_exists :: proc(scope: ^Scope, n: string, error := false) -> bool {
             return true
         }
         if id, ok := s.obj_forward[n]; ok {
+            if error do report_first_decl(id)
+            return true
+        }
+        if id, ok := s.ty_pending[n]; ok {
             if error do report_first_decl(id)
             return true
         }
@@ -212,6 +217,27 @@ scope_get_object :: proc(s: ^Scope, n: string) -> (ObjId, bool) {
     return 0, false
 }
 
+alias_active: map[ItemId]bool
+
+// Resolved on first use, like ensure_const for constants.
+resolve_alias :: proc(s: ^Scope, id: ItemId) -> TypeId {
+    a := get(id).(TypeAlias)
+    if t, done := s.types[a.new_name]; done do return t
+    if alias_active[id] {
+        highlight_lines(get_span(id))
+        gala_panicf("Type alias \"%s\" is cyclic.", a.new_name)
+    }
+    if specifier_has_generic(a.ty) {
+        highlight_lines(get_span(id))
+        gala_panic("Can't have generics in type aliases.")
+    }
+    alias_active[id] = true
+    t := resolve_type_specifier(s, a.ty)
+    delete_key(&alias_active, id)
+    delete_key(&s.ty_pending, a.new_name)
+    s.types[a.new_name] = t
+    return t
+}
 // silent lookup: a miss is a normal answer here (see TypeIdOf)
 scope_find_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
     scope := s
@@ -221,6 +247,9 @@ scope_find_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
         // check fds too
         id, ok = scope.ty_forward[n]
         if ok { return id, true }
+        if aid, ok := scope.ty_pending[n]; ok {
+            return resolve_alias(scope, aid), true
+        }
         scope = scope.parent
     }
     return 0, false
@@ -1239,7 +1268,7 @@ resolve_global_var_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 
 // Aliases resolve after every name is forward-declared, in any order.
 // Repeats until no progress, so `alias A = B; alias B = i32;` works.
-resolve_type_aliases :: proc(s: ^ModuleScope, ast: ^AST) {
+/* resolve_type_aliases :: proc(s: ^ModuleScope, ast: ^AST) {
     pending := make([dynamic]ItemId, allocator=context.temp_allocator)
     for id in ast.items {
         if _, ok := get(id).(TypeAlias); ok do append(&pending, id)
@@ -1276,11 +1305,14 @@ resolve_type_aliases :: proc(s: ^ModuleScope, ast: ^AST) {
             gala_panicf("Type \"%s\" doesn't exist.", a.ty)
         }
     }
-}
+} */
 forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     item := get(id)
     switch i in item {
-    case TypeAlias: {}
+    case TypeAlias: {
+        check_undeclared(s, i.new_name, get_span(id))
+        s.ty_pending[i.new_name] = id
+    }
     case Import: {
         resolved := resolve_import_path(get_ctx().current_file, i.fname)
         modid, ok := get_ctx().modules[resolved]
@@ -1328,7 +1360,9 @@ resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
     item := get(id)
 
     switch i in item {
-    case TypeAlias:        {}
+    case TypeAlias: {
+        s.ty_exports[i.new_name] = resolve_alias(s, id)
+    }
     case Import:        {}
     case StructDec: {
         resolve_struct_dec_item(s, id)
@@ -1367,6 +1401,7 @@ new_scope :: proc(parent:^Scope=nil, allocator:=get_ctx().allocator) -> Scope {
     s := Scope{}
     s.objects       = make(map[string]ObjId,  allocator=allocator)
     s.types         = make(map[string]TypeId, allocator=allocator)
+    s.ty_pending    = make(map[string]ItemId, allocator=allocator)
     s.parent = parent
     return s
 }
@@ -1464,6 +1499,7 @@ check_struct_cycles :: proc(ast: ^AST) {
 }
 
 resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
+    alias_active = make(map[ItemId]bool, get_ctx().allocator)
     append(&get_ctx().mods, Module{})
     mid := ModId(len(get_ctx().mods) - 1)
     get_ctx().current_module_id = mid // for objects and what not
@@ -1489,7 +1525,7 @@ resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
     }
 
     // resolve type aliases
-    resolve_type_aliases(&global_scope, ast)
+    // resolve_type_aliases(&global_scope, ast)
 
     // Structs first: a struct literal in a function body or a global
     // initialiser asserts that the struct's fields are filled in, so it
@@ -1550,5 +1586,6 @@ resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
         ast=ast,
         path=path,
     }
+    delete(alias_active);
     return mid
 }

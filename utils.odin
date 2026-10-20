@@ -96,7 +96,7 @@ tts :: proc(t: TypeId) -> string {
 
         ret := get_type(ty.fn.ret_ty)
         if ret != nil && ret.kind != .Void {
-            strings.write_string(&sb, " -> ")
+            strings.write_string(&sb, ": ")
             strings.write_string(&sb, tts(ty.fn.ret_ty))
         }
         return strings.to_string(sb)

@@ -279,7 +279,8 @@ Import :: struct {
     fname, alias: string,
 }
 TypeAlias :: struct {
-    new_name, ty: string,
+    new_name: string,
+    ty: TypeSpecifier,
 }
 Item :: union {
     Import,
@@ -1473,9 +1474,9 @@ parse_module_kw :: proc(p: ^Parser) -> ItemId {
         t := consume_token(p);
         new_name := expect_ident(p);
         expect_symbol(p, "=");
-        ty := expect_ident(p);
+        ty := parse_type(p);
         e := expect_symbol(p, ";");
-        id := new_item(TypeAlias{new_name.text, ty.text})
+        id := new_item(TypeAlias{new_name.text, ty})
         get_ctx().spans.items[id] = {
             file_name=get_ctx().current_file,
             span={t.span.start, e.span.end},
