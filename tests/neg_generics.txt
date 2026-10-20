@@ -26,7 +26,7 @@ fn main() {
     z := f(1, 2);
 }
 
-//### use_before_decl | type doesn't exist
+//### use_before_decl | Type "T" doesn't exist.
 import "core/core.gala";
 fn f(a: T, b: $T): T { return b; }
 fn main() {
@@ -40,7 +40,7 @@ fn main() {
     z := make(1);
 }
 
-//### generic_in_vardec | generics in vardecs
+//### generic_in_vardec | Can't have generics in variable declarations.
 import "core/core.gala";
 fn f(a: $T) {
     x : $T = a;
@@ -64,7 +64,8 @@ fn main() {
     z := add(1);
 }
 
-//### too_many_args | args count
+//### too_many_args | Too many arguments: the function takes at most 2, got 3.
+
 import "core/core.gala";
 fn add(a: $T, b: T): T { return a + b; }
 fn main() {
@@ -108,7 +109,7 @@ fn main() {
     swap(1, 2);
 }
 
-//### literal_uses_outer_T | type doesn't exist
+//### literal_uses_outer_T | Type "T" doesn't exist.
 import "core/core.gala";
 fn f(a: $T): T {
     g := fn(x: T): T => x;
@@ -501,7 +502,7 @@ fn main() {
     z := lib_add(1);
 }
 
-//### import_too_many_args | args count
+//### import_too_many_args | Too many arguments: the function takes at most 2, got 3.
 import "core/core.gala";
 import "tests/generics_lib.gala";
 fn main() {
@@ -1071,7 +1072,7 @@ fn main() {
     b := make(1);
 }
 
-//### gs_generic_in_vardec | generics in vardecs
+//### gs_generic_in_vardec | Can't have generics in variable declarations.
 import "core/core.gala";
 struct Box { v: $T, n: i64 }
 fn f(a: $T) {

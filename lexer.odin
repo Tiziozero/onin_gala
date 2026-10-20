@@ -25,6 +25,7 @@ TokenKind :: enum {
 }
 Keyword :: enum {
     Invalid,
+    Alias,
     Fn,
     Return,
     If, Else,
@@ -92,6 +93,7 @@ match_at :: proc(buf: []byte, i: int, s: string) -> bool {
 keyword_token :: proc(ident: string, span: Span) -> (tok: Token, ok: bool) {
     switch ident {
     case "fn":        return Token{span=span, kind=.Keyword, kw=.Fn}, true
+    case "alias":     return Token{span=span, kind=.Keyword, kw=.Alias}, true
     case "struct":    return Token{span=span, kind=.Keyword, kw=.Struct}, true
     case "return":    return Token{span=span, kind=.Keyword, kw=.Return}, true
     case "if":        return Token{span=span, kind=.Keyword, kw=.If}, true

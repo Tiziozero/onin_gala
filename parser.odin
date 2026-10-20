@@ -278,8 +278,12 @@ GlobalVarDec :: struct {
 Import :: struct {
     fname, alias: string,
 }
+TypeAlias :: struct {
+    new_name, ty: string,
+}
 Item :: union {
     Import,
+    TypeAlias,
     StructDec,
     FnDec,
     ExternFnDec,
@@ -1465,6 +1469,20 @@ parse_global_var_dec :: proc(p: ^Parser) -> ItemId {
 }
 parse_module_kw :: proc(p: ^Parser) -> ItemId {
     #partial switch current_token(p).kw {
+    case .Alias: {
+        t := consume_token(p);
+        new_name := expect_ident(p);
+        expect_symbol(p, "=");
+        ty := expect_ident(p);
+        e := expect_symbol(p, ";");
+        id := new_item(TypeAlias{new_name.text, ty.text})
+        get_ctx().spans.items[id] = {
+            file_name=get_ctx().current_file,
+            span={t.span.start, e.span.end},
+        }
+
+        return id
+    }
     case .Struct: {
         consume_token(p); // "struct"
         name := expect_ident(p);

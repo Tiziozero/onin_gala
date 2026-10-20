@@ -42,8 +42,8 @@ Object :: struct {
 Scope :: struct {
     objects:        map[string]ObjId,
     types:          map[string]TypeId,
-    obj_foreward:   map[string]ObjId,
-    ty_foreward:    map[string]TypeId,
+    obj_forward:   map[string]ObjId,
+    ty_forward:    map[string]TypeId,
     parent:         ^Scope,
 }
 
@@ -72,11 +72,11 @@ name_exists :: proc(scope: ^Scope, n: string, error := false) -> bool {
             if error do report_first_decl(id)
             return true
         }
-        if id, ok := s.ty_foreward[n]; ok {
+        if id, ok := s.ty_forward[n]; ok {
             if error do report_first_decl(id)
             return true
         }
-        if id, ok := s.obj_foreward[n]; ok {
+        if id, ok := s.obj_forward[n]; ok {
             if error do report_first_decl(id)
             return true
         }
@@ -132,14 +132,14 @@ new_type :: proc(s: ^Scope, t: Type, span: SpanStruct) -> TypeId {
 new_object_fd :: proc(s: ^ModuleScope, o: Object, span: SpanStruct) -> ObjId {
     check_undeclared(s, o.name, span)
     id := add_object(o, span)
-    s.obj_foreward[o.name] = id
+    s.obj_forward[o.name] = id
     return id
 }
 
 new_type_fd :: proc(s: ^ModuleScope, t: Type, span: SpanStruct) -> TypeId {
     check_undeclared(s, t.name, span)
     id := add_type(t, span)
-    s.ty_foreward[t.name] = id
+    s.ty_forward[t.name] = id
     return id
 }
 
@@ -149,7 +149,7 @@ new_type_fd :: proc(s: ^ModuleScope, t: Type, span: SpanStruct) -> TypeId {
 // new_module_scope), which is how one is found from any nested scope.
 enclosing_module_scope :: proc(s: ^Scope) -> ^Scope {
     sc := s
-    for sc != nil && sc.obj_foreward == nil {
+    for sc != nil && sc.obj_forward == nil {
         sc = sc.parent
     }
     if sc == nil do return s // shouldn't happen
@@ -199,41 +199,13 @@ edit_distance :: proc(a, b: string) -> int {
     }
     return prev[len(b)]
 }
-
-@(private="file")
-closest_key :: proc(m: map[string]$V, n: string, best: ^string, best_d: ^int) {
-    for k in m {
-        d := edit_distance(n, k)
-        if d < best_d^ {
-            best^ = k
-            best_d^ = d
-        }
-    }
-}
-
-// Closest visible name within a small edit distance, if there is one.
-suggest_name :: proc(s: ^Scope, n: string, want_type: bool) -> (string, bool) {
-    best: string
-    best_d := max(2, len(n) / 3) + 1
-    for sc := s; sc != nil; sc = sc.parent {
-        if want_type {
-            closest_key(sc.types, n, &best, &best_d)
-            closest_key(sc.ty_foreward, n, &best, &best_d)
-        } else {
-            closest_key(sc.objects, n, &best, &best_d)
-            closest_key(sc.obj_foreward, n, &best, &best_d)
-        }
-    }
-    return best, len(best) > 0
-}
-
 scope_get_object :: proc(s: ^Scope, n: string) -> (ObjId, bool) {
     scope := s
     for scope != nil {
         id, ok := scope.objects[n]
         if ok { return id, true }
         // check fds too
-        id, ok = scope.obj_foreward[n]
+        id, ok = scope.obj_forward[n]
         if ok { return id, true }
         scope = scope.parent
     }
@@ -247,7 +219,7 @@ scope_find_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
         id, ok := scope.types[n]
         if ok { return id, true }
         // check fds too
-        id, ok = scope.ty_foreward[n]
+        id, ok = scope.ty_forward[n]
         if ok { return id, true }
         scope = scope.parent
     }
@@ -264,9 +236,6 @@ scope_get_type :: proc(s: ^Scope, n: string) -> (TypeId, bool) {
 lookup_type :: proc(s: ^Scope, name: string, span: Span) -> TypeId {
     if tid, ok := scope_find_type(s, name); ok do return tid
     highlight_lines({get_ctx().current_file, span})
-    if guess, found := suggest_name(s, name, true); found {
-        gala_panicf("Type \"%s\" doesn't exist. Did you mean \"%s\"?", name, guess)
-    }
     gala_panicf("Type \"%s\" doesn't exist.", name)
 }
 
@@ -424,9 +393,6 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         obj, ok := scope_get_object(s, e.name)
         if !ok {
             highlight_lines(get_span(id))
-            if guess, found := suggest_name(s, e.name, false); found {
-                gala_panicf("Couldn't find \"%s\" in scope. Did you mean \"%s\"?", e.name, guess)
-            }
             gala_panicf("Couldn't find \"%s\" in scope.", e.name)
         }
         // `name :: value`: this use becomes the value itself
@@ -1088,7 +1054,7 @@ resolve_generic_clone :: proc(g, iid: ItemId, v: FnVersion) {
 
 resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     sd, ok := get_item(id).(StructDec); assert(ok)
-    tid, iok := s.ty_foreward[sd.name]; assert(iok) // make sure fd exists
+    tid, iok := s.ty_forward[sd.name]; assert(iok) // make sure fd exists
 
     // the first `$T` declares T in this scope, plain `T` refers to it after
     scope := new_scope(s)
@@ -1115,7 +1081,7 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     get_type(tid).structure.fields = fields
 
     // link item to type
-    delete_key(&s.ty_foreward, sd.name) // delete fd and create type
+    delete_key(&s.ty_forward, sd.name) // delete fd and create type
     s.types[sd.name] = tid
     get_ctx().item_types[id] = tid
 }
@@ -1194,7 +1160,7 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
 // can't be generic, really. so fail
 resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     fndec, ok := get(id).(ExternFnDec); assert(ok)
-    oid, ook := s.obj_foreward[fndec.name]; assert(ook) // make sure fd exists
+    oid, ook := s.obj_forward[fndec.name]; assert(ook) // make sure fd exists
     obj := get(oid) // pointer, so modify that
 
     fnty, scope := resolve_fn_dec_signature(s, fndec, extern=true)
@@ -1212,14 +1178,14 @@ resolve_extern_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     obj.name = fndec.name
     get_ctx().objs[oid] = obj^
 
-    delete_key(&s.obj_foreward, fndec.name) // delete fd and create object
+    delete_key(&s.obj_forward, fndec.name) // delete fd and create object
     s.objects[fndec.name] = oid
     get_ctx().item_objects[id] = oid
 }
 
 resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     fndec, ok := get(id).(FnDec); assert(ok)
-    oid, ook := s.obj_foreward[fndec.name]; assert(ook) // make sure fd exists
+    oid, ook := s.obj_forward[fndec.name]; assert(ook) // make sure fd exists
     obj := get(oid) // pointer, so modify that
 
     fnty, fnscope := resolve_fn_dec_signature(s, fndec)
@@ -1238,7 +1204,7 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     obj.name = fndec.name
     get_ctx().objs[oid] = obj^
 
-    delete_key(&s.obj_foreward, fndec.name) // delete fd and create object
+    delete_key(&s.obj_forward, fndec.name) // delete fd and create object
     s.objects[fndec.name] = oid
     get_ctx().item_objects[id] = oid
 }
@@ -1250,7 +1216,7 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 // the type checker infers it.
 resolve_global_var_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     gd, ok := get(id).(GlobalVarDec); assert(ok)
-    oid, ook := s.obj_foreward[gd.name]; assert(ook) // make sure fd exists
+    oid, ook := s.obj_forward[gd.name]; assert(ook) // make sure fd exists
 
     resolve_expr(s, gd.value)
 
@@ -1266,14 +1232,55 @@ resolve_global_var_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     obj.name = gd.name
     get_ctx().objs[oid] = obj^
 
-    delete_key(&s.obj_foreward, gd.name) // delete fd and create object
+    delete_key(&s.obj_forward, gd.name) // delete fd and create object
     s.objects[gd.name] = oid
     get_ctx().item_objects[id] = oid
 }
 
+// Aliases resolve after every name is forward-declared, in any order.
+// Repeats until no progress, so `alias A = B; alias B = i32;` works.
+resolve_type_aliases :: proc(s: ^ModuleScope, ast: ^AST) {
+    pending := make([dynamic]ItemId, allocator=context.temp_allocator)
+    for id in ast.items {
+        if _, ok := get(id).(TypeAlias); ok do append(&pending, id)
+    }
+
+    for len(pending) > 0 {
+        progressed := false
+        write := 0
+        for id in pending {
+            a := get(id).(TypeAlias)
+            t, found := scope_find_type(s, a.ty)
+            if !found {
+                pending[write] = id
+                write += 1
+                continue
+            }
+            reject_bare_generic(t, get_span(id))
+            check_undeclared(s, a.new_name, get_span(id))
+            s.types[a.new_name] = t
+            s.ty_exports[a.new_name] = t
+            progressed = true
+        }
+        resize(&pending, write)
+
+        if !progressed {
+            // stuck: either the target doesn't exist or aliases form a cycle
+            a := get(pending[0]).(TypeAlias)
+            highlight_lines(get_span(pending[0]))
+            for other in pending {
+                if get(other).(TypeAlias).new_name == a.ty {
+                    gala_panicf("Type alias \"%s\" is cyclic.", a.new_name)
+                }
+            }
+            gala_panicf("Type \"%s\" doesn't exist.", a.ty)
+        }
+    }
+}
 forward_item :: proc(s: ^ModuleScope, id: ItemId) {
     item := get(id)
     switch i in item {
+    case TypeAlias: {}
     case Import: {
         resolved := resolve_import_path(get_ctx().current_file, i.fname)
         modid, ok := get_ctx().modules[resolved]
@@ -1321,6 +1328,7 @@ resolve_item :: proc(s: ^ModuleScope, id: ItemId) {
     item := get(id)
 
     switch i in item {
+    case TypeAlias:        {}
     case Import:        {}
     case StructDec: {
         resolve_struct_dec_item(s, id)
@@ -1367,8 +1375,8 @@ new_module_scope :: proc(parent:^Scope=nil, allocator:=get_ctx().allocator) -> M
     s := ModuleScope{}
     s.scope = new_scope(parent, allocator)
     s.parent = parent
-    s.obj_foreward  = make(map[string]ObjId,  allocator=allocator)
-    s.ty_foreward   = make(map[string]TypeId, allocator=allocator)
+    s.obj_forward  = make(map[string]ObjId,  allocator=allocator)
+    s.ty_forward   = make(map[string]TypeId, allocator=allocator)
     return s
 }
 
@@ -1386,8 +1394,8 @@ free_module_scope :: proc(s: ^ModuleScope) {
 
     free_scope(&s.scope)
 
-    delete(s.obj_foreward)
-    delete(s.ty_foreward)
+    delete(s.obj_forward)
+    delete(s.ty_forward)
 
     s^ = {}
 }
@@ -1462,6 +1470,7 @@ resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
 
     global_scope := new_module_scope(&get_ctx().base_mod)
 
+    // forward names
     for id in ast.items {
         forward_item(&global_scope, id)
     }
@@ -1474,10 +1483,13 @@ resolve_module_ast :: proc(ast: ^AST, path: string) -> ModId {
         names := make([dynamic]string, allocator=get_ctx().allocator)
         for f in sd.fields do collect_generic_names(f.t, &names)
         if len(names) == 0 do continue
-        ty := get_type(global_scope.ty_foreward[sd.name])
+        ty := get_type(global_scope.ty_forward[sd.name])
         ty.structure.is_generic = true
         ty.structure.generic_names = names[:]
     }
+
+    // resolve type aliases
+    resolve_type_aliases(&global_scope, ast)
 
     // Structs first: a struct literal in a function body or a global
     // initialiser asserts that the struct's fields are filled in, so it

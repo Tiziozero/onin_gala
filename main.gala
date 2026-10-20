@@ -7,6 +7,7 @@ struct Box {
 
 a :: 1024;
 
+alias int = i64;
 
 fn f(v: [a*2]$K): K {
     t : K = 0;
@@ -15,6 +16,9 @@ fn f(v: [a*2]$K): K {
     }
     return t;
 }
+
+
+fn ret_int(): int { return 123; }
 // fn map_make(cap: i64, like_k: $K, like_v: $V, hash: fn(hk: K): u64, eq: fn(ea: K, eb: K): bool, a: Allocator = base_allocator): Map(K, V) {
 fn main(): i32 {
     m := map_make(1024, "", "", hash_str, eq_str);
@@ -48,6 +52,8 @@ fn main(): i32 {
     println(len(h));
     println(len(h)*size_of(i32));
     println(f(h));
+    i: i64 = ret_int();
+    println(type_id(i), type_id(i64), type_id(int));
 
     return 0;
 }

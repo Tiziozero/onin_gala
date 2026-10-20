@@ -147,6 +147,7 @@ clone_item :: proc(id: ItemId) -> ItemId {
     if s, ok := c.spans.items[id]; ok do c.spans.items[new_id] = s
 
     switch &v in node {
+    case TypeAlias: {}
     case Import:
     case StructDec:
     case FnDec:

@@ -1229,6 +1229,7 @@ cg_fn_definition :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string, block: Blo
 
 cg_item :: proc(c: ^CGCtx, id: ItemId) {
     switch i in get_item(id) {
+    case TypeAlias: {}
     case ConstDec: {} // ok
     case Import: {} // ok
     case StructDec: {
@@ -1462,6 +1463,7 @@ cg_globals_init :: proc(c: ^CGCtx, mid: ModId, items: []ItemId) {
 cg_items_dec :: proc(ctx: ^CGCtx, items: []ItemId, is_import := false) {
     for id in items {
         switch i in get_item(id) {
+        case TypeAlias: {}
         case ConstDec: {} // ok
         case Import: {
             mid := get_ctx().item_module[id]
@@ -1824,3 +1826,4 @@ mod_prefix_from_path_old :: proc(path: string, prefix: string = "") -> string {
 
     return strings.to_string(sb)
 }
+

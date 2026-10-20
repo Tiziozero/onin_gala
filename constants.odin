@@ -65,7 +65,7 @@ resolve_const_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     if _, done := get_ctx().item_objects[id]; done do return
 
     cd, ok := get(id).(ConstDec); assert(ok)
-    oid, ook := s.obj_foreward[cd.name]; assert(ook)
+    oid, ook := s.obj_forward[cd.name]; assert(ook)
 
     e := &const_table[oid]
     if e.state == .InProgress {
@@ -103,7 +103,7 @@ resolve_const_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     e.type = typ
     e.state = .Done
 
-    delete_key(&s.obj_foreward, cd.name) // delete fd and create object
+    delete_key(&s.obj_forward, cd.name) // delete fd and create object
     s.objects[cd.name] = oid
     s.obj_exports[cd.name] = oid
     get_ctx().item_objects[id] = oid
@@ -141,9 +141,6 @@ const_eval :: proc(s: ^Scope, id: ExprId, typed_ok := false) -> ConstValue {
     case Symbol: {
         oid, ok := scope_get_object(s, e.name)
         if !ok {
-            if guess, found := suggest_name(s, e.name, false); found {
-                const_errorf(id, "Couldn't find \"%s\" in scope. Did you mean \"%s\"?", e.name, guess)
-            }
             const_errorf(id, "Couldn't find \"%s\" in scope.", e.name)
         }
         if !is_const_obj(oid) {
