@@ -91,7 +91,7 @@ cg_fn_lit :: proc(c: ^CGCtx, id: ExprId, e: FnLit) -> CGExprRes {
     c.cur_break_label = ""
     c.cur_continue_label = ""
 
-    cg_fn_definition(c, fn_type_id, name, e.block, internal = true)
+    cg_fn_definition(c, fn_type_id, name, e.block, id, internal = true)
 
     c.b = saved_b
     c.scope = saved_scope

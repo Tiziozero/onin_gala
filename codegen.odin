@@ -1155,7 +1155,7 @@ cg_fn_declaration :: proc(c: ^CGCtx, id: ItemId, is_extern := false) {
 // along the way (locals, big temporaries, sret slots — see c.allocas) can
 // be written in one block right after the prologue, i.e. in the entry
 // block, before the body text.
-cg_fn_definition :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string, block: Block, internal := false) {
+cg_fn_definition :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string, block: Block, id: $ID, internal := false) {
     old_ret := c.cur_fn_ret
 
     sig, param_raw_names := cg_fn_header(c, fn_type_id, name, false, true, internal)
@@ -1212,6 +1212,7 @@ cg_fn_definition :: proc(c: ^CGCtx, fn_type_id: TypeId, name: string, block: Blo
         if sig.ret.mode == .Indirect || sig.ret.coerced_type == "void" {
             cwriteln(c, "\tret void")
         } else {
+            highlight_lines(get_span(id));
             gala_panic("Function does not return a value")
         }
     }
@@ -1254,7 +1255,7 @@ cg_item :: proc(c: ^CGCtx, id: ItemId) {
         c.scope = new_gcscope(&old_scope)
 
         fn_type_id := get_ctx().objs[get_ctx().item_objects[id]].type.(TypeId)
-        cg_fn_definition(c, fn_type_id, get_ctx().cg_item_names[id], i.block)
+        cg_fn_definition(c, fn_type_id, get_ctx().cg_item_names[id], i.block, id)
 
         // reset scope
         c.scope = old_scope
