@@ -1,8 +1,10 @@
+// constants.odin
 package main
 
 import "core:fmt"
 import "core:math"
 import "core:strconv"
+import "core:strings"
 
 // A folded compile-time value. Integers are i128 so overflow can be
 // detected; they must stay inside [i64 min, u64 max].
@@ -21,12 +23,15 @@ ConstEntry :: struct {
 // every `::` constant, keyed by its object
 const_table: map[ObjId]ConstEntry
 
+// names of the constants being evaluated right now, for cycle errors
+const_stack: [dynamic]string
+
 CONST_INT_MIN :: -9223372036854775808
 CONST_INT_MAX :: 18446744073709551615
 
 const_errorf :: proc(id: ExprId, format: string, args: ..any) -> ! {
     highlight_lines(get_span(id))
-    gala_panic(fmt.aprintf(format, ..args, allocator = get_ctx().allocator))
+    gala_panicf(format, ..args)
 }
 
 is_const_obj :: proc(oid: ObjId) -> bool {
@@ -34,8 +39,18 @@ is_const_obj :: proc(oid: ObjId) -> bool {
     return ok
 }
 
+const_kind_name :: proc(v: ConstValue) -> string {
+    #partial switch _ in v {
+    case i128:   return "integer"
+    case f64:    return "float"
+    case bool:   return "boolean"
+    case string: return "string"
+    }
+    return "unknown"
+}
+
 // Evaluates the constant if that hasn't happened yet. This is what makes
-// top-level constants order independent (`A :: B + 1` above `B :: 2`), and
+// top-level constants order independent (`A :: B + 1` above `B :: 2`) and
 // lets a struct field's `[MAX]byte` use a constant before the constants pass.
 ensure_const :: proc(oid: ObjId) {
     entry := const_table[oid]
@@ -54,21 +69,34 @@ resolve_const_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 
     e := &const_table[oid]
     if e.state == .InProgress {
-        const_errorf(cd.value, "Constant \"%s\" is defined in terms of itself.", cd.name)
+        // show the loop: the stack from the first time this name appears
+        start := 0
+        for n, i in const_stack {
+            if n == cd.name {
+                start = i
+                break
+            }
+        }
+        chain := strings.join(const_stack[start:], " -> ", context.temp_allocator)
+        const_errorf(cd.value, "Constant \"%s\" is defined in terms of itself: %s -> %s.",
+            cd.name, chain, cd.name)
     }
     e.state = .InProgress
+    append(&const_stack, cd.name)
 
     val := const_eval(s, cd.value)
 
     typ: Maybe(TypeId) = nil
     if ts, has := cd.type.(TypeSpecifier); has {
-        if is_type_specifier_generic(ts) {
-            const_errorf(cd.value, "Can't have generics in a constant's type.")
+        if specifier_has_generic(ts) {
+            const_errorf(cd.value, "Constant \"%s\" can't have a generic type.", cd.name)
         }
         tid := resolve_type_specifier(s, ts)
         val = const_convert(cd.value, val, tid)
         typ = tid
     }
+
+    pop(&const_stack)
 
     e = &const_table[oid] // re-fetch, evaluation may have touched the table
     e.value = val
@@ -93,15 +121,17 @@ const_eval :: proc(s: ^Scope, id: ExprId, typed_ok := false) -> ConstValue {
     case BoolLitTrue:  return true
     case BoolLitFalse: return false
     case UnNegative: {
-        #partial switch v in const_eval(s, e.expr, typed_ok) {
-        case i128: return const_check_range(id, -v)
-        case f64:  return -v
+        v := const_eval(s, e.expr, typed_ok)
+        #partial switch x in v {
+        case i128: return const_check_range(id, -x)
+        case f64:  return -x
         }
-        const_errorf(id, "Can't negate a non-numeric constant.")
+        const_errorf(id, "Can't negate a %s constant.", const_kind_name(v))
     }
     case UnNot: {
-        if v, ok := const_eval(s, e.expr, typed_ok).(bool); ok do return !v
-        const_errorf(id, "`!` needs a boolean constant.")
+        v := const_eval(s, e.expr, typed_ok)
+        if b, ok := v.(bool); ok do return !b
+        const_errorf(id, "`!` needs a boolean constant, got a %s.", const_kind_name(v))
     }
     case Binop: {
         l := const_eval(s, e.left, typed_ok)
@@ -111,7 +141,10 @@ const_eval :: proc(s: ^Scope, id: ExprId, typed_ok := false) -> ConstValue {
     case Symbol: {
         oid, ok := scope_get_object(s, e.name)
         if !ok {
-            const_errorf(id, "Couldn't find %s in scope.", e.name)
+            if guess, found := suggest_name(s, e.name, false); found {
+                const_errorf(id, "Couldn't find \"%s\" in scope. Did you mean \"%s\"?", e.name, guess)
+            }
+            const_errorf(id, "Couldn't find \"%s\" in scope.", e.name)
         }
         if !is_const_obj(oid) {
             const_errorf(id, "\"%s\" is not a constant.", e.name)
@@ -129,15 +162,16 @@ const_eval :: proc(s: ^Scope, id: ExprId, typed_ok := false) -> ConstValue {
 
 // The size in `[N]T`: any integer constant expression that isn't negative.
 const_array_size :: proc(s: ^Scope, id: ExprId) -> int {
-    v, is_int := const_eval(s, id, typed_ok = true).(i128)
+    val := const_eval(s, id, typed_ok = true)
+    v, is_int := val.(i128)
     if !is_int {
-        const_errorf(id, "Array size must be an integer constant.")
+        const_errorf(id, "Array size must be an integer constant, got a %s.", const_kind_name(val))
     }
     if v < 0 {
-        const_errorf(id, "Array size can't be negative.")
+        const_errorf(id, "Array size can't be negative (got %d).", v)
     }
     if v > i128(max(int)) {
-        const_errorf(id, "Array size is too large.")
+        const_errorf(id, "Array size %d is too large.", v)
     }
     return int(v)
 }
@@ -145,17 +179,17 @@ const_array_size :: proc(s: ^Scope, id: ExprId) -> int {
 const_number :: proc(id: ExprId, text: string) -> ConstValue {
     if is_float_literal(text) {
         v, ok := strconv.parse_f64(text)
-        if !ok do const_errorf(id, "Invalid float literal.")
+        if !ok do const_errorf(id, "Invalid float literal \"%s\".", text)
         return v
     }
     v, ok := parse_integer_literal(text)
-    if !ok do const_errorf(id, "Invalid integer literal.")
+    if !ok do const_errorf(id, "Invalid integer literal \"%s\".", text)
     return const_check_range(id, i128(v))
 }
 
 const_check_range :: proc(id: ExprId, v: i128) -> i128 {
     if v < CONST_INT_MIN || v > CONST_INT_MAX {
-        const_errorf(id, "Integer constant is out of range.")
+        const_errorf(id, "Integer constant is out of range (it must fit between i64 min and u64 max).")
     }
     return v
 }
@@ -179,23 +213,23 @@ const_binop :: proc(id: ExprId, op: BinopKind, l, r: ConstValue) -> ConstValue {
     #partial switch lv in l {
     case bool: {
         rv, ok := r.(bool)
-        if !ok do const_errorf(id, "Constant operands have different kinds.")
+        if !ok do const_kind_mismatch(id, op, l, r)
         #partial switch op {
         case .LogicalAnd: return lv && rv
         case .LogicalOr:  return lv || rv
         case .Equal:      return lv == rv
         case .NotEqual:   return lv != rv
         }
-        const_errorf(id, "That operator can't be applied to booleans.")
+        const_errorf(id, "Operator %v can't be applied to boolean constants.", op)
     }
     case string: {
         rv, ok := r.(string)
-        if !ok do const_errorf(id, "Constant operands have different kinds.")
+        if !ok do const_kind_mismatch(id, op, l, r)
         #partial switch op {
         case .Equal:    return lv == rv
         case .NotEqual: return lv != rv
         }
-        const_errorf(id, "That operator can't be applied to strings.")
+        const_errorf(id, "Operator %v can't be applied to string constants.", op)
     }
     }
 
@@ -205,8 +239,13 @@ const_binop :: proc(id: ExprId, op: BinopKind, l, r: ConstValue) -> ConstValue {
 
     lf, lok := const_to_f64(l)
     rf, rok := const_to_f64(r)
-    if !lok || !rok do const_errorf(id, "Constant operands have different kinds.")
+    if !lok || !rok do const_kind_mismatch(id, op, l, r)
     return const_float_binop(id, op, lf, rf)
+}
+
+const_kind_mismatch :: proc(id: ExprId, op: BinopKind, l, r: ConstValue) -> ! {
+    const_errorf(id, "Can't apply operator %v to a %s and a %s constant.",
+        op, const_kind_name(l), const_kind_name(r))
 }
 
 const_int_binop :: proc(id: ExprId, op: BinopKind, a, b: i128) -> ConstValue {
@@ -232,15 +271,15 @@ const_int_binop :: proc(id: ExprId, op: BinopKind, a, b: i128) -> ConstValue {
     case .BitOr:        return a | b
     case .BitXor:       return a ~ b
     case .ShiftLeft: {
-        if b < 0 || b > 63 do const_errorf(id, "Shift amount must be between 0 and 63.")
+        if b < 0 || b > 63 do const_errorf(id, "Shift amount must be between 0 and 63, got %d.", b)
         return const_check_range(id, a << uint(b))
     }
     case .ShiftRight: {
-        if b < 0 || b > 63 do const_errorf(id, "Shift amount must be between 0 and 63.")
+        if b < 0 || b > 63 do const_errorf(id, "Shift amount must be between 0 and 63, got %d.", b)
         return a >> uint(b)
     }
     }
-    const_errorf(id, "That operator can't be applied to integers.")
+    const_errorf(id, "Operator %v can't be applied to integer constants.", op)
 }
 
 const_float_binop :: proc(id: ExprId, op: BinopKind, a, b: f64) -> ConstValue {
@@ -259,10 +298,10 @@ const_float_binop :: proc(id: ExprId, op: BinopKind, a, b: f64) -> ConstValue {
     case .Greater:      return a > b
     case .GreaterEqual: return a >= b
     }
-    const_errorf(id, "That operator can't be applied to floats.")
+    const_errorf(id, "Operator %v can't be applied to float constants.", op)
 }
 
-// `a : T : value` — the value must be usable as T. (No range check for
+// `a : T : value`: the value must be usable as T. (No range check for
 // sized integers yet.)
 const_convert :: proc(id: ExprId, val: ConstValue, tid: TypeId) -> ConstValue {
     #partial switch v in val {
@@ -280,14 +319,14 @@ const_convert :: proc(id: ExprId, val: ConstValue, tid: TypeId) -> ConstValue {
         if get_type(tid).kind == .String do return v
     }
     }
-    const_errorf(id, "Constant value doesn't fit type %s.", tts(tid))
+    const_errorf(id, "A %s constant doesn't fit type %s.", const_kind_name(val), tts(tid))
 }
 
 // ---- use sites ----
 
 // A float as literal text the lexer-side code understands (always has a '.',
 // never an exponent). Fixed notation with enough decimals to keep ~17
-// significant digits, trailing zeros trimmed: 2.5 -> "2.5", 1e-20 -> "0.00000000000000000001".
+// significant digits, trailing zeros trimmed: 2.5 -> "2.5".
 const_float_text :: proc(v: f64) -> string {
     if v == 0 do return "0.0"
 

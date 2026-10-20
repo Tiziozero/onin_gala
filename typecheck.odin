@@ -9,6 +9,7 @@ TcContext :: struct {
     generic_items: ^[dynamic]ItemId,
     generic_exprs: ^[dynamic]ExprId,
 }
+
 // one concrete instantiation of a generic function
 FnVersion :: struct {
     llvm_fn_name: string,   // filled in by codegen
@@ -22,6 +23,10 @@ FnVersionRef :: struct {
     fn:  TypeId, // function types aren't interned, so this is unique per function
     idx: int,    // index into get_type(fn).fn.versions
 }
+
+// instantiation cap per generic function, catches infinite recursion
+MAX_GENERIC_VERSIONS :: 64
+
 // Finds the version with exactly these concrete params, or adds it.
 // Type ids are interned, so comparing ids is enough.
 get_or_add_fn_version :: proc(fn_tid: TypeId, params: []TypeId, ret_ty: TypeId) -> (idx: int, added: bool) {
@@ -41,16 +46,20 @@ get_or_add_fn_version :: proc(fn_tid: TypeId, params: []TypeId, ret_ty: TypeId) 
     append(&f.versions, FnVersion{params = owned, ret_ty = ret_ty})
     return len(f.versions) - 1, true
 }
+
 expr_ty :: proc(id: ExprId) -> TypeId {
-    t, ok  := get_ctx().expr_types[id];
+    t, ok := get_ctx().expr_types[id]
     if !ok {
         debugln(get(id))
-        gala_panic(id, "has no type")
+        highlight_lines(get_span(id))
+        gala_panic("compiler bug: expression has no type.")
     }
-    assert(ok);
     return t
 }
-// ---- type compatibility ----
+
+// ---------------------------------------------------------------------------
+// Type compatibility
+// ---------------------------------------------------------------------------
 // Identity is types_equal (types.odin). On top of that the only implicit
 // things are: untyped literals, ZeroInit, and boxing into `any`.
 //   assignable   a value of type `got` into a slot of type `expected`
@@ -191,16 +200,13 @@ assignable :: proc(expected, got: TypeId) -> (TypeId, bool, string) {
     }
     return TypeId(0), false, "types don't match"
 }
+
 get_array_base_type :: proc(t: TypeId) -> (TypeId, bool) {
     ty := get_type(t)
     #partial switch ty.kind {
-    case .FixedSizeArray: {
-        return ty.fixed_size_array.type, true
-    }
-    case .Slice: {
-        return ty.slice.type, true
-    }
-    case .String: return byte_type(), true
+    case .FixedSizeArray: return ty.fixed_size_array.type, true
+    case .Slice:          return ty.slice.type, true
+    case .String:         return byte_type(), true
     case .Pointer: {
         // can't index through ^any or rawptr: there's no element type
         k := get_type(ty.ptr).kind
@@ -212,23 +218,24 @@ get_array_base_type :: proc(t: TypeId) -> (TypeId, bool) {
     }
     return TypeId(0), false
 }
+
 can_reference :: proc(id: ExprId) -> bool {
-    #partial switch e in get_expr(id) {
-    case Symbol, Index, FieldAccess: {
-        return true; // unless proven otherwise ig
-    }
-    }
-    return false;
-}
-// things that can sit on the left of `=`
-can_assign_to :: proc(id: ExprId) -> bool {
-    #partial switch e in get_expr(id) {
-    case Symbol, Index, FieldAccess, Deref: {
-        return true
-    }
+    #partial switch _ in get_expr(id) {
+    case Symbol, Index, FieldAccess:
+        return true // unless proven otherwise ig
     }
     return false
 }
+
+// things that can sit on the left of `=`
+can_assign_to :: proc(id: ExprId) -> bool {
+    #partial switch _ in get_expr(id) {
+    case Symbol, Index, FieldAccess, Deref:
+        return true
+    }
+    return false
+}
+
 can_equal :: proc(id: TypeId, op: BinopKind) -> bool {
     t := get_type(id)
 
@@ -242,32 +249,136 @@ can_equal :: proc(id: TypeId, op: BinopKind) -> bool {
     }
 
     if is_pointer(id) && (op == .Addition ||
-        op==.Subtraction || op == .NotEqual || op == .Equal) {
-        return true;
+        op == .Subtraction || op == .NotEqual || op == .Equal) {
+        return true
     }
     return false
 }
+
 can_order :: proc(id: TypeId) -> bool {
     return is_integer(id) || is_float(id) || is_byte_like(id) || is_pointer(id)
 }
+
+// ---------------------------------------------------------------------------
+// Shared checks
+// ---------------------------------------------------------------------------
+
+// Gives an untyped expression its default type (untyped int -> i64, float ->
+// f64), pushes it down into the expression, and returns the final type.
+settle_untyped :: proc(id: ExprId) -> TypeId {
+    t := expr_ty(id)
+    if get_type(t).kind == .ZeroInit {
+        highlight_lines(get_span(id))
+        gala_panic("A zero initialiser can't be used here: it has no type.")
+    }
+    if is_untyped(t) {
+        t = get_untyped_default(t)
+        propagate_type(t, id)
+    }
+    return t
+}
+
+// Errors on values there is no type to take from (zero initialiser, void).
+// `action` completes "Can't <action> a zero initialiser".
+require_typed_value :: proc(id: ExprId, action: string) {
+    #partial switch get_type(expr_ty(id)).kind {
+    case .ZeroInit: {
+        highlight_lines(get_span(id))
+        gala_panicf("Can't %s a zero initialiser: it has no type.", action)
+    }
+    case .Void: {
+        highlight_lines(get_span(id))
+        gala_panicf("Can't %s an expression with no value.", action)
+    }
+    }
+}
+
+require_bool :: proc(id: ExprId, what: string) {
+    t := expr_ty(id)
+    if get_type(t).kind != .Bool {
+        highlight_lines(get_span(id))
+        gala_panicf("%s must be a bool, got %s.", what, tts(t))
+    }
+}
+
+// Types an index or slice bound: untyped integers become i64, everything
+// else must be a valid index type.
+tc_index_expr :: proc(tc: ^TcContext, idx: ExprId) {
+    tc_expr(tc, idx)
+    t := expr_ty(idx)
+    if is_untyped(t) {
+        if get_type(t).kind != .UntypedInteger {
+            highlight_lines(get_span(idx))
+            gala_panic("Array index must be an integer.")
+        }
+        t = integer_type()
+        propagate_type(t, idx)
+    }
+    if !is_valid_index_type(t) {
+        highlight_lines(get_span(idx))
+        gala_panicf("Can't use type %s to index an array.", tts(t))
+    }
+}
+
+closest_field :: proc(fields: []Field, name: string) -> (string, bool) {
+    best: string
+    best_d := max(2, len(name) / 3) + 1
+    for f in fields {
+        if d := edit_distance(name, f.name); d < best_d {
+            best, best_d = f.name, d
+        }
+    }
+    return best, len(best) > 0
+}
+
+// Re-checks every nested binop against the final operand type. `rule` is the
+// operator rule of the outermost expression (arithmetic / equality / order).
+BinopRule :: proc(ty: TypeId, op: BinopKind) -> bool
+
+check_binop_tree :: proc(id: ExprId, ty: TypeId, rule: BinopRule) -> bool {
+    if e, is_binop := get_expr(id).(Binop); is_binop {
+        return rule(ty, e.kind) &&
+            check_binop_tree(e.left, ty, rule) &&
+            check_binop_tree(e.right, ty, rule)
+    }
+    return true
+}
+
 mark_arg :: proc(arg: ^FnCallArg, param_ty: TypeId, r: TypeId) {
-    earg := arg.expr;
-    if get(param_ty).kind == .Any {
+    earg := arg.expr
+    if get_type(param_ty).kind == .Any {
         t := expr_ty(earg)
         if get_type(t).kind == .ZeroInit {
             highlight_lines(get_span(earg))
             gala_panic("Can't pass a zero initialiser as `any`: it has no type.")
         }
-        // if it's untyped (because target is "any" or other valid untyped targets)
+        // untyped (the target is `any` or another valid untyped target)
         if is_untyped(t) {
             propagate_type(get_untyped_default(t), earg)
         }
-        arg.needs_boxing = true;
-        arg.box_type = expr_ty(earg);
+        arg.needs_boxing = true
+        arg.box_type = expr_ty(earg)
     } else {
-        assert(r == param_ty); // should always match
-        propagate_type(r, earg);
+        assert(r == param_ty) // should always match
+        propagate_type(r, earg)
     }
+}
+
+// Checks one call argument against its (concrete) parameter type.
+// `name` is empty for variadic arguments.
+tc_check_arg :: proc(arg: ^FnCallArg, pos: int, name: string, expected: TypeId) {
+    earg := arg.expr
+    r, ok, err := assignable(expected, expr_ty(earg))
+    if !ok {
+        highlight_lines(get_span(earg))
+        if len(name) > 0 {
+            gala_panicf("Argument %d (\"%s\"): %s (expected %s, got %s).",
+                pos, name, err, tts(expected), tts(expr_ty(earg)))
+        }
+        gala_panicf("Argument %d: %s (expected %s, got %s).",
+            pos, err, tts(expected), tts(expr_ty(earg)))
+    }
+    mark_arg(arg, expected, r)
 }
 
 // Function types whose parameter defaults have already been checked.
@@ -282,13 +393,12 @@ default_args_done: map[TypeId]bool
 // and typing a call only needs the callee's signature, so this doesn't depend
 // on globals having been typed yet.
 //
-// For `name := expr` parameters the type isn't written anywhere, so it is
-// inferred here from the written expression (untyped literals take their
-// default type, like a local `x := 1`), then patched into the parameter, the
-// parameter's object (so the body sees it) and the hidden function's return
-// type. This is why it has to run before anything that uses the function:
-// typecheck_module runs it for module-level fns in a first pass, FnLit runs it
-// before checking its body, and FnCall runs it on its callee.
+// For `name := expr` parameters the type is inferred here from the written
+// expression (untyped literals take their default type, like `x := 1`), then
+// patched into the parameter, its object (so the body sees it) and the hidden
+// function's return type. So this must run before anything uses the function:
+// typecheck_module runs it for module-level fns, FnLit before its body, and
+// FnCall on its callee.
 tc_default_args :: proc(tc: ^TcContext, fn_type_id: TypeId) {
     if default_args_done[fn_type_id] do return
     default_args_done[fn_type_id] = true
@@ -303,8 +413,8 @@ tc_default_args :: proc(tc: ^TcContext, fn_type_id: TypeId) {
             tc_expr(tc, src)
 
             t := expr_ty(src)
-            // check these first: is_untyped() is true for ZeroInit too, and
-            // there's no default type to give it
+            // before is_untyped(): that's true for ZeroInit too, and there's
+            // no default type to give it
             kind := get_type(t).kind
             if kind == .ZeroInit || kind == .Void {
                 highlight_lines(get_span(src))
@@ -330,7 +440,7 @@ tc_default_args :: proc(tc: ^TcContext, fn_type_id: TypeId) {
         _, ok, err := assignable(a.type, expr_ty(def))
         if !ok {
             highlight_lines(get_span(def))
-            gala_panicf("Default value doesn't match the type of parameter \"%s\": %s (expected %s, got %s)",
+            gala_panicf("Default value doesn't match the type of parameter \"%s\": %s (expected %s, got %s).",
                 a.name, err, tts(a.type), tts(expr_ty(def)))
         }
     }
@@ -338,9 +448,9 @@ tc_default_args :: proc(tc: ^TcContext, fn_type_id: TypeId) {
 
 // Puts a call's arguments into parameter order, for non-variadic callees.
 // Positional arguments fill parameters from the left, `name = expr` ones fill
-// the parameter with that name, and anything left over takes its default.
-// The result has one entry per parameter and no names, so everything
-// downstream (including codegen) sees an ordinary full-arity positional call.
+// the parameter with that name, and anything left takes its default. The
+// result has one entry per parameter and no names, so everything downstream
+// (including codegen) sees an ordinary full-arity positional call.
 order_call_args :: proc(id: ExprId, args: [dynamic]FnCallArg, params: []Arg) -> [dynamic]FnCallArg {
     ordered := make([dynamic]FnCallArg, len(params), allocator=get_ctx().allocator)
     filled := make([]bool, len(params), allocator=get_ctx().allocator)
@@ -360,8 +470,8 @@ order_call_args :: proc(id: ExprId, args: [dynamic]FnCallArg, params: []Arg) -> 
                 gala_panicf("Function has no parameter named \"%s\".", a.name)
             }
         } else if i >= len(params) {
-            highlight_lines(get_span(id))
-            gala_panicf("args count for function don't match (expected at most %d, got %d).",
+            highlight_lines(get_span(a.expr))
+            gala_panicf("Too many arguments: the function takes at most %d, got %d.",
                 len(params), len(args))
         }
         // covers named-twice and a positional landing on a named one (`f(b=1, 2)`)
@@ -390,7 +500,6 @@ order_call_args :: proc(id: ExprId, args: [dynamic]FnCallArg, params: []Arg) -> 
     return ordered
 }
 
-
 check_not_argument :: proc(id: ExprId) {
     #partial switch e in get_expr(id) {
     case Symbol: {
@@ -404,14 +513,17 @@ check_not_argument :: proc(id: ExprId) {
         }
     }
     case FieldAccess: {
-        // arg.field modifies the argument's value.
+        // arg.field modifies the argument's value
         check_not_argument(e.target)
     }
-    // Index and Deref deliberately stop the check:
-    // arg[0] and *arg modify the referenced memory,
-    // not the argument variable itself.
+    // Index and Deref deliberately stop the check: arg[0] and *arg modify
+    // the referenced memory, not the argument variable itself.
     }
 }
+
+// ---------------------------------------------------------------------------
+// Expressions
+// ---------------------------------------------------------------------------
 
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     switch e in get_expr(id) {
@@ -420,35 +532,28 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         if !syntactic && !e.names_type {
             ex := e.expr.(ExprId)
             tc_expr(tc, ex)
-            t := expr_ty(ex)
-            if get_type(t).kind == .ZeroInit {
-                highlight_lines(get_span(ex))
-                gala_panic("Can't take the type_id of a zero initialiser: it has no type.")
-            }
-            // type_id(1) is i64, like `x := 1`
-            if is_untyped(t) {
-                t = get_untyped_default(t)
-                propagate_type(t, ex)
-            }
-            // codegen reads the id from here, same as for the type form
-            get_ctx().expr_resolution_types[id] = t
+            require_typed_value(ex, "take the type_id of")
+            // type_id(1) is i64, like `x := 1`. Codegen reads the id from
+            // here, same as for the type form.
+            get_ctx().expr_resolution_types[id] = settle_untyped(ex)
         }
         get_ctx().expr_types[id] = intern_type(Type{kind=.UntypedInteger})
     }
     case UnNegative: {
-        tc_expr(tc, e.expr);
+        tc_expr(tc, e.expr)
         t := expr_ty(e.expr)
         if !is_numeric(t) {
-            highlight_lines(get_span_expr(id));
-            gala_panic("Can't negate a non-numeric expression.");
+            highlight_lines(get_span_expr(id))
+            gala_panicf("Can't negate an expression of type %s.", tts(t))
         }
         get_ctx().expr_types[id] = t
     }
     case UnNot: {
-        tc_expr(tc, e.expr);
-        if get(expr_ty(e.expr)).kind != .Bool {
-            highlight_lines(get_span_expr(id));
-            gala_panic("Expr type must be bools.");
+        tc_expr(tc, e.expr)
+        t := expr_ty(e.expr)
+        if get_type(t).kind != .Bool {
+            highlight_lines(get_span_expr(id))
+            gala_panicf("`!` needs a bool, got %s.", tts(t))
         }
         get_ctx().expr_types[id] = ty_from_name("bool")
     }
@@ -459,124 +564,75 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         get_ctx().expr_types[id] = intern_type({kind=.String})
     }
     case Deref: {
-        tc_expr(tc, e.expr);
-        t := expr_ty(e.expr);
-        if get(t).kind != .Pointer {
-            highlight_lines(get_span_expr(id));
-            gala_panicf("Can't dereference expression of type %s.", tts(t));
+        tc_expr(tc, e.expr)
+        t := expr_ty(e.expr)
+        if get_type(t).kind != .Pointer {
+            highlight_lines(get_span_expr(id))
+            gala_panicf("Can't dereference an expression of type %s (not a pointer).", tts(t))
         }
         if get_type(get_type(t).ptr).kind == .Void {
-            highlight_lines(get_span_expr(id));
-            gala_panicf("Can't dereference expression of type %s.", tts(t));
+            highlight_lines(get_span_expr(id))
+            gala_panicf("Can't dereference an expression of type %s (it points to void).", tts(t))
         }
-        get_ctx().expr_types[id] = get_type(t).ptr;
+        get_ctx().expr_types[id] = get_type(t).ptr
     }
     case Reference: {
-        tc_expr(tc, e.expr);
+        tc_expr(tc, e.expr)
         if !can_reference(e.expr) {
-            highlight_lines(get_span_expr(id));
-            gala_panic("Can't reference expression.");
+            highlight_lines(get_span_expr(id))
+            gala_panic("Can't take the address of this expression (only variables, fields and elements).")
         }
 
-        check_not_argument(e.expr);
+        check_not_argument(e.expr)
 
         t := Type{ kind = .Pointer, ptr = expr_ty(e.expr) }
-        get_ctx().expr_types[id] = intern_type(t);
+        get_ctx().expr_types[id] = intern_type(t)
     }
     case TakeSlice: {
         tc_expr(tc, e.target)
         target_ty := expr_ty(e.target)
 
         if !is_array_type(target_ty) {
-            gala_panic("can't index type:", tts(target_ty))
+            highlight_lines(get_span(e.target))
+            gala_panicf("Can't slice a value of type %s.", tts(target_ty))
         }
 
-        if !e.empty_start {
-            tc_expr(tc, e.start)
-            s_ty := expr_ty(e.start)
-
-            if is_untyped(s_ty) {
-                if get(s_ty).kind == .UntypedInteger {
-                    s_ty = integer_type()
-                    propagate_type(s_ty, e.start)
-                } else {
-                    gala_panic("array index must be an integer")
-                }
-            }
-
-            if !is_valid_index_type(s_ty) {
-                highlight_lines(get_span(id))
-                gala_panic("can't use type:", tts(s_ty), "to index an array")
-            }
-        }
-        if !e.empty_end {
-            tc_expr(tc, e.end)
-            e_ty := expr_ty(e.end)
-            if is_untyped(e_ty) {
-                if get(e_ty).kind == .UntypedInteger {
-                    e_ty = integer_type()
-                    propagate_type(e_ty, e.end)
-                } else {
-                    gala_panic("array index must be an integer")
-                }
-            }
-            if !is_valid_index_type(e_ty) {
-                highlight_lines(get_span(id))
-                gala_panic("can't use type:", tts(e_ty), "to index an array")
-            }
-        }
+        if !e.empty_start do tc_index_expr(tc, e.start)
+        if !e.empty_end   do tc_index_expr(tc, e.end)
 
         ty, ok := get_array_base_type(target_ty)
         if !ok {
-            highlight_lines(get_span(e.target));
-            gala_panic("Can't get index:", tts(target_ty))
+            highlight_lines(get_span(e.target))
+            gala_panicf("Can't slice a value of type %s (it has no element type).", tts(target_ty))
         }
-        slice_t := Type {
-            kind=.Slice,
-            slice={type=ty},
-        }
-        tid := intern_type(slice_t);
-        get_ctx().expr_types[id] = tid
+        get_ctx().expr_types[id] = intern_type(Type{kind=.Slice, slice={type=ty}})
     }
     case Index: {
         tc_expr(tc, e.target)
         target_ty := expr_ty(e.target)
 
         if !can_be_index(target_ty) {
-            gala_panic("can't index type:", tts(target_ty))
+            highlight_lines(get_span(e.target))
+            gala_panicf("Can't index a value of type %s.", tts(target_ty))
         }
 
-        tc_expr(tc, e.index)
-        i_ty := expr_ty(e.index)
-
-        if is_untyped(i_ty) {
-            if get(i_ty).kind == .UntypedInteger {
-                i_ty = integer_type()
-                propagate_type(i_ty, e.index)
-            } else {
-                gala_panic("array index must be an integer")
-            }
-        }
-
-        if !is_valid_index_type(i_ty) {
-            highlight_lines(get_span(id))
-            gala_panic("can't use type:", tts(i_ty), "to index an array")
-        }
+        tc_index_expr(tc, e.index)
 
         ty, ok := get_array_base_type(target_ty)
         if !ok {
-            highlight_lines(get_span(e.target));
-            gala_panic("Can't get index:", tts(target_ty))
+            highlight_lines(get_span(e.target))
+            gala_panicf("Can't index a value of type %s (it has no element type).", tts(target_ty))
         }
-        if get(ty).kind == .Void || get(ty).kind == .Any {
-            highlight_lines(get_span(e.target));
-            gala_panic("Can't index with base:", tts(target_ty))
+        if get_type(ty).kind == .Void || get_type(ty).kind == .Any {
+            highlight_lines(get_span(e.target))
+            gala_panicf("Can't index a value of type %s: its element type is %s.",
+                tts(target_ty), tts(ty))
         }
 
         get_ctx().expr_types[id] = ty
     }
     case FixedSizeArray: {
-        // CHANGED: check every initialiser element against the element type
+        // every initialiser element is checked against the element type
         elem_ty := get_ctx().expr_resolution_types[id]
 
         for el in e.initialiser {
@@ -584,35 +640,39 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             r, ok, err := assignable(elem_ty, expr_ty(el))
             if !ok {
                 highlight_lines(get_span(el))
-                gala_panic("Type error:", err)
+                gala_panicf("Array element type mismatch: %s (expected %s, got %s).",
+                    err, tts(elem_ty), tts(expr_ty(el)))
             }
             propagate_type(r, el)
         }
 
-        t := Type{};
+        t := Type{}
         t.kind = .FixedSizeArray
         t.fixed_size_array.type = elem_ty
-        t.fixed_size_array.size = e.size;
-        tid := intern_type(t);
-        get_ctx().expr_types[id] = tid;
+        t.fixed_size_array.size = e.size
+        get_ctx().expr_types[id] = intern_type(t)
     }
     case FieldAccess: {
-        tc_expr(tc, e.target);
-        target_tid := expr_ty(e.target);
-        target_ty := get_type(target_tid);
+        tc_expr(tc, e.target)
+        target_tid := expr_ty(e.target)
+        target_ty := get_type(target_tid)
         if target_ty.kind != .Struct {
-            highlight_lines(get_span(id));
-            gala_panic("can't access field of object of type:", tts(target_tid))
+            highlight_lines(get_span(id))
+            gala_panicf("Can't access field \"%s\" of a value of type %s (not a struct).",
+                e.field, tts(target_tid))
         }
-        fields := target_ty.structure.fields;
-        for f in fields {
+        for f in target_ty.structure.fields {
             if f.name == e.field {
-                get_ctx().expr_types[id] = f.type;
-                return; // ok
+                get_ctx().expr_types[id] = f.type
+                return
             }
         }
-        highlight_lines(get_span(id));
-        gala_panicf("Field %s doesn't exist in type %s.", e.field, target_ty.name);
+        highlight_lines(get_span(id))
+        if guess, found := closest_field(target_ty.structure.fields, e.field); found {
+            gala_panicf("Field \"%s\" doesn't exist in type %s. Did you mean \"%s\"?",
+                e.field, target_ty.name, guess)
+        }
+        gala_panicf("Field \"%s\" doesn't exist in type %s.", e.field, target_ty.name)
     }
     case StructLit: {
         tid := get_ctx().expr_resolution_types[id]
@@ -629,53 +689,45 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         s := get_type(tid)
         for sf in s.structure.fields {
             f := e.fields[sf.name].expr
-            if !typed_already do tc_expr(tc, f);
+            if !typed_already do tc_expr(tc, f)
             r, ok, err := assignable(sf.type, expr_ty(f))
             if !ok {
-                span := e.fields[sf.name].span
-                highlight_lines(get_ctx().current_file, span)
-                gala_panic("Type error:", err);
+                highlight_lines(get_ctx().current_file, e.fields[sf.name].span)
+                gala_panicf("Field \"%s\": %s (expected %s, got %s).",
+                    sf.name, err, tts(sf.type), tts(expr_ty(f)))
             }
-            propagate_type(r, f);
+            propagate_type(r, f)
         }
-        get_ctx().expr_types[id]=tid
+        get_ctx().expr_types[id] = tid
     }
     case ZeroInit: {
-        get_ctx().expr_types[id]=intern_type({kind=.ZeroInit})
+        get_ctx().expr_types[id] = intern_type({kind=.ZeroInit})
     }
     case Transmute: {
         tc_expr(tc, e.target)
         to := get_ctx().expr_resolution_types[id]
-        if is_untyped(expr_ty(e.target)) {
-            t := get_untyped_default(expr_ty(e.target));
-            propagate_type(t, e.target);
-        }
-        if !can_transmute_to(expr_ty(e.target), to) {
-            highlight_lines(get_span(id));
-            debugln("target:", tts(expr_ty(e.target)), "to:", tts(to));
-            gala_panic("can't transmute expression to desired type")
+        from := settle_untyped(e.target)
+        if !can_transmute_to(from, to) {
+            highlight_lines(get_span(id))
+            gala_panicf("Can't transmute %s to %s.", tts(from), tts(to))
         }
         get_ctx().expr_types[id] = to
     }
     case Cast: {
         tc_expr(tc, e.target)
         to := get_ctx().expr_resolution_types[id]
-        if is_untyped(expr_ty(e.target)) {
-            t := get_untyped_default(expr_ty(e.target));
-            propagate_type(t, e.target);
-        }
-        if !can_cast_to(expr_ty(e.target), to) {
-            highlight_lines(get_span(id));
-            debugln(get(expr_ty(e.target)).kind, get(to).kind);
-            gala_panic("can't cast expression to desired type")
+        from := settle_untyped(e.target)
+        if !can_cast_to(from, to) {
+            highlight_lines(get_span(id))
+            gala_panicf("Can't cast %s to %s.", tts(from), tts(to))
         }
         get_ctx().expr_types[id] = to
     }
     case Symbol: {
-        obj := get_ctx().expr_objects[id];
+        obj := get_ctx().expr_objects[id]
         // a global declared with `:=` has no type until its own initialiser
         // has been checked, so using one before that (a later global, or
-        // itself) lands here with a nil type.
+        // itself) lands here with a nil type
         t, has_type := get_obj(obj).type.(TypeId)
         if !has_type {
             highlight_lines(get_span(id))
@@ -692,316 +744,36 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         get_ctx().expr_types[id] = intern_type(Type{kind=.UntypedInteger})
     }
     case Len: {
-        tc_expr(tc, e.target);
-        if get(expr_ty(e.target)).kind != .Slice &&
-                get(expr_ty(e.target)).kind != .String &&
-                get(expr_ty(e.target)).kind != .FixedSizeArray {
-            highlight_lines(get_span_expr(id));
-            gala_panicf("Can not take len of expression of type %s.",
-                tts(expr_ty(e.target)));
+        tc_expr(tc, e.target)
+        t := expr_ty(e.target)
+        k := get_type(t).kind
+        if k != .Slice && k != .String && k != .FixedSizeArray {
+            highlight_lines(get_span_expr(id))
+            gala_panicf("Can't take len of an expression of type %s.", tts(t))
         }
-        get_ctx().expr_types[id] = intern_type({kind=.UntypedInteger});
+        get_ctx().expr_types[id] = intern_type({kind=.UntypedInteger})
     }
     case SizeOf: {
         _, syntactic := e.t.(TypeSpecifier)
         if !syntactic && !e.names_type {
             ex := e.expr.(ExprId)
             tc_expr(tc, ex)
-            t := expr_ty(ex)
-            #partial switch get_type(t).kind {
-            case .ZeroInit: {
-                highlight_lines(get_span(ex))
-                gala_panic("Can't take the size_of a zero initialiser: it has no type.")
-            }
-            case .Void: {
-                highlight_lines(get_span(ex))
-                gala_panic("Can't take the size_of an expression with no value.")
-            }
-            }
-            // size_of(1) is i64, like `x := 1`
-            if is_untyped(t) {
-                t = get_untyped_default(t)
-                propagate_type(t, ex)
-            }
-            // codegen reads the type from here, same as for the type form
-            get_ctx().expr_resolution_types[id] = t
+            require_typed_value(ex, "take the size_of")
+            // size_of(1) is i64, like `x := 1`. Codegen reads the type from
+            // here, same as for the type form.
+            get_ctx().expr_resolution_types[id] = settle_untyped(ex)
         }
         get_ctx().expr_types[id] = intern_type(Type{kind=.UntypedInteger})
     }
-    case Binop: {
-        tc_expr(tc, e.left);
-        tc_expr(tc, e.right);
-
-        left_ty  := expr_ty(e.left);
-        right_ty := expr_ty(e.right);
-
-        ty, ok, s := unify_binop(left_ty, right_ty);
-        if !ok {
-            highlight_lines(get_span(id))
-            gala_panic(s, tts(left_ty), "vs", tts(right_ty))
-        }
-        /*if is_untyped(ty) {
-            ty = get_untyped_default(ty);
-        }*/
-        propagate_type(ty, e.left);
-        propagate_type(ty, e.right);
-
-        switch e.kind {
-        case .Addition, .Subtraction, .Multiply, .Divide, .Modulo: {
-            // pointer arithmetic: `ptr +- int`, `int + ptr`, `ptr - ptr`.
-            // not `ptr + ptr` and not `int - ptr`.
-            if is_pointer(right_ty) {
-                bad := false
-                if is_pointer(left_ty) {
-                    bad = e.kind == .Addition
-                } else {
-                    bad = e.kind != .Addition
-                }
-                if bad {
-                    highlight_lines(get_span(id))
-                    gala_panic("invalid pointer arithmetic.")
-                }
-            }
-            if !can_binop(ty, e.kind) {
-                highlight_lines(get_span(id));
-                gala_panicf("can't perform a binop on these two expressions. (%s)", tts(ty));
-            }
-            if e.kind == .Modulo {
-                k := get(ty).kind
-                // untyped integers (`7 % 3`) are fine; they get a concrete
-                // integer type later when they're propagated into a slot
-                if !is_int_kind(k) && k != .UntypedInteger {
-                    debugln(tts(ty))
-                    highlight_lines(get_span(id))
-                    gala_panic("can't take modulo of non-integer numbers.")
-                }
-            }
-
-            propagate_type(ty, e.left);
-            propagate_type(ty, e.right);
-            check_binop_post :: proc(id: ExprId, ty: TypeId, op: BinopKind) -> bool {
-                #partial switch e in get(id) {
-                case Binop:
-                    return can_binop(ty, e.kind) &&
-                        check_binop_post(e.left, ty, e.kind) &&
-                        check_binop_post(e.right, ty, e.kind)
-                }
-                return true
-            }
-            if !check_binop_post(id, ty, e.kind) { // check post
-                highlight_lines(get_span(id))
-                gala_panic("can't binop expr types.");
-            }
-
-            get_ctx().expr_types[id] = ty;
-        }
-        case .NotEqual, .Equal: {
-            if is_untyped(ty) {
-                ty = get_untyped_default(ty);
-                // force operands to resolve first
-                propagate_type(ty, e.left);
-                propagate_type(ty, e.right);
-            }
-
-            if !can_equal(ty, e.kind) {
-                highlight_lines(get_span(id));
-                gala_panic("can't compare these two expressions");
-            }
-            check_binop_post :: proc(id: ExprId, ty: TypeId, op: BinopKind) -> bool {
-                #partial switch e in get(id) {
-                case Binop:
-                    return can_equal(ty, e.kind) &&
-                        check_binop_post(e.left, ty, e.kind) &&
-                        check_binop_post(e.right, ty, e.kind)
-                }
-                return true
-            }
-            if !check_binop_post(id, ty, e.kind) { // check post
-                highlight_lines(get_span(id))
-                gala_panic("can't binop expr types.");
-            }
-
-
-            bool_ty := ty_from_name("bool");
-            get_ctx().expr_types[id] = bool_ty;
-        }
-        case .LessEqual, .GreaterEqual, .Less, .Greater: {
-            if is_untyped(ty) {
-                ty = get_untyped_default(ty);
-            }
-            propagate_type(ty, e.left);
-            propagate_type(ty, e.right);
-
-            if !can_order(ty) {
-                highlight_lines(get_span(id));
-                gala_panic("can't order these two expressions");
-            }
-            check_binop_post :: proc(id: ExprId, ty: TypeId, op: BinopKind) -> bool {
-                #partial switch e in get(id) {
-                case Binop:
-                    return can_order(ty) &&
-                        check_binop_post(e.left, ty, e.kind) &&
-                        check_binop_post(e.right, ty, e.kind)
-                }
-                return true
-            }
-            if !check_binop_post(id, ty, e.kind) { // check post
-                highlight_lines(get_span(id))
-                gala_panic("can't binop expr types.");
-            }
-
-            bool_ty := ty_from_name("bool");
-            get_ctx().expr_types[id] = bool_ty;
-        }
-        case .BitAnd, .BitOr, .BitXor, .ShiftLeft, .ShiftRight: {
-            if is_untyped(ty) {
-                ty = get_untyped_default(ty)
-            }
-            propagate_type(ty, e.left);
-            propagate_type(ty, e.right);
-
-            if !is_integer(ty) && !is_byte_like(ty) {
-                highlight_lines(get_span(id));
-                gala_panic("bitwise operators require integer or byte operands");
-            }
-
-            get_ctx().expr_types[id] = ty;
-        }
-        case .LogicalAnd, .LogicalOr: {
-            if get_type(ty).kind != .Bool {
-                highlight_lines(get_span(id));
-                gala_panic("logical operators require boolean operands");
-            }
-            propagate_type(ty, e.left);
-            propagate_type(ty, e.right);
-            get_ctx().expr_types[id] = ty;
-        }
-        }
-    }
-    case FnCall: {
-        tc_expr(tc, e.target);
-        fn_tid := expr_ty(e.target)
-        if get_type(fn_tid).kind != .Function {
-            highlight_lines(get_span(e.target))
-            gala_panicf("Can't call a value of type %s.", tts(fn_tid))
-        }
-
-        // Read the signature only now: typing can intern types, which may move
-        // the type table and leave an earlier pointer dangling.
-        ty := get_type(fn_tid);
-        fargs := ty.fn.args;
-        declared_var_ty := ty.fn.variadic_ty
-        is_variadic := ty.fn.is_variadic
-        is_generic := ty.fn.is_generic
-        declared_ret := ty.fn.ret_ty   // copied: substitution below can intern types
-
-        // make sure inferred parameter types are known before reading them
-        tc_default_args(tc, fn_tid)
-
-        has_named := false
-        for a in e.args {
-            if len(a.name) > 0 do has_named = true
-        }
-
-        for a in e.args {
-            tc_expr(tc, a.expr);
-        }
-
-        call_args := e.args
-        if is_variadic {
-            // defaults and variadics can't be combined (see parse_args_dec),
-            // so every fixed parameter has to be passed positionally
-            if has_named {
-                highlight_lines(get_span(id));
-                gala_panic("Named arguments can't be used when calling a variadic function.")
-            }
-            if len(e.args) < len(fargs) {
-                highlight_lines(get_span(id));
-                gala_panicf("args count for function don't match (expected at least %d, got %d).",
-                    len(fargs), len(e.args));
-            }
-        } else {
-            // reorder named args and fill in defaults, then write the
-            // full-arity call back (`e` is a copy of the union payload)
-            call_args = order_call_args(id, e.args, fargs)
-            new_call := e
-            new_call.args = call_args
-            get_ctx().exprs[id] = Expr(new_call)
-        }
-
-        // Concrete parameter types for this call, the variadic element type and
-        // the return type. Generic: inferred from the arguments, then the
-        // matching version is found or created.
-        param_tys := make([]TypeId, len(fargs), context.temp_allocator)
-        ret_ty: TypeId
-        var_ty: TypeId
-
-        if !is_generic {
-            for farg, i in fargs do param_tys[i] = farg.type
-            var_ty = declared_var_ty
-            ret_ty = declared_ret
-        } else {
-            bound := infer_generic_bindings(id, call_args, fn_tid)
-            for farg, i in fargs {
-                param_tys[i] = gen_subst(farg.type, bound, id)
-            }
-            if is_variadic {
-                var_ty = gen_subst(declared_var_ty, bound, id)
-            }
-            ret_ty = gen_subst(declared_ret, bound, id)
-
-            // the variadic element is part of the version key (goes last)
-            key_tys := param_tys
-            if is_variadic {
-                key_tys = make([]TypeId, len(param_tys) + 1, context.temp_allocator)
-                copy(key_tys, param_tys)
-                key_tys[len(param_tys)] = var_ty
-            }
-            idx, added := get_or_add_fn_version(fn_tid, key_tys, ret_ty)
-            if added {
-                MAX_GENERIC_VERSIONS :: 64
-                if len(get_type(fn_tid).fn.versions) > MAX_GENERIC_VERSIONS {
-                    highlight_lines(get_span(id))
-                    gala_panic("Generic instantiation limit reached; this looks like infinite recursion (e.g. f<T> instantiating f<^T>).")
-                }
-            }
-            get_ctx().expr_fn_version[id] = FnVersionRef{fn = fn_tid, idx = idx}
-        }
-
-        for i in 0..<len(fargs) {
-            earg := call_args[i].expr;
-            expected := param_tys[i]
-            r, ok, s := assignable(expected, expr_ty(earg));
-            if !ok {
-                debugln(get(expected));
-                highlight_lines(get_span(earg));
-                gala_panicf("Type Mismatch: %s (expected %s, got %s)",
-                    s, tts(expected), tts(expr_ty(earg)));
-            }
-            mark_arg(&call_args[i], expected, r);
-        }
-
-        // variadic tail, checked against the concrete element type
-        if is_variadic do for i in len(fargs)..<len(call_args) {
-            earg := call_args[i].expr;
-            r, ok, err := assignable(var_ty, expr_ty(earg));
-            if !ok {
-                highlight_lines(get_span(earg));
-                gala_panicf("Type Mismatch: %s (expected %s, got %s)",
-                    err, tts(var_ty), tts(expr_ty(earg)));
-            }
-            mark_arg(&call_args[i], var_ty, r);
-        }
-
-        get_ctx().expr_types[id] = ret_ty
-    }
+    case Binop:   tc_binop(tc, id, e)
+    case FnCall:  tc_fn_call(tc, id, e)
     case FnLit: {
-        // the resolver already built the fn type from the signature.
+        // the resolver already built the fn type from the signature
         tid := get_ctx().expr_resolution_types[id]
         assert(get_type(tid).kind == .Function)
 
         if get_type(tid).fn.is_generic {
-            append(tc.generic_exprs, id);
+            append(tc.generic_exprs, id)
             return
         }
 
@@ -1010,7 +782,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
         // body is checked like a FnDec body: fresh function context, and the
         // enclosing loop must not be visible (no break/continue across it).
-        // (type fetched after tc_default_args, which may have grown the table)
+        // (type fetched after tc_default_args, which may grow the table)
         new_tc := tc^
         new_tc.in_function = true
         new_tc.fn_ret_ty = get_type(tid).fn.ret_ty
@@ -1019,9 +791,235 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
 
         get_ctx().expr_types[id] = tid
     }
-    case: panic("impl tc expr")
+    case: gala_panic("compiler bug: tc_expr doesn't handle this expression kind")
     }
 }
+
+tc_binop :: proc(tc: ^TcContext, id: ExprId, e: Binop) {
+    tc_expr(tc, e.left)
+    tc_expr(tc, e.right)
+
+    left_ty  := expr_ty(e.left)
+    right_ty := expr_ty(e.right)
+
+    ty, ok, why := unify_binop(left_ty, right_ty)
+    if !ok {
+        highlight_lines(get_span(id))
+        gala_panicf("%s (%s vs %s)", why, tts(left_ty), tts(right_ty))
+    }
+    propagate_type(ty, e.left)
+    propagate_type(ty, e.right)
+
+    switch e.kind {
+    case .Addition, .Subtraction, .Multiply, .Divide, .Modulo: {
+        // pointer arithmetic: `ptr +- int`, `int + ptr`, `ptr - ptr`.
+        // not `ptr + ptr` and not `int - ptr`.
+        if is_pointer(right_ty) {
+            if is_pointer(left_ty) {
+                if e.kind == .Addition {
+                    highlight_lines(get_span(id))
+                    gala_panic("Can't add two pointers.")
+                }
+            } else if e.kind != .Addition {
+                highlight_lines(get_span(id))
+                gala_panicf("Invalid pointer arithmetic: with the pointer on the right, only `int + ptr` is allowed (got %v).", e.kind)
+            }
+        }
+        if !can_binop(ty, e.kind) {
+            highlight_lines(get_span(id))
+            gala_panicf("Operator %v can't be applied to type %s.", e.kind, tts(ty))
+        }
+        if e.kind == .Modulo {
+            k := get_type(ty).kind
+            // untyped integers (`7 % 3`) are fine; they get a concrete
+            // integer type later when propagated into a slot
+            if !is_int_kind(k) && k != .UntypedInteger {
+                highlight_lines(get_span(id))
+                gala_panicf("Modulo needs integer operands, got %s.", tts(ty))
+            }
+        }
+
+        rule := proc(t: TypeId, op: BinopKind) -> bool { return can_binop(t, op) }
+        if !check_binop_tree(id, ty, rule) {
+            highlight_lines(get_span(id))
+            gala_panicf("The operands of this expression can't be combined (type %s).", tts(ty))
+        }
+
+        get_ctx().expr_types[id] = ty
+    }
+    case .NotEqual, .Equal: {
+        if is_untyped(ty) {
+            ty = get_untyped_default(ty)
+            // force operands to resolve first
+            propagate_type(ty, e.left)
+            propagate_type(ty, e.right)
+        }
+
+        if !can_equal(ty, e.kind) {
+            highlight_lines(get_span(id))
+            gala_panicf("Can't compare values of type %s.", tts(ty))
+        }
+
+        rule := proc(t: TypeId, op: BinopKind) -> bool { return can_equal(t, op) }
+        if !check_binop_tree(id, ty, rule) {
+            highlight_lines(get_span(id))
+            gala_panicf("The operands of this expression can't be compared (type %s).", tts(ty))
+        }
+
+        get_ctx().expr_types[id] = ty_from_name("bool")
+    }
+    case .LessEqual, .GreaterEqual, .Less, .Greater: {
+        if is_untyped(ty) {
+            ty = get_untyped_default(ty)
+        }
+        propagate_type(ty, e.left)
+        propagate_type(ty, e.right)
+
+        if !can_order(ty) {
+            highlight_lines(get_span(id))
+            gala_panicf("Can't order values of type %s.", tts(ty))
+        }
+
+        rule := proc(t: TypeId, _: BinopKind) -> bool { return can_order(t) }
+        if !check_binop_tree(id, ty, rule) {
+            highlight_lines(get_span(id))
+            gala_panicf("The operands of this expression can't be ordered (type %s).", tts(ty))
+        }
+
+        get_ctx().expr_types[id] = ty_from_name("bool")
+    }
+    case .BitAnd, .BitOr, .BitXor, .ShiftLeft, .ShiftRight: {
+        if is_untyped(ty) {
+            ty = get_untyped_default(ty)
+        }
+        propagate_type(ty, e.left)
+        propagate_type(ty, e.right)
+
+        if !is_integer(ty) && !is_byte_like(ty) {
+            highlight_lines(get_span(id))
+            gala_panicf("Bitwise operator %v needs integer or byte operands, got %s.", e.kind, tts(ty))
+        }
+
+        get_ctx().expr_types[id] = ty
+    }
+    case .LogicalAnd, .LogicalOr: {
+        if get_type(ty).kind != .Bool {
+            highlight_lines(get_span(id))
+            gala_panicf("Logical operator %v needs bool operands, got %s.", e.kind, tts(ty))
+        }
+        propagate_type(ty, e.left)
+        propagate_type(ty, e.right)
+        get_ctx().expr_types[id] = ty
+    }
+    }
+}
+
+tc_fn_call :: proc(tc: ^TcContext, id: ExprId, e: FnCall) {
+    tc_expr(tc, e.target)
+    fn_tid := expr_ty(e.target)
+    if get_type(fn_tid).kind != .Function {
+        highlight_lines(get_span(e.target))
+        gala_panicf("Can't call a value of type %s.", tts(fn_tid))
+    }
+
+    // Read the signature only now: typing can intern types, which may move
+    // the type table and leave an earlier pointer dangling.
+    ty := get_type(fn_tid)
+    fargs := ty.fn.args
+    declared_var_ty := ty.fn.variadic_ty
+    is_variadic := ty.fn.is_variadic
+    is_generic := ty.fn.is_generic
+    declared_ret := ty.fn.ret_ty // copied: substitution below can intern types
+
+    // make sure inferred parameter types are known before reading them
+    tc_default_args(tc, fn_tid)
+
+    has_named := false
+    for a in e.args {
+        if len(a.name) > 0 do has_named = true
+    }
+
+    for a in e.args {
+        tc_expr(tc, a.expr)
+    }
+
+    call_args := e.args
+    if is_variadic {
+        // defaults and variadics can't be combined (see parse_args_dec), so
+        // every fixed parameter has to be passed positionally
+        if has_named {
+            highlight_lines(get_span(id))
+            gala_panic("Named arguments can't be used when calling a variadic function.")
+        }
+        if len(e.args) < len(fargs) {
+            highlight_lines(get_span(id))
+            gala_panicf("Too few arguments: the function takes at least %d, got %d.",
+                len(fargs), len(e.args))
+        }
+    } else {
+        // reorder named args and fill in defaults, then write the full-arity
+        // call back (`e` is a copy of the union payload)
+        call_args = order_call_args(id, e.args, fargs)
+        new_call := e
+        new_call.args = call_args
+        get_ctx().exprs[id] = Expr(new_call)
+    }
+
+    // Concrete parameter types for this call, the variadic element type and
+    // the return type. Generic: inferred from the arguments, then the
+    // matching version is found or created.
+    param_tys := make([]TypeId, len(fargs), context.temp_allocator)
+    ret_ty: TypeId
+    var_ty: TypeId
+
+    if !is_generic {
+        for farg, i in fargs do param_tys[i] = farg.type
+        var_ty = declared_var_ty
+        ret_ty = declared_ret
+    } else {
+        bound := infer_generic_bindings(id, call_args, fn_tid)
+        for farg, i in fargs {
+            param_tys[i] = gen_subst(farg.type, bound, id)
+        }
+        if is_variadic {
+            var_ty = gen_subst(declared_var_ty, bound, id)
+        }
+        ret_ty = gen_subst(declared_ret, bound, id)
+
+        // the variadic element is part of the version key (goes last)
+        key_tys := param_tys
+        if is_variadic {
+            key_tys = make([]TypeId, len(param_tys) + 1, context.temp_allocator)
+            copy(key_tys, param_tys)
+            key_tys[len(param_tys)] = var_ty
+        }
+        idx, added := get_or_add_fn_version(fn_tid, key_tys, ret_ty)
+        if added && len(get_type(fn_tid).fn.versions) > MAX_GENERIC_VERSIONS {
+            highlight_lines(get_span(id))
+            gala_panicf("Generic instantiation limit reached (%d versions of one function); this looks like infinite recursion, e.g. a generic function calling itself with `^T`.",
+                MAX_GENERIC_VERSIONS)
+        }
+        get_ctx().expr_fn_version[id] = FnVersionRef{fn = fn_tid, idx = idx}
+    }
+
+    for i in 0..<len(fargs) {
+        tc_check_arg(&call_args[i], i + 1, fargs[i].name, param_tys[i])
+    }
+
+    // variadic tail, checked against the concrete element type
+    if is_variadic {
+        for i in len(fargs)..<len(call_args) {
+            tc_check_arg(&call_args[i], i + 1, "", var_ty)
+        }
+    }
+
+    get_ctx().expr_types[id] = ret_ty
+}
+
+// ---------------------------------------------------------------------------
+// Statements
+// ---------------------------------------------------------------------------
+
 is_iterable :: proc(id: TypeId) -> bool {
     t := get_type(id)
     #partial switch t.kind {
@@ -1029,110 +1027,83 @@ is_iterable :: proc(id: TypeId) -> bool {
     }
     return false
 }
-get_iterale_base_type :: proc(id: TypeId) -> TypeId {
-    t := get_type(id);
+
+get_iterable_base_type :: proc(id: TypeId) -> TypeId {
+    t := get_type(id)
     #partial switch t.kind {
-    case .String: return ty_from_name("byte");
-    case .FixedSizeArray: return t.fixed_size_array.type;
-    case .Slice: return t.slice.type;
+    case .String:         return ty_from_name("byte")
+    case .FixedSizeArray: return t.fixed_size_array.type
+    case .Slice:          return t.slice.type
     }
-    debugln(tts(id))
-    panic("No base type.")
+    gala_panicf("compiler bug: %s has no iteration base type.", tts(id))
 }
+
 tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
     switch stmt in get_stmt(s) {
     case ForLoop: {
-        last_loop := tc.in_loop; // break/continue etc
-        tc.in_loop = s;
-        oid := get_ctx().stmt_objects[s];
-        tc_expr(tc, stmt.expr);
+        last_loop := tc.in_loop // break/continue etc
+        tc.in_loop = s
+        oid := get_ctx().stmt_objects[s]
+        tc_expr(tc, stmt.expr)
         if !is_iterable(expr_ty(stmt.expr)) {
-            highlight_lines(get_span(stmt.expr));
-            gala_panic("can't iterate over", tts(expr_ty(stmt.expr)));
+            highlight_lines(get_span(stmt.expr))
+            gala_panicf("Can't iterate over a value of type %s.", tts(expr_ty(stmt.expr)))
         }
-        ty := get_iterale_base_type(expr_ty(stmt.expr))
         o := get_obj(oid)
-        o.type = ty;
-        tc_block(tc, stmt.block);
-        tc.in_loop = last_loop;
+        o.type = get_iterable_base_type(expr_ty(stmt.expr))
+        tc_block(tc, stmt.block)
+        tc.in_loop = last_loop
     }
     case BreakStmt, ContinueStmt: {
-        lid /* loop id */ := tc.in_loop;
-        if lid == nil {
-            highlight_lines(get_span(s));
-            gala_panic("break/continue outside of a loop");
+        loop_id := tc.in_loop
+        if loop_id == nil {
+            highlight_lines(get_span(s))
+            gala_panic("`break` and `continue` can only be used inside a loop.")
         }
-        get_ctx().break_lables[s] = lid.(StmtId);
+        get_ctx().break_lables[s] = loop_id.(StmtId)
     }
     case WhileLoop: {
-        last_loop := tc.in_loop;
-        tc.in_loop = s;
-        tc_expr(tc, stmt.cond);
-        if is_untyped(expr_ty(stmt.cond)) {
-            t := get_untyped_default(expr_ty(stmt.cond));
-            propagate_type(t, stmt.cond);
-        }
-        if get_type(expr_ty(stmt.cond)).kind != .Bool {
-            highlight_lines(get_span(stmt.cond));
-            gala_panic("Expression is not of type boolean.");
-        }
-        tc_block(tc, stmt.block);
-        tc.in_loop = last_loop;
+        last_loop := tc.in_loop
+        tc.in_loop = s
+        tc_expr(tc, stmt.cond)
+        require_bool(stmt.cond, "A loop condition")
+        tc_block(tc, stmt.block)
+        tc.in_loop = last_loop
     }
-    case ExprId: tc_expr(tc, stmt);
+    case ExprId: tc_expr(tc, stmt)
     case IfElse: {
         // no in_loop change: break/continue inside an if/else target the
         // enclosing loop
-        tc_expr(tc, stmt.base_con);
-        // make it numeric
-        if get_type(expr_ty(stmt.base_con)).kind != .Bool {
-            highlight_lines(get_span(stmt.base_con))
-            gala_panic("not a bool.");
-        }
-        tc_block(tc, stmt.base_block);
+        tc_expr(tc, stmt.base_con)
+        require_bool(stmt.base_con, "An `if` condition")
+        tc_block(tc, stmt.base_block)
         for a in stmt.alt {
-            tc_expr(tc, a.cond);
-            // make it numeric
-            if get_type(expr_ty(a.cond)).kind != .Bool {
-                highlight_lines(get_span(a.cond))
-                gala_panic("not a bool.");
-            }
-            tc_block(tc, a.block);
+            tc_expr(tc, a.cond)
+            require_bool(a.cond, "An `else if` condition")
+            tc_block(tc, a.block)
         }
         if stmt.has_else_block {
-            tc_block(tc, stmt.else_block);
+            tc_block(tc, stmt.else_block)
         }
     }
     case VarDec: {
         tc_expr(tc, stmt.value)
         oid := get_ctx().stmt_objects[s]
         declared := get_obj(oid).type
-        // if vardec doesn't have a defined type then infer
         if declared == nil {
+            // no written type: infer it
+            require_typed_value(stmt.value, "declare a variable from")
             t := expr_ty(stmt.value)
-            // check these first: is_untyped() is true for ZeroInit too, and
-            // there's no default type to give it
-            #partial switch get_type(t).kind {
-            case .ZeroInit: {
-                highlight_lines(get_span(s));
-                gala_panic("can't have zero initialiser here. Type required");
-            }
-            case .Void: {
-                highlight_lines(get_span(s));
-                gala_panic("can't declare a variable from an expression with no value.");
-            }
-            }
-            // if it's untyped then get default type
             if is_untyped(t) {
                 propagate_type(get_untyped_default(t), stmt.value)
             }
-            get_obj(oid).type = expr_ty(stmt.value);
-        } else { // otherwise if the vardec has a specified type compare
+            get_obj(oid).type = expr_ty(stmt.value)
+        } else {
             expected := declared.(TypeId)
             r, ok, err := assignable(expected, expr_ty(stmt.value))
             if !ok {
                 highlight_lines(get_span(s))
-                gala_panicf("types don't match (%s vs %s): %s",
+                gala_panicf("Can't initialise a variable of type %s with a value of type %s: %s.",
                     tts(expected), tts(expr_ty(stmt.value)), err)
             }
             propagate_type(r, stmt.value)
@@ -1140,65 +1111,65 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
     }
     case Return: {
         if !tc.in_function {
-            gala_panic("return stmt not it a function");
+            highlight_lines(get_span(s))
+            gala_panic("Can't return outside of a function.")
         }
-        // if it has a value
         if e, ok := stmt.expr.(ExprId); ok {
-            tc_expr(tc, e);
-            if tc.fn_ret_ty == nil { // if function expects no value
-                gala_panic("no return value expected");
+            tc_expr(tc, e)
+            if tc.fn_ret_ty == nil { // function expects no value
+                highlight_lines(get_span(s))
+                gala_panic("This function returns nothing, but a value was returned.")
             }
-            // compare return expr type with fn return type
             expected := tc.fn_ret_ty.(TypeId)
-            ty, cok, err := assignable(expected, expr_ty(e));
+            ty, cok, err := assignable(expected, expr_ty(e))
             if !cok {
-                highlight_lines(get_span(e));
-                gala_panicf("Return type mismatch: %s (expected %s, got %s)",
-                    err, tts(expected), tts(expr_ty(e)));
+                highlight_lines(get_span(e))
+                gala_panicf("Return type mismatch: %s (expected %s, got %s).",
+                    err, tts(expected), tts(expr_ty(e)))
             }
-            propagate_type(ty, e);
-        // otherwise make sure function doesn't expect a value
-        } else  {
-            if tc.fn_ret_ty != nil {
-                if get_type(tc.fn_ret_ty.(TypeId)).kind == .Void {
-                    // returning void - ok
-                } else { // not in function
-                    gala_panic("return value expected");
-                }
-            }
+            propagate_type(ty, e)
+        } else if ret, has_ret := tc.fn_ret_ty.(TypeId); has_ret && get_type(ret).kind != .Void {
+            highlight_lines(get_span(s))
+            gala_panicf("This function must return a value of type %s.", tts(ret))
         }
     }
     case Assignment: {
-        tc_expr(tc, stmt.target);
-        tc_expr(tc, stmt.value);
+        tc_expr(tc, stmt.target)
+        tc_expr(tc, stmt.value)
 
         if !can_assign_to(stmt.target) {
-            highlight_lines(get_span(stmt.target));
-            gala_panic("Can't assign to this expression.");
+            highlight_lines(get_span(stmt.target))
+            gala_panic("Can't assign to this expression.")
         }
 
-        check_not_argument(stmt.target);
+        check_not_argument(stmt.target)
 
         // target must have a type
-        _, tyok := get_ctx().expr_types[stmt.target];
-        assert(tyok);
+        _, tyok := get_ctx().expr_types[stmt.target]
+        assert(tyok)
 
         t, ok, err := assignable(expr_ty(stmt.target), expr_ty(stmt.value))
         if !ok {
-            highlight_lines(get_span(s));
-            debugln(tts(expr_ty(stmt.target)), tts(expr_ty(stmt.value)));
-            gala_panic("Assignment error.", err);
+            highlight_lines(get_span(s))
+            gala_panicf("Can't assign a value of type %s to a target of type %s: %s.",
+                tts(expr_ty(stmt.value)), tts(expr_ty(stmt.target)), err)
         }
-        propagate_type(t, stmt.value);
+        propagate_type(t, stmt.value)
     }
-    case: panic("impl");
+    case: gala_panic("compiler bug: tc_stmt doesn't handle this statement kind")
     }
 }
+
 tc_block :: proc(tc: ^TcContext, b: Block) {
     for s in b.stmts {
         tc_stmt(tc, s)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Items and modules
+// ---------------------------------------------------------------------------
+
 // Same rules as a local VarDec: `:=` infers the type from the initialiser
 // (untyped literals take their default type), `name: T = value` checks the
 // initialiser against T. The result is written into the global's object so
@@ -1212,18 +1183,8 @@ tc_global_var_dec :: proc(tc: ^TcContext, id: ItemId) {
 
     resolved_ty := get_obj(oid).type
     if resolved_ty == nil {
+        require_typed_value(gd.value, "declare a global from")
         t := expr_ty(gd.value)
-        // before is_untyped(): that's true for ZeroInit too
-        #partial switch get_type(t).kind {
-        case .ZeroInit: {
-            highlight_lines(get_ctx().current_file, span)
-            gala_panic("can't have zero initialiser here. Type required")
-        }
-        case .Void: {
-            highlight_lines(get_ctx().current_file, span)
-            gala_panic("can't declare a global from an expression with no value.")
-        }
-        }
         if is_untyped(t) {
             propagate_type(get_untyped_default(t), gd.value)
         }
@@ -1233,45 +1194,39 @@ tc_global_var_dec :: proc(tc: ^TcContext, id: ItemId) {
         t, cok, err := assignable(expected, expr_ty(gd.value))
         if !cok {
             highlight_lines(get_ctx().current_file, span)
-            gala_panicf("types don't match (%s vs %s): %s",
+            gala_panicf("Can't initialise a global of type %s with a value of type %s: %s.",
                 tts(expected), tts(expr_ty(gd.value)), err)
         }
         propagate_type(t, gd.value)
     }
 }
+
 tc_item :: proc(tc: ^TcContext, id: ItemId) {
     item := get_item(id)
     switch i in item {
-    case ConstDec: {} // ok?
-    case Import: {} // ok
-    case StructDec: {
-        // ok?
-    }
-    case ExternFnDec: {
-        // ok ig?
-    }
-    case GlobalVarDec: {
-        // already checked in typecheck_module's global pass
-    }
+    // nothing to check here: structs and constants are fully handled by the
+    // resolver, externs have no body, globals are checked in typecheck_module
+    case ConstDec, Import, StructDec, ExternFnDec, GlobalVarDec: {}
     case FnDec: {
-        fn, ok := get_ctx().item_objects[id]; assert(ok);
-        type := get_type(get_obj(fn).type.(TypeId));
-        assert(type.kind == .Function);
+        fn, ok := get_ctx().item_objects[id]; assert(ok)
+        type := get_type(get_obj(fn).type.(TypeId))
+        assert(type.kind == .Function)
         if type.fn.is_generic {
-            append(tc.generic_items, id);
+            append(tc.generic_items, id)
         } else {
-            new_tc := tc^;
-            new_tc.in_function = true;
-            new_tc.fn_ret_ty = type.fn.ret_ty;
-            tc_block(&new_tc, i.block);
+            new_tc := tc^
+            new_tc.in_function = true
+            new_tc.fn_ret_ty = type.fn.ret_ty
+            tc_block(&new_tc, i.block)
         }
     }
-    case: panic("impl")
+    case: gala_panic("compiler bug: tc_item doesn't handle this item kind")
     }
 }
+
 typecheck_module :: proc(ast: ^AST, mid: ModId, file: string) {
-    generic_items := make([dynamic]ItemId, allocator=get_ctx().allocator);
-    generic_exprs := make([dynamic]ExprId, allocator=get_ctx().allocator);
+    generic_items := make([dynamic]ItemId, allocator=get_ctx().allocator)
+    generic_exprs := make([dynamic]ExprId, allocator=get_ctx().allocator)
     tc := TcContext{
         fn_ret_ty=nil,
         in_function=false,
@@ -1281,9 +1236,9 @@ typecheck_module :: proc(ast: ^AST, mid: ModId, file: string) {
 
     // First pass: globals, in declaration order, before any function body.
     // A `:=` global only gets its type here, and functions may use globals
-    // declared further down the file, so all of them must be typed before
-    // the first body is checked. A global initialiser that calls a function
-    // gets that function's parameter defaults checked on demand (FnCall).
+    // declared further down the file, so all of them must be typed before the
+    // first body is checked. A global initialiser that calls a function gets
+    // that function's parameter defaults checked on demand (FnCall).
     for i in ast.items {
         if _, is_global := get_item(i).(GlobalVarDec); is_global {
             tc_global_var_dec(&tc, i)
@@ -1291,14 +1246,13 @@ typecheck_module :: proc(ast: ^AST, mid: ModId, file: string) {
     }
 
     // Second pass: check parameter defaults of every module-level function
-    // (extern ones included) before any body is checked, so inferred
-    // parameter types and hidden-function return types exist by the time a
-    // call needs them. Runs after the globals so an inferred default
-    // (`fn f(x := SOME_GLOBAL)`) can use them.
+    // (extern ones included) before any body, so inferred parameter types and
+    // hidden-function return types exist by the time a call needs them. Runs
+    // after the globals so `fn f(x := SOME_GLOBAL)` can use them.
     for i in ast.items {
         #partial switch _ in get_item(i) {
         case FnDec, ExternFnDec: {
-            fn_obj, ok := get_ctx().item_objects[i]; assert(ok);
+            fn_obj, ok := get_ctx().item_objects[i]; assert(ok)
             tc_default_args(&tc, get_obj(fn_obj).type.(TypeId))
         }
         }
@@ -1307,7 +1261,7 @@ typecheck_module :: proc(ast: ^AST, mid: ModId, file: string) {
     // Third pass: bodies, including the hidden default-value functions, whose
     // `return <expr>;` is where the written default expression is checked.
     for i in ast.items {
-        tc_item(&tc, i);
+        tc_item(&tc, i)
     }
 
     // Generic bodies aren't checked here: other modules may still add
@@ -1328,12 +1282,12 @@ typecheck_module :: proc(ast: ^AST, mid: ModId, file: string) {
     ast.items = kept
 }
 
-// Instantiates every requested version of every generic function, across
-// all modules. Run once, after all modules are type-checked. A clone is
-// resolved and checked in its owner's scope and added to the owner's
-// items, so the owner's object file defines it and importers call it like
-// any other function. Checking a clone can request more versions (of this
-// or another generic), hence the loop.
+// Instantiates every requested version of every generic function, across all
+// modules. Run once, after all modules are type-checked. A clone is resolved
+// and checked in its owner's scope and added to the owner's items, so the
+// owner's object file defines it and importers call it like any other
+// function. Checking a clone can request more versions (of this or another
+// generic), hence the loop.
 typecheck_generics :: proc() {
     c := get_ctx()
 
@@ -1408,82 +1362,42 @@ retarget_generic_calls :: proc() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Type propagation
+// ---------------------------------------------------------------------------
+
+// Pushes a final type down into an untyped expression tree.
 propagate_type :: proc(ty: TypeId, expr: ExprId) {
     switch e in get_expr(expr) {
-    case TypeIdOf: {
+    // already typed (or fixed by their own syntax): nothing to propagate
+    case UnNot, BoolLitFalse, BoolLitTrue, String, Reference, Deref, TakeSlice,
+         Index, FixedSizeArray, FieldAccess, StructLit, Cast, Transmute,
+         Symbol, FnCall, FnLit:
+        return
+    // untyped by default: just set the type below
+    case TypeIdOf, Len, SizeOf, ZeroInit: {
     }
     case UnNegative: {
-        propagate_type(ty, e.expr);
-    }
-    case UnNot: {
-        return // bool
-    }
-    case BoolLitFalse, BoolLitTrue: return // already typed
-    case Len: {
-    }
-    // just porpatae as they're untyped int by default
-    case SizeOf: {
-    }
-    case String:  {
-        return; // once a string, always a string (for now at least)
-    }
-    case Reference: {
-        return; // should be typed, no?
-    }
-    case Deref: {
-        return; // should be typed, no?
-    }
-    case TakeSlice: {
-        return // already typed
-    }
-    case Index: {
-        return // already typed
-    }
-    case FixedSizeArray: {
-        return // already typed
-    }
-    case FieldAccess: {
-        return // already typed
-    }
-    case StructLit: {
-        return // already has type
-    }
-    case ZeroInit: {
-    }
-    case Cast: { // should have a fixed type
-        return
-    }
-    case Transmute: {
-        return // already should have a type
+        propagate_type(ty, e.expr)
     }
     case Binop: {
-        t, ok := get_ctx().expr_types[expr];
+        t, ok := get_ctx().expr_types[expr]
         if ok {
             if !is_untyped(t) do return // skip if it's been assigned a type
         }
-        if e.kind == .Modulo && !is_int_kind(get(ty).kind) && !is_untyped(ty) {
+        if e.kind == .Modulo && !is_int_kind(get_type(ty).kind) && !is_untyped(ty) {
             highlight_lines(get_span(expr))
-            gala_panicf("can't take modulo of non-integer numbers (result used as %s).", tts(ty))
+            gala_panicf("Modulo needs integer operands, but the result is used as %s.", tts(ty))
         }
-        // else propagate and set self
         propagate_type(ty, e.left)
         propagate_type(ty, e.right)
     }
     case Number: {
-        t := expr_ty(expr);
+        t := expr_ty(expr)
         if !is_untyped(t) do return // skip if it's been assigned a type
     }
-    case Symbol: { // should have a fixed type
-        return
+    case: gala_panic("compiler bug: propagate_type doesn't handle this expression kind")
     }
-    case FnCall: { // should have a fixed type
-        return
-    }
-    case FnLit: { // fixed fn type from its signature
-        return
-    }
-    case: panic("impl");
-    }
-    // set to all
-    get_ctx().expr_types[expr] = ty;
+    get_ctx().expr_types[expr] = ty
 }

@@ -186,7 +186,7 @@ lower_for :: proc(s: StmtId, f: ForLoop, out: ^[dynamic]StmtId) {
     // the iterable: arrays become slices so only slice/string reach codegen
     iter_src := f.expr
     iter_ty  := expr_ty(f.expr)
-    elem_ty  := get_iterale_base_type(iter_ty)
+    elem_ty  := get_iterable_base_type(iter_ty)
     if get_type(iter_ty).kind == .FixedSizeArray {
         slice_ty := intern_type(Type{kind=.Slice, slice={type=elem_ty}})
         iter_src = new_expr(Expr(TakeSlice{target=f.expr, empty_start=true, empty_end=true}))
