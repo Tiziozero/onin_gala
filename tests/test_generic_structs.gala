@@ -136,14 +136,14 @@ fn box_f32_inc(b: Box(f32)): Box(f32) { return Box(f32){b.v + cast(f32)1.0, b.n 
 
 // ---------------------------------------------------------------- DynArray
 fn dyn_make(cap: i64, fill: $T): DynArray(T) {
-    return DynArray(T){make_slice(fill, cap), 0};
+    return DynArray(T){make_slice::<T>(cap), 0};
 }
 
 fn dyn_push(a: ^DynArray($T), v: T) {
     if a^.length == len(a^.items) {
         new_cap := len(a^.items) * 2;
         if new_cap == 0 { new_cap = 4; }
-        bigger := make_slice(v, new_cap);
+        bigger := make_slice::<T>(new_cap);
         i := 0;
         while i < a^.length {
             bigger[i] = a^.items[i];
