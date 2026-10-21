@@ -15,7 +15,7 @@ struct DynArray {
 }
 
 fn dyn_make(cap: i64, like: $T, a: Allocator = base_allocator): DynArray(T) {
-    return DynArray(T){make_slice(like, cap, a), 0, a};
+    return DynArray(T){make_slice::<T>(cap, a), 0, a};
 }
 
 fn dyn_cap(a: ^DynArray($T)): i64 { return len(a^.items); }
@@ -33,7 +33,7 @@ fn dyn_clear(a: ^DynArray($T)) { a^.length = 0; }
 // the array is then unchanged.
 fn dyn_grow(a: ^DynArray($T), new_cap: i64, like: T): bool {
     if new_cap <= len(a^.items) { return true; }
-    bigger := make_slice(like, new_cap, a^.allocator);
+    bigger := make_slice::<T>(new_cap, a^.allocator);
     if len(bigger) == 0 { return false; }
     if a^.length > 0 {
         bytes := cast(u64)a^.length * cast(u64)size_of(T);
