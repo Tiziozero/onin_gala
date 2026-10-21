@@ -28,6 +28,10 @@ extern fn SSL_write(ssl: rawptr, buf: ^byte, num: i32): i32;
 extern fn SSL_shutdown(ssl: rawptr): i32;
 extern fn SSL_get_error(ssl: rawptr, ret: i32): i32;
 
+extern fn signal(signum: i32, handler: u64): u64;
+
+SIGPIPE: i32 = 13;
+SIG_IGN: u64 = 1;
 
 struct TlsConn {
     ssl: rawptr,
