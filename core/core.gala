@@ -26,11 +26,12 @@ import "./cfunctions.gala";
 // This allows `any` values to be inspected without compiler-level
 // support for accessing their fields directly.
 
-struct Any {
-    data: ^byte,
-    id: i64,
+fn any_as::<$T>(v: any): ^T {
+    if v.id == type_id(T) {
+        return cast(^T)v.data;
+    }
+    return 0;
 }
-
 
 // ============================================================
 // STRING HELPERS
@@ -53,6 +54,7 @@ fn cstr(s: string): ^byte {
 // ============================================================
 // PRINTLN
 // ============================================================
+
 fn println(data: ..any) {
     i := 0;
 
@@ -61,56 +63,51 @@ fn println(data: ..any) {
             printf(&(" ")[0]);
         }
 
-        a := transmute(Any)v;
-        id := a.id;
-
-        if id == type_id(string) {
-            s := (transmute(^string)a.data)^;
-
-            // Gala strings have an explicit length and are not
-            // necessarily NUL-terminated.
-            printf(&("%.*s")[0], len(s), &s[0]);
-
-        } else if id == type_id(i64) {
-            printf(&("%lld")[0], (transmute(^i64)a.data)^);
-
-        } else if id == type_id(u64) {
-            printf(&("%llu")[0], (transmute(^u64)a.data)^);
-
-        } else if id == type_id(i32) {
-            printf(&("%d")[0], (transmute(^i32)a.data)^);
-
-        } else if id == type_id(u32) {
-            printf(&("%u")[0], (transmute(^u32)a.data)^);
-
-        } else if id == type_id(i16) {
-            printf(&("%d")[0], (transmute(^i16)a.data)^);
-
-        } else if id == type_id(u16) {
-            printf(&("%u")[0], (transmute(^u16)a.data)^);
-
-        } else if id == type_id(i8) {
-            printf(&("%d")[0], (transmute(^i8)a.data)^);
-
-        } else if id == type_id(u8) {
-            printf(&("%u")[0], (transmute(^u8)a.data)^);
-
-        } else if id == type_id(f64) {
-            printf(&("%g")[0], (transmute(^f64)a.data)^);
-
-        } else if id == type_id(f32) {
-            // The C variadic ABI promotes f32 -> double.
-            printf(&("%g")[0], (transmute(^f32)a.data)^);
-
-        } else if id == type_id(bool) {
-            if (transmute(^bool)a.data)^ {
-                printf(&("true")[0]);
-            } else {
-                printf(&("false")[0]);
-            }
-
+        s := any_as::<string>(v);
+        if s != 0 {
+            printf(&("%.*s")[0], len(s^), &s^[0]);
         } else {
-            printf(&("<?>")[0]);
+            n_i64 := any_as::<i64>(v);
+            n_u64 := any_as::<u64>(v);
+            n_i32 := any_as::<i32>(v);
+            n_u32 := any_as::<u32>(v);
+            n_i16 := any_as::<i16>(v);
+            n_u16 := any_as::<u16>(v);
+            n_i8 := any_as::<i8>(v);
+            n_u8 := any_as::<u8>(v);
+            n_f64 := any_as::<f64>(v);
+            n_f32 := any_as::<f32>(v);
+            b := any_as::<bool>(v);
+
+            if n_i64 != 0 {
+                printf(&("%lld")[0], n_i64^);
+            } else if n_u64 != 0 {
+                printf(&("%llu")[0], n_u64^);
+            } else if n_i32 != 0 {
+                printf(&("%d")[0], n_i32^);
+            } else if n_u32 != 0 {
+                printf(&("%u")[0], n_u32^);
+            } else if n_i16 != 0 {
+                printf(&("%d")[0], n_i16^);
+            } else if n_u16 != 0 {
+                printf(&("%u")[0], n_u16^);
+            } else if n_i8 != 0 {
+                printf(&("%d")[0], n_i8^);
+            } else if n_u8 != 0 {
+                printf(&("%u")[0], n_u8^);
+            } else if n_f64 != 0 {
+                printf(&("%g")[0], n_f64^);
+            } else if n_f32 != 0 {
+                printf(&("%g")[0], n_f32^);
+            } else if b != 0 {
+                if b^ {
+                    printf(&("true")[0]);
+                } else {
+                    printf(&("false")[0]);
+                }
+            } else {
+                printf(&("<?>")[0]);
+            }
         }
 
         i += 1;
@@ -118,6 +115,7 @@ fn println(data: ..any) {
 
     printf(&("\n")[0]);
 }
+
 
 
 fn str_cmp(a: string, b: string): bool {

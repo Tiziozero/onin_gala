@@ -14,7 +14,7 @@ struct DynArray {
     allocator: Allocator,
 }
 
-fn dyn_make(cap: i64, like: $T, a: Allocator = base_allocator): DynArray(T) {
+fn dyn_make::<$T>(cap: i64, a: Allocator = base_allocator): DynArray(T) {
     return DynArray(T){make_slice::<T>(cap, a), 0, a};
 }
 

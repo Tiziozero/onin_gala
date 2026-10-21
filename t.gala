@@ -1,4 +1,0 @@
-fn add(a: $T, b: T): T { return a + b; }
-fn first(p: ^$T): T { return p^; }
-fn apply(f: fn(x: $T): T, v: T): T { return f(v); }
-fn main() {}

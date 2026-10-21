@@ -365,3 +365,81 @@ is_void_pointer :: proc(id: TypeId) -> bool {
     t := get_type(id)
     return t.kind == .Pointer && get_type(t.ptr).kind == .Void
 }
+// A type is concrete when it is fully known at compile time: nothing in it
+// is (or depends on) a generic placeholder like `$T`. Used to reject things
+// such as `any_as(v, $T)` / `type_id($T)` before they reach lowering, where
+// there is no real type to compare against or emit an id for.
+//
+// Not concrete:
+//   - .Generic itself
+//   - a generic struct template (`Box` with $T fields)
+//   - a generic function type
+//   - any pointer / slice / array / function / struct instance that
+//     contains one of the above
+//   - .Invalid, and the untyped literal kinds (.UntypedInteger,
+//     .UntypedFloat, .ZeroInit): they have no runtime type, so there is
+//     no type id to ask for. A literal has to be given a type first.
+is_concrete_type :: proc(id: TypeId) -> bool {
+    ty := get_type(id)
+
+    #partial switch ty.kind {
+    case .Generic:
+        return false
+
+    case .Pointer:
+        // rawptr is Pointer{ptr = void}, and void is concrete
+        return is_concrete_type(ty.ptr)
+
+    case .Slice:
+        return is_concrete_type(ty.slice.type)
+
+    case .FixedSizeArray:
+        return is_concrete_type(ty.fixed_size_array.type)
+
+    case .Function:
+        // a generic function is a template, not a type you can name
+        if ty.fn.is_generic do return false
+
+        for arg in ty.fn.args {
+            if !is_concrete_type(arg.type) do return false
+        }
+        if !is_concrete_type(ty.fn.ret_ty) do return false
+
+        if ty.fn.is_variadic && !is_concrete_type(ty.fn.variadic_ty) {
+            return false
+        }
+        return true
+
+    case .Struct:
+        // A bare template (`Box`) has $T fields and can't be used as a type.
+        if ty.structure.is_generic do return false
+
+        // An instance (`Box.i64`) is concrete exactly when all of its
+        // arguments are. Inside a generic function body an instance can
+        // still be waiting on an unsubstituted argument, e.g. `Box(T)`.
+        if ty.structure.is_instance {
+            for arg in ty.structure.args {
+                if !is_concrete_type(arg) do return false
+            }
+        }
+
+        // Deliberately not recursing into the fields: a non-generic struct
+        // can't contain a generic field (it would be a template), and an
+        // instance's fields are its template's fields with the arguments
+        // substituted. Skipping them also avoids infinite recursion on
+        // self-referential structs like `Node { next: ^Node }`.
+        return true
+
+    case .UInt64, .UInt32, .UInt16, .UInt_8,
+         .Int64, .Int32, .Int16, .Int_8,
+         .Flt64, .Flt32, .Flt16, .Flt_8,
+         .Rune, .Byte, .Bool, .String, .Any, .Void:
+        return true
+
+    case:
+        // .Invalid, .UntypedInteger, .UntypedFloat, .ZeroInit
+        return false
+    }
+
+    return false
+}

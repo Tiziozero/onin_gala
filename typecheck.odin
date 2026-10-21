@@ -321,17 +321,6 @@ tc_index_expr :: proc(tc: ^TcContext, idx: ExprId) {
     }
 }
 
-closest_field :: proc(fields: []Field, name: string) -> (string, bool) {
-    best: string
-    best_d := max(2, len(name) / 3) + 1
-    for f in fields {
-        if d := edit_distance(name, f.name); d < best_d {
-            best, best_d = f.name, d
-        }
-    }
-    return best, len(best) > 0
-}
-
 // Re-checks every nested binop against the final operand type. `rule` is the
 // operator rule of the outermost expression (arithmetic / equality / order).
 BinopRule :: proc(ty: TypeId, op: BinopKind) -> bool
@@ -345,22 +334,22 @@ check_binop_tree :: proc(id: ExprId, ty: TypeId, rule: BinopRule) -> bool {
     return true
 }
 
+// don't rebox any
 mark_arg :: proc(arg: ^FnCallArg, param_ty: TypeId, r: TypeId) {
     earg := arg.expr
-    if get_type(param_ty).kind == .Any {
+    if get_type(param_ty).kind == .Any && get_type(expr_ty(earg)).kind != .Any {
         t := expr_ty(earg)
         if get_type(t).kind == .ZeroInit {
             highlight_lines(get_span(earg))
             gala_panic("Can't pass a zero initialiser as `any`: it has no type.")
         }
-        // untyped (the target is `any` or another valid untyped target)
         if is_untyped(t) {
             propagate_type(get_untyped_default(t), earg)
         }
         arg.needs_boxing = true
         arg.box_type = expr_ty(earg)
     } else {
-        assert(r == param_ty) // should always match
+        assert(r == param_ty)
         propagate_type(r, earg)
     }
 }
@@ -657,6 +646,21 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         tc_expr(tc, e.target)
         target_tid := expr_ty(e.target)
         target_ty := get_type(target_tid)
+
+        // `any` is { data: rawptr, id: i64 }
+        if target_ty.kind == .Any {
+            switch e.field {
+            case "data":
+                get_ctx().expr_types[id] = intern_type(Type{kind = .Pointer, ptr = void_type()})
+            case "id":
+                get_ctx().expr_types[id] = integer_type()
+            case:
+                highlight_lines(get_span(id))
+                gala_panicf("Field \"%s\" doesn't exist in type any (it has \"data\" and \"id\").", e.field)
+            }
+            return
+        }
+
         if target_ty.kind != .Struct {
             highlight_lines(get_span(id))
             gala_panicf("Can't access field \"%s\" of a value of type %s (not a struct).",
@@ -669,10 +673,6 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             }
         }
         highlight_lines(get_span(id))
-        if guess, found := closest_field(target_ty.structure.fields, e.field); found {
-            gala_panicf("Field \"%s\" doesn't exist in type %s. Did you mean \"%s\"?",
-                e.field, target_ty.name, guess)
-        }
         gala_panicf("Field \"%s\" doesn't exist in type %s.", e.field, target_ty.name)
     }
     case StructLit: {

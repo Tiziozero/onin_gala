@@ -627,10 +627,7 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     }
     case FieldAccess: {
         target_ty := expr_ty(e.target)
-        ty := get_type(target_ty)
-
-        idx := struct_field_index(ty, e.field)
-        field_ty := ty.structure.fields[idx].type
+        idx, field_ty := field_of(target_ty, e.field)
 
         // Memory-backed target (a variable / deref / index, or any large
         // aggregate rvalue): GEP to the field and load just that field.

@@ -884,6 +884,19 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     }
     cwriteln(c, "")
 }
+// Index and type of field `name`. `any` is { data: ^void, id: i64 }.
+field_of :: proc(tid: TypeId, name: string) -> (idx: int, field_ty: TypeId) {
+    ty := get_type(tid)
+    if ty.kind == .Any {
+        switch name {
+        case "data": return 0, intern_type(Type{kind = .Pointer, ptr = void_type()})
+        case "id":   return 1, integer_type()
+        }
+        gala_panic("any has no field", name)
+    }
+    idx = struct_field_index(ty, name)
+    return idx, ty.structure.fields[idx].type
+}
 
 // Evaluates an iterable expression (for `for x in <expr>`) EXACTLY ONCE and
 // returns everything the loop needs:
@@ -985,7 +998,7 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
         // struct (`make_terrain().pixels[3]`) is spilled to a temporary.
         base_ptr := cg_value_addr(c, e.target)
         base_ty := expr_ty(e.target)
-        idx := struct_field_index(get_type(base_ty), e.field)
+        idx, _ := field_of(base_ty, e.field)
 
         t := new_tmp(c)
         cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d",

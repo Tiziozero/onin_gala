@@ -493,7 +493,7 @@ fn json_write_value(w: ^JsonWriter, v: JsonValue) {
 // Compact JSON text (keys come out in map order, not insertion order).
 // Returns "" on allocation failure. Free with free_string(out, a).
 fn json_dump(v: JsonValue, a: Allocator = base_allocator): string {
-    w := JsonWriter{dyn_make(0, cast(byte)0, a), true};
+    w := JsonWriter{dyn_make::<byte>(0, a), true};
     json_write_value(&w, v);
     if !w.ok {
         dyn_free(&w.out);

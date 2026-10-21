@@ -17,7 +17,7 @@ fn size_of_t(a: $T): i64 { return size_of(T); }
 
 fn main() {
     // ---------------------------------------------------------------- DynArray
-    da := dyn_make(0, 0);
+    da := dyn_make::<i64>(0);
     check("empty", da.length == 0 && dyn_cap(&da) == 0);
     i := 0;
     while i < 100 {
@@ -32,7 +32,7 @@ fn main() {
     check("set", dyn_get(&da, 0) == 7);
     check("slice len", len(dyn_slice(&da)) == 99);
 
-    da_small := dyn_make(0, 0);
+    da_small := dyn_make::<i64>( 0);
     dyn_push(&da_small, 1);
     dyn_push(&da_small, 2);
     dyn_push(&da_small, 3);
@@ -49,11 +49,11 @@ fn main() {
     extra := [3]i64{4, 5, 6};
     check("extend", dyn_extend(&da_small, extra[:]) && da_small.length == 3 && dyn_get(&da_small, 2) == 6);
 
-    da_i32 := dyn_make(0, cast(i32)0);
+    da_i32 := dyn_make::<i32>(0);
     dyn_push(&da_i32, 5);
     check("i32 literal adapts", size_of_t(dyn_get(&da_i32, 0)) == 4);
 
-    da_pair := dyn_make(2, Pair{0, 0});
+    da_pair := dyn_make::<Pair>(2);
     dyn_push(&da_pair, Pair{1, 2});
     dyn_push(&da_pair, Pair{3, 4});
     dyn_push(&da_pair, Pair{5, 6});
@@ -62,7 +62,7 @@ fn main() {
     // custom allocator
     arena := arena_make(1 * MB);
     arena_a := arena_allocator(&arena);
-    da_arena := dyn_make(0, 0, arena_a);
+    da_arena := dyn_make::<i64>(0, arena_a);
     j := 0;
     while j < 1000 {
         dyn_push(&da_arena, j);
@@ -77,7 +77,7 @@ fn main() {
     check("push after free", da.length == 1 && dyn_get(&da, 0) == 1);
 
     // ---------------------------------------------------------------- Map
-    m := map_make(0, 0, 0, hash_i64, eq_i64);
+    m := map_make::<i64, i64>(0, hash_i64, eq_i64);
     check("map empty", m.count == 0 && !map_has(&m, 1));
     k := 0;
     while k < 1000 {
@@ -140,11 +140,11 @@ fn main() {
     map_free(&m);
     check("free", m.count == 0 && map_slots(&m) == 0 && !map_has(&m, 3));
 
-    m_res := map_make(100, 0, 0, hash_i64, eq_i64);
+    m_res := map_make::<i64, i64>(100, hash_i64, eq_i64);
     check("reserve", map_slots(&m_res) >= 134 && m_res.count == 0);
 
     // string keys
-    ms := map_make(0, "", 0, hash_str, eq_str);
+    ms := map_make::<string, i64>(0, hash_str, eq_str);
     map_put(&ms, "one", 1);
     map_put(&ms, "two", 2);
     map_put(&ms, "three", 3);
@@ -156,18 +156,18 @@ fn main() {
     check("string overwrite", map_get_ptr(&ms, "one")^ == 11 && ms.count == 4);
 
     // other value and key types
-    m32 := map_make(0, cast(i32)0, 0.0, hash_i32, eq_i32);
+    m32 := map_make::<i32, f64>(0, hash_i32, eq_i32);
     map_put(&m32, 4, 1.5);
     map_put(&m32, 5, 2.5);
     check("i32 -> f64", map_get_ptr(&m32, 4)^ == 1.5 && map_get_ptr(&m32, 5)^ == 2.5);
 
-    mp := map_make(0, 0, Pair{0, 0}, hash_i64, eq_i64);
+    mp := map_make::< i64, Pair>(0, hash_i64, eq_i64);
     map_put(&mp, 1, Pair{7, 8});
     check("struct values", map_get_ptr(&mp, 1)^.b == 8);
 
     // arena backed map
     arena_m := arena_make(4 * MB);
-    ma := map_make(0, 0, 0, hash_i64, eq_i64, arena_allocator(&arena_m));
+    ma := map_make::<i64, i64>(0, hash_i64, eq_i64, arena_allocator(&arena_m));
     q := 0;
     while q < 300 {
         map_put(&ma, q, q);
