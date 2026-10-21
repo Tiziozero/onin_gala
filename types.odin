@@ -54,6 +54,7 @@ Type :: struct {
     fn: struct {
         args: []Arg,
         ret_ty: TypeId,
+        generic_names: []string,
 
         is_external: bool,
 

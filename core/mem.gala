@@ -25,14 +25,14 @@
 //   arena := arena_make(1 * MB);
 //   a := arena_allocator(&arena);
 //   v := new(v2{1.0, 2.0}, a);                       // ^v2 from the arena
-//   xs := make_slice(0.0, 100, a);                   // []f64, zeroed
+//   xs := make_slice::<f64>(100, a);                 // []f64, zeroed
 //   arena_destroy(&arena);                           // frees it all
 //
 //   set_allocator(a);                                // make `a` the default
 //
-// Typed helpers (new, make_slice, del, del_slice) use size_of(T). The
-// value you pass to `new` is copied in; the value you pass to make_slice
-// is only there so the compiler can infer T.
+// Typed helpers (new, make_slice, del, del_slice) use size_of(T). `new`
+// infers T from the value you pass and copies it in. make_slice takes T
+// explicitly: make_slice::<f64>(n).
 
 
 import "./core.gala";
@@ -245,6 +245,7 @@ fn free_string(s: string, a: Allocator = base_allocator) {
 // ============================================================
 
 // Allocates a T, copies `v` into it. Returns NULL (as ^T) on failure.
+// T is inferred from `v`.
 fn new(v: $T, a: Allocator = base_allocator): ^T {
     size := cast(u64)size_of(T);
     raw := alloc(size, align_for_size(size), a);
@@ -259,9 +260,9 @@ fn del(p: ^$T, a: Allocator = base_allocator) {
     dealloc(transmute(rawptr)p, cast(u64)size_of(T), a);
 }
 
-// `like` is only used to infer T: make_slice(0.0, 10) gives a []f64 of
-// ten zeroes. On failure the slice is empty.
-fn make_slice(like: $T, n: i64, a: Allocator = base_allocator): []T {
+// T is given explicitly: make_slice::<f64>(10) gives a []f64 of ten
+// zeroes. On failure the slice is empty.
+fn make_slice::<$T>(n: i64, a: Allocator = base_allocator): []T {
     esz := cast(u64)size_of(T);
     raw: rawptr = NULL;
     count: i64 = 0;

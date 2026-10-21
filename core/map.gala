@@ -2,8 +2,9 @@
 //
 // Hash map: open addressing, linear probing, power-of-two capacity.
 // No traits, so hashing and equality are function values stored in the map:
-//   m := map_make(0, 0, "", hash_str, eq_str);   // Map(string, i64)
-// like_k / like_v only exist so K and V can be inferred.
+//   m := map_make::<string, i64>(0, hash_str, eq_str);   // Map(string, i64)
+// K and V are given explicitly with ::<K, V> on map_make; every other
+// function infers them from the map argument.
 // Slot states live in a separate byte array; deleted slots are tombstones.
 
 import "./core.gala";
@@ -89,10 +90,10 @@ fn map_insert_nogrow(m: ^Map($K, $V), k: K, v: V) {
 
 // Rebuilds the table with new_cap slots (a power of two), dropping tombstones.
 // On allocation failure returns false and leaves the map untouched.
-fn map_resize(m: ^Map($K, $V), new_cap: i64, like_k: K, like_v: V): bool {
-    nk := make_slice(like_k, new_cap, m^.allocator);
-    nv := make_slice(like_v, new_cap, m^.allocator);
-    ns := make_slice(SLOT_EMPTY, new_cap, m^.allocator);
+fn map_resize(m: ^Map($K, $V), new_cap: i64): bool {
+    nk := make_slice::<K>(new_cap, m^.allocator);
+    nv := make_slice::<V>(new_cap, m^.allocator);
+    ns := make_slice::<byte>(new_cap, m^.allocator);
     if len(nk) == 0 || len(nv) == 0 || len(ns) == 0 {
         del_slice(nk, m^.allocator);
         del_slice(nv, m^.allocator);
@@ -135,19 +136,19 @@ fn map_find(m: ^Map($K, $V), k: K): i64 {
 
 // ---------------------------------------------------------------- public API
 
-fn map_make(cap: i64, like_k: $K, like_v: $V, hash: fn(hk: K): u64, eq: fn(ea: K, eb: K): bool, a: Allocator = base_allocator): Map(K, V) {
-    m := Map(K, V){make_slice(like_k, 0, a), make_slice(like_v, 0, a), make_slice(SLOT_EMPTY, 0, a), 0, 0, hash, eq, a};
-    if cap > 0 { map_reserve(&m, cap, like_k, like_v); }
+fn map_make::<$K, $V>(cap: i64, hash: fn(hk: K): u64, eq: fn(ea: K, eb: K): bool, a: Allocator = base_allocator): Map(K, V) {
+    m := Map(K, V){make_slice::<K>(0, a), make_slice::<V>(0, a), make_slice::<byte>(0, a), 0, 0, hash, eq, a};
+    if cap > 0 { map_reserve(&m, cap); }
     return m;
 }
 
 // Room for n entries without further growth.
-fn map_reserve(m: ^Map($K, $V), n: i64, like_k: K, like_v: V): bool {
+fn map_reserve(m: ^Map($K, $V), n: i64): bool {
     need := n * 4 / 3 + 1;
     if len(m^.state) >= need { return true; }
     c := 8;
     while c < need { c *= 2; }
-    return map_resize(m, c, like_k, like_v);
+    return map_resize(m, c);
 }
 
 // Inserts or overwrites. False on allocation failure.
@@ -157,7 +158,7 @@ fn map_put(m: ^Map($K, $V), k: K, v: V): bool {
         new_cap := cap;
         if (m^.count + 1) * 2 > cap { new_cap = cap * 2; }
         if new_cap < 8 { new_cap = 8; }
-        if !map_resize(m, new_cap, k, v) { return false; }
+        if !map_resize(m, new_cap) { return false; }
     }
     map_insert_nogrow(m, k, v);
     return true;

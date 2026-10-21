@@ -170,6 +170,7 @@ expr_as_type_spec :: proc(id: ExprId) -> (TypeSpecifier, bool) {
     case Symbol:
         return TypeSpecifier(BaseType{e.name, get_span(id).span}), true
     case FnCall:
+        if len(e.type_args) > 0 do return {}, false // `f::<T>(..)` is never a type
         sym, is_sym := get_expr(e.target).(Symbol)
         if !is_sym do return {}, false
         args := make([dynamic]TypeSpecifier, allocator=get_ctx().allocator)
@@ -435,6 +436,24 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
         resolve_expr(s, e.target)
         for a in e.args {
             resolve_expr(s, a.expr)
+        }
+        // `f::<A, B>(..)`: resolve the explicit type arguments
+        if len(e.type_args) > 0 {
+            ids := make([]TypeId, len(e.type_args), allocator=get_ctx().allocator)
+            for spec, i in e.type_args {
+                if specifier_has_generic(spec) {
+                    highlight_lines(get_ctx().current_file, e.type_args_span)
+                    gala_panic("Can't declare generics (`$`) in explicit type arguments.")
+                }
+                ids[i] = resolve_type_specifier(s, spec)
+                if ids[i] == void_type() {
+                    highlight_lines(get_ctx().current_file, e.type_args_span)
+                    gala_panic("\"void\" can't be a type argument.")
+                }
+            }
+            node := get_expr(id).(FnCall)
+            node.type_arg_ids = ids
+            get_expr(id)^ = node
         }
     }
     case FnLit: {
@@ -1000,6 +1019,7 @@ specifier_has_generic :: proc(t: TypeSpecifier) -> bool {
 }
 
 is_fn_signature_generic :: proc(sig: FnDecSignature) -> bool {
+    if len(sig.generics) > 0 do return true // `fn f::<K, V>(..)`
     for a in sig.args {
         if !a.inferred && specifier_has_generic(a.t) do return true
     }
@@ -1058,9 +1078,15 @@ resolve_generic_clone :: proc(g, iid: ItemId, v: FnVersion) {
     for a, i in orig.signature.args {
         bind_generics(a.t, v.params[i], &bindings)
     }
-    // the variadic element is the last entry of the version key
+    // version key layout: params, then the variadic element, then the
+    // explicit `::<..>` generics
+    tail := len(orig.signature.args)
     if orig.signature.is_variadic {
-        bind_generics(orig.signature.variadic_ty, v.params[len(orig.signature.args)], &bindings)
+        bind_generics(orig.signature.variadic_ty, v.params[tail], &bindings)
+        tail += 1
+    }
+    for gp, i in orig.signature.generics {
+        bindings[gp.name] = v.params[tail + i]
     }
 
     fnty, fnscope := resolve_fn_dec_signature(ms, fndec.signature, bindings = bindings)
@@ -1125,6 +1151,10 @@ panic_duplicate_arg :: proc(name: string, first, dup: Span) {
 // For gala functions, an additional arg of type slice-of-variadic-type is
 // added to the function body.
 // Takes ^Scope (not ^ModuleScope) so fn type specifiers resolve from any scope.
+//
+// Explicit generics (`fn f::<K, V>(..)`) are declared in the arg scope first,
+// as generic types (or as the bound concrete types when cloning), and their
+// names are kept in `fn.generic_names`.
 resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := false,
         bindings: map[string]TypeId = nil) -> (Type, Scope) {
     fnty := Type{}
@@ -1132,6 +1162,26 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
     // a clone built from bindings is concrete
     fnty.fn.is_generic = is_fn_signature_generic(fndec) && bindings == nil
     arg_scope := new_scope(s)
+
+    if len(fndec.generics) > 0 {
+        names := make([]string, len(fndec.generics), allocator=get_ctx().allocator)
+        for gp, i in fndec.generics {
+            names[i] = gp.name
+            if bindings != nil {
+                tid, bok := bindings[gp.name]
+                if !bok {
+                    highlight_lines({get_ctx().current_file, gp.span})
+                    gala_panicf("No binding for generic \"%s\".", gp.name)
+                }
+                arg_scope.types[gp.name] = tid
+            } else {
+                new_type(&arg_scope, Type{kind=.Generic, name=gp.name},
+                    {get_ctx().current_file, gp.span})
+            }
+        }
+        fnty.fn.generic_names = names[:]
+    }
+
     if len(fndec.args) > 0 || fndec.is_variadic {
         args := make([]Arg, len(fndec.args), allocator=get_ctx().allocator)
         declared := make(map[string]Arg, allocator=get_ctx().allocator)

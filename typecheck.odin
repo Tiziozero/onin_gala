@@ -1,6 +1,7 @@
 package main
 
 import "core:slice"
+import "core:strings"
 
 TcContext :: struct {
     in_function: bool,
@@ -914,6 +915,47 @@ tc_binop :: proc(tc: ^TcContext, id: ExprId, e: Binop) {
     }
 }
 
+// `Generic`-kind type names inside a resolved type, in order of first appearance.
+collect_generic_type_names :: proc(t: TypeId, out: ^[dynamic]string) {
+    ty := get_type(t)
+    #partial switch ty.kind {
+    case .Generic: {
+        for n in out^ {
+            if n == ty.name do return
+        }
+        append(out, ty.name)
+    }
+    case .Pointer:        collect_generic_type_names(ty.ptr, out)
+    case .Slice:          collect_generic_type_names(ty.slice.type, out)
+    case .FixedSizeArray: collect_generic_type_names(ty.fixed_size_array.type, out)
+    case .Struct: {
+        for a in ty.structure.args do collect_generic_type_names(a, out)
+    }
+    case .Function: {
+        for a in ty.fn.args do collect_generic_type_names(a.type, out)
+        if ty.fn.is_variadic do collect_generic_type_names(ty.fn.variadic_ty, out)
+        collect_generic_type_names(ty.fn.ret_ty, out)
+    }
+    }
+}
+
+// Does the signature still have generics (`$T`) that only the arguments can
+// bind, i.e. ones that aren't declared in `::<..>`?
+needs_inference :: proc(fargs: []Arg, variadic_ty: TypeId, is_variadic: bool,
+        explicit: []string) -> bool {
+    names := make([dynamic]string, allocator=context.temp_allocator)
+    for a in fargs do collect_generic_type_names(a.type, &names)
+    if is_variadic do collect_generic_type_names(variadic_ty, &names)
+    for n in names {
+        found := false
+        for e in explicit {
+            if e == n do found = true
+        }
+        if !found do return true
+    }
+    return false
+}
+
 tc_fn_call :: proc(tc: ^TcContext, id: ExprId, e: FnCall) {
     tc_expr(tc, e.target)
     fn_tid := expr_ty(e.target)
@@ -930,6 +972,23 @@ tc_fn_call :: proc(tc: ^TcContext, id: ExprId, e: FnCall) {
     is_variadic := ty.fn.is_variadic
     is_generic := ty.fn.is_generic
     declared_ret := ty.fn.ret_ty // copied: substitution below can intern types
+    gen_names := ty.fn.generic_names // explicit `fn f::<K, V>` names
+
+    // explicit type arguments (`f::<A, B>(..)`) must match the declaration
+    if len(e.type_args) > 0 {
+        if len(gen_names) == 0 {
+            highlight_lines(get_ctx().current_file, e.type_args_span)
+            gala_panic("This function doesn't declare type parameters (declare them as `fn name::<T>(..)`).")
+        }
+        if len(e.type_arg_ids) != len(gen_names) {
+            highlight_lines(get_ctx().current_file, e.type_args_span)
+            gala_panicf("Expected %d type argument(s), got %d.", len(gen_names), len(e.type_arg_ids))
+        }
+    } else if len(gen_names) > 0 {
+        highlight_lines(get_span(id))
+        gala_panicf("This function needs explicit type arguments: `f::<%s>(..)`.",
+            strings.join(gen_names, ", ", context.temp_allocator))
+    }
 
     // make sure inferred parameter types are known before reading them
     tc_default_args(tc, fn_tid)
@@ -966,8 +1025,8 @@ tc_fn_call :: proc(tc: ^TcContext, id: ExprId, e: FnCall) {
     }
 
     // Concrete parameter types for this call, the variadic element type and
-    // the return type. Generic: inferred from the arguments, then the
-    // matching version is found or created.
+    // the return type. Generic: inferred from the arguments (and/or given
+    // explicitly), then the matching version is found or created.
     param_tys := make([]TypeId, len(fargs), context.temp_allocator)
     ret_ty: TypeId
     var_ty: TypeId
@@ -977,7 +1036,16 @@ tc_fn_call :: proc(tc: ^TcContext, id: ExprId, e: FnCall) {
         var_ty = declared_var_ty
         ret_ty = declared_ret
     } else {
-        bound := infer_generic_bindings(id, call_args, fn_tid)
+        // ASSUMPTION: infer_generic_bindings returns map[string]TypeId
+        bound: map[string]TypeId
+        if len(gen_names) == 0 || needs_inference(fargs, declared_var_ty, is_variadic, gen_names) {
+            bound = infer_generic_bindings(id, call_args, fn_tid)
+        } else {
+            bound = make(map[string]TypeId, allocator=context.temp_allocator)
+        }
+        // explicit ones win
+        for name, i in gen_names do bound[name] = e.type_arg_ids[i]
+
         for farg, i in fargs {
             param_tys[i] = gen_subst(farg.type, bound, id)
         }
@@ -986,12 +1054,21 @@ tc_fn_call :: proc(tc: ^TcContext, id: ExprId, e: FnCall) {
         }
         ret_ty = gen_subst(declared_ret, bound, id)
 
-        // the variadic element is part of the version key (goes last)
+        // version key: params, the variadic element, then the explicit
+        // generics (they can't be recovered from the params, e.g. a `V` that
+        // only shows up in the return type)
         key_tys := param_tys
-        if is_variadic {
-            key_tys = make([]TypeId, len(param_tys) + 1, context.temp_allocator)
+        if is_variadic || len(gen_names) > 0 {
+            n := len(param_tys) + len(gen_names)
+            if is_variadic do n += 1
+            key_tys = make([]TypeId, n, context.temp_allocator)
             copy(key_tys, param_tys)
-            key_tys[len(param_tys)] = var_ty
+            k := len(param_tys)
+            if is_variadic {
+                key_tys[k] = var_ty
+                k += 1
+            }
+            for name, i in gen_names do key_tys[k + i] = bound[name]
         }
         idx, added := get_or_add_fn_version(fn_tid, key_tys, ret_ty)
         if added && len(get_type(fn_tid).fn.versions) > MAX_GENERIC_VERSIONS {

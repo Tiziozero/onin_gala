@@ -145,9 +145,14 @@ FieldAccess :: struct {
     target: ExprId,
     field: string,
 }
+// `f::<A, B>(x)`: `type_args` are the explicit type arguments, as written;
+// the resolver fills `type_arg_ids`.
 FnCall :: struct {
     target: ExprId,
     args: [dynamic]FnCallArg,
+    type_args: []TypeSpecifier,
+    type_args_span: Span,
+    type_arg_ids: []TypeId,
 }
 // `name` is set for `f(x = 1)` style arguments. The type checker reorders
 // everything into parameter order and clears the names, so codegen only sees
@@ -240,6 +245,11 @@ FnDecArg :: struct{
     inferred: bool,
     default_src: Maybe(ExprId),
 }
+// A name declared in `fn f::<K, V>(..)`.
+GenericParam :: struct {
+    name: string,
+    span: Span,
+}
 FnDecSignature :: struct {
     name: string,
     args: []FnDecArg,
@@ -248,6 +258,8 @@ FnDecSignature :: struct {
     variadic_ty: TypeSpecifier,
     variadic_arg_name: string,
     variadic_arg_span: Span,
+    // explicit type params (`fn f::<K, V>(..)`), only on named fn items
+    generics: []GenericParam,
 }
 FnDec :: struct {
     using signature: FnDecSignature,
@@ -428,7 +440,6 @@ parse_struct_lit :: proc(p: ^Parser) -> ExprId {
     return id;
 }
 
-// `[N]T{}` (zeroed) or `[N]T{a, b, c}` (trailing comma ok)
 // `[N]T{}` (zeroed) or `[N]T{a, b, c}` (trailing comma ok). N is a number
 // or a constant expression (`[MAX_COUNT]byte{}`).
 parse_array_lit :: proc(p: ^Parser) -> ExprId {
@@ -895,7 +906,70 @@ parse_fn_lit :: proc(p: ^Parser) -> ExprId {
     return id
 }
 
-parse_call :: proc(p: ^Parser, target: ExprId) -> ExprId {
+// How many tokens the `::<` opener takes at the current position (`::` may
+// be lexed as one symbol or two), 0 if there is none.
+turbofish_ahead :: proc(p: ^Parser) -> int {
+    if is_symbol(current_token(p), "::") && is_symbol(peek_token(p, 1), "<") do return 2
+    if is_symbol(current_token(p), ":") && is_symbol(peek_token(p, 1), ":") &&
+       is_symbol(peek_token(p, 2), "<") { return 3 }
+    return 0
+}
+
+// `::<A, B>` at a call site.
+parse_type_args :: proc(p: ^Parser) -> ([]TypeSpecifier, Span) {
+    start := current_token(p).span.start
+    t := turbofish_ahead(p)
+    // fmt.println("turbo fish:",  t);
+    for i in 0..<t {
+        _ = consume_token(p).text;
+        // fmt.println(i, _text) // "::" "<"
+    }
+
+    list := make([dynamic]TypeSpecifier, allocator=get_ctx().allocator)
+    for !is_symbol(current_token(p), ">") {
+        append(&list, parse_type(p))
+        if is_symbol(current_token(p), ",") {
+            consume_token(p) // ","
+        } else {
+            break
+        }
+    }
+    close := current_token(p)
+    if len(list) == 0 {
+        highlight_lines(get_ctx().current_file, close.span)
+        gala_panic("Expected at least one type argument.")
+    }
+    expect_symbol(p, ">")
+    return list[:], Span{start=start, end=close.span.end}
+}
+
+// `::<K, V>` in `fn name::<K, V>(..)`. Returns nil if there is none.
+parse_generic_params :: proc(p: ^Parser) -> []GenericParam {
+    skip := turbofish_ahead(p)
+    if skip == 0 do return nil
+    for _ in 0..<skip do consume_token(p) // "::" "<"
+
+    list := make([dynamic]GenericParam, allocator=get_ctx().allocator)
+    for !is_symbol(current_token(p), ">") {
+        expect_symbol(p, "$"); // "define" type ig? make it clearer/more consistant
+        n := expect_ident(p)
+        append(&list, GenericParam{name=n.text, span=n.span})
+        if is_symbol(current_token(p), ",") {
+            consume_token(p) // ","
+        } else {
+            break
+        }
+    }
+    if len(list) == 0 {
+        highlight_lines(get_ctx().current_file, current_token(p).span)
+        gala_panic("Expected at least one type parameter name.")
+    }
+    expect_symbol(p, ">")
+    return list[:]
+}
+
+parse_call :: proc(p: ^Parser, target: ExprId,
+        type_args: []TypeSpecifier = nil, type_args_span: Span = {}) -> ExprId {
     consume_token(p) // "("
     args := make([dynamic]FnCallArg, allocator=get_ctx().allocator)
     seen_named := false
@@ -919,7 +993,10 @@ parse_call :: proc(p: ^Parser, target: ExprId) -> ExprId {
         } else do break
     }
     end := expect_symbol(p, ")")
-    id := new_expr(FnCall{target=target, args=args})
+    id := new_expr(FnCall{
+        target=target, args=args,
+        type_args=type_args, type_args_span=type_args_span,
+    })
     get_ctx().spans.exprs[id] = {
         file_name=get_ctx().current_file,
         span={start=get_span(target).span.start, end=end.span.end},
@@ -963,7 +1040,15 @@ parse_index_or_slice :: proc(p: ^Parser, t: ExprId) -> ExprId {
 parse_postfix :: proc(p: ^Parser) -> ExprId {
     t := parse_primary(p);
     for {
-        if is_symbol(current_token(p), "(") {
+        if turbofish_ahead(p) > 0 {
+            // `f::<A, B>(..)`: the type args must be followed by a call
+            targs, tspan := parse_type_args(p)
+            if !is_symbol(current_token(p), "(") {
+                highlight_lines(get_ctx().current_file, current_token(p).span)
+                gala_panic("Expected \"(\" after type arguments.")
+            }
+            t = parse_call(p, t, targs, tspan)
+        } else if is_symbol(current_token(p), "(") {
             t = parse_call(p, t)
         } else if is_symbol(current_token(p), ".") {
             consume_token(p); // "."
@@ -1401,6 +1486,7 @@ parse_args_dec :: proc(p: ^Parser) -> FnDecSignature {
     return f;
 }
 
+// `fn name(..)` or `fn name::<K, V>(..)`
 parse_fn_signature :: proc(p: ^Parser) -> FnDec {
     kw := consume_token(p); // "fn"
     if !(kw.kind == .Keyword && kw.kw == .Fn) {
@@ -1408,15 +1494,16 @@ parse_fn_signature :: proc(p: ^Parser) -> FnDec {
         gala_panic("Expected \"fn\".");
     }
     name := expect_ident(p);
+    generics := parse_generic_params(p)
     f := FnDec{};
     f.signature = parse_args_dec(p);
     f.name = name.text;
+    f.generics = generics // after the signature: it replaces the whole struct
 
     f.span.start = kw.span.start
     f.span.end = current_token(p).span.end;
     return f;
 }
-// Top-level `name := expr;` or `name: type = expr;`
 // Top-level `name := expr;`, `name: type = expr;`, `name :: expr;` or `name : type : expr;`
 parse_global_var_dec :: proc(p: ^Parser) -> ItemId {
     name := expect_ident(p)

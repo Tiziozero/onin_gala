@@ -22,7 +22,7 @@ fn f(v: [a*2]$K): K {
 fn ret_int(): int { return 123; }
 // fn map_make(cap: i64, like_k: $K, like_v: $V, hash: fn(hk: K): u64, eq: fn(ea: K, eb: K): bool, a: Allocator = base_allocator): Map(K, V) {
 fn main(): i32 {
-    m := map_make(1024, "", "", hash_str, eq_str);
+    m := map_make::<string, string>(1024, hash_str, eq_str);
     map_put(&m, "a", "it's a");
     map_put(&m, "b", "it's b");
     map_put(&m, "c", "it's c");
