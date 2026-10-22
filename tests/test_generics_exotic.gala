@@ -61,7 +61,7 @@ fn arr_first(a: $T): i64 { return 0; }
 fn first_first(a: [][]$T): T { return a[0][0]; }
 
 // ---- generic returning a pointer allocated through mem.gala
-fn boxed(v: $T): ^T { return new(v); }
+fn boxed(v: $T): ^T { p := new::<T>(); p^ = v; return p; }
 fn filled(v: $T, n: i64): []T { return make_slice::<T>(n); }
 
 // ---- declared-later generic used from a generic declared earlier, with different T

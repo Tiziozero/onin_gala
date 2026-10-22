@@ -257,7 +257,8 @@ fn json_obj_fail(p: ^JsonParser, m: ^Map(string, JsonValue)): bool {
 // At an opening brace.
 fn json_parse_object(p: ^JsonParser, out: ^JsonValue, depth: i64): bool {
     p^.pos += 1;
-    m := new(map_make::<string, JsonValue>(0, hash_str, eq_str, p^.a), p^.a);
+    m := new::<Map(string, JsonValue)>(p^.a);
+    m^ = map_make::<string, JsonValue>(0, hash_str, eq_str, p^.a);
     if m == 0 {
         json_fail(p, "out of memory", p^.pos);
         return false;
@@ -370,7 +371,8 @@ fn json_parse(src: string, out: ^JsonValue, a: Allocator = base_allocator): bool
 // ---------------------------------------------------------------- build / read
 
 fn json_object(a: Allocator = base_allocator): JsonValue {
-    m := new(map_make::<string,JsonValue>(0, hash_str, eq_str, a), a);
+    m := new::<Map(string, JsonValue)>(a);
+    m^ = map_make::<string,JsonValue>(0, hash_str, eq_str, a); 
     return JsonValue{JSON_OBJECT, "", 0.0, m};
 }
 
