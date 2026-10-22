@@ -1803,10 +1803,24 @@ mod_item_obj_name :: proc(c: ^CGCtx, id: ItemId) -> string {
             debugln("OBJ MODULE:", oid, id)
             gala_panic("item has no module associated with it.")
         }
-        name = aprintf(c, "%s.%s", module_prefix(mid), get(oid).name)
+        if is_exported_fn(id, oid, mid) {
+            // keep the plain symbol so C (the shim) can link against it
+            name = get(oid).name
+        } else {
+            name = aprintf(c, "%s.%s", module_prefix(mid), get(oid).name)
+        }
         get_ctx().cg_item_names[id] = name
     }
     return name
+}
+// -c mode only: `gala_*` functions of the entry module keep their plain
+// name. Stopgap until there is a real `export fn`.
+is_exported_fn :: proc(id: ItemId, oid: ObjId, mid: ModId) -> bool {
+    if !get_ctx().object_only do return false
+    // if get_ctx().mods[mid].path != get_ctx().entry_file do return false
+    t := get_type(get_obj(oid).type.(TypeId))
+    if t.kind == .Function && t.fn.is_export { return true }
+    return false
 }
 
 hash_string :: proc(s: string) -> u64 {

@@ -1073,6 +1073,7 @@ resolve_generic_clone :: proc(g, iid: ItemId, v: FnVersion) {
 
     orig, _ := get(g).(FnDec)
     fndec, ok := get(iid).(FnDec); assert(ok)
+    exported := orig.export_name;
 
     bindings := make(map[string]TypeId, allocator=ctx.allocator)
     for a, i in orig.signature.args {
@@ -1090,6 +1091,10 @@ resolve_generic_clone :: proc(g, iid: ItemId, v: FnVersion) {
     }
 
     fnty, fnscope := resolve_fn_dec_signature(ms, fndec.signature, bindings = bindings)
+    if orig.export_name {
+        highlight_lines(get_span(iid));
+        gala_panic("Can't export generic functions.");
+    }
     resolve_block(&fnscope, &fndec.block)
     free_scope(&fnscope)
 
@@ -1269,11 +1274,15 @@ resolve_fn_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
 
     fnty, fnscope := resolve_fn_dec_signature(s, fndec)
 
+
     // Generic bodies are resolved lazily, per clone, in
     // resolve_generic_clone. Only the signature is resolved here.
     if !fnty.fn.is_generic {
         resolve_block(&fnscope, &fndec.block)
     }
+    // set export
+    if fndec.export_name { fnty.fn.is_export = true }
+
     free_scope(&fnscope)
 
     tyid := new_fn_type(fnty)

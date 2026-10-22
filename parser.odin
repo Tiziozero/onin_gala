@@ -265,6 +265,7 @@ FnDec :: struct {
     using signature: FnDecSignature,
     span: Span,
     block: Block,
+    export_name: bool,
 }
 StructField :: struct{name: string, t: TypeSpecifier, span: Span}
 StructDec :: struct {
@@ -1610,6 +1611,21 @@ parse_module_kw :: proc(p: ^Parser) -> ItemId {
         f := parse_fn_signature(p);
         b := parse_block(p);
         f.block = b;
+
+        id := new_item(Item(f))
+        get_ctx().spans.items[id] = {
+            file_name=get_ctx().current_file,
+            span=f.span
+        }
+
+        return id
+    }
+    case .Export: {
+        consume_token(p);
+        f := parse_fn_signature(p);
+        b := parse_block(p);
+        f.block = b;
+        f.export_name = true;
 
         id := new_item(Item(f))
         get_ctx().spans.items[id] = {

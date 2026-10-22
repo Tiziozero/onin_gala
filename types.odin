@@ -57,6 +57,7 @@ Type :: struct {
         generic_names: []string,
 
         is_external: bool,
+        is_export: bool,
 
         is_variadic: bool,
         variadic_ty: TypeId,

@@ -9,7 +9,7 @@ endif
 " ─────────────────────────────────────────────
 
 syn keyword galaKeyword fn struct return if else while otherwise
-syn keyword galaKeyword extern break continue import alias
+syn keyword galaKeyword extern export break continue import alias
 
 " Builtin compiler/type operations
 syn keyword galaBuiltin cast transmute len size_of any type_id
