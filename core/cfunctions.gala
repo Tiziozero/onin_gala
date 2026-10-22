@@ -236,6 +236,7 @@ extern fn round(x: f64): f64;
 extern fn fabs(x: f64): f64;
 
 extern fn sqrtf(x: f32): f32;
+extern fn powf(x: f32, y: f32): f32;
 
 extern fn sinf(x: f32): f32;
 extern fn cosf(x: f32): f32;

@@ -1,9 +1,5 @@
 import "core/core.gala";
 
-alias int = i64;
-
-export fn ret_int(): int { return 123; }
-
 fn main(): i32 {
     return 0;
 }
