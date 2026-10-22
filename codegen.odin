@@ -1592,7 +1592,7 @@ run_tool :: proc(what: string, cmd: []string) {
 cg_entry_wrapper :: proc(c: ^CGCtx, m: ModId, ast: ^AST, has_globals: bool) {
     main_id, found := find_main_item(ast)
     if !found {
-        gala_panic("entry file has no `main` function")
+        gala_panic("entry file has no `main` function (use -c to compile without an entry point)")
     }
     entry := aprintf(c, "@%s", get_ctx().cg_item_names[main_id])
 
@@ -1620,6 +1620,19 @@ cg_entry_wrapper :: proc(c: ^CGCtx, m: ModId, ast: ^AST, has_globals: bool) {
     }
     cwritefln(c, "\t%s", call_line)
     cwritefln(c, "\t%s", ret_line)
+    cwritefln(c, "}")
+}
+// -c mode: no C `main`, so nothing would run the global initialisers.
+// Export one function that does (unmangled, callable from a C shim).
+cg_library_init :: proc(c: ^CGCtx, m: ModId, has_globals: bool) {
+    cwritefln(c, "define void @gala_init_globals() {{")
+    for mid in c.init_mods {
+        cwritefln(c, "\tcall void %s()", mod_init_name(c, mid))
+    }
+    if has_globals {
+        cwritefln(c, "\tcall void %s()", mod_init_name(c, m))
+    }
+    cwritefln(c, "\tret void")
     cwritefln(c, "}")
 }
 
@@ -1700,7 +1713,11 @@ cg_module :: proc(m: ModId) {
     }
 
     if is_entry {
-        cg_entry_wrapper(&cgctx, m, ast, has_globals)
+        if get_ctx().object_only {
+            cg_library_init(&cgctx, m, has_globals)
+        } else {
+            cg_entry_wrapper(&cgctx, m, ast, has_globals)
+        }
     }
 
     // ---- write + compile ----
@@ -1728,7 +1745,9 @@ cg_module :: proc(m: ModId) {
     run_tool("opt", {"opt", "-passes=mem2reg", ll_name, "-S", "-o", opt_name})
 
     // debugln("compiling:", name)
-    run_tool("llc", {"llc", "-filetype=obj", "-O2", opt_name, "-o", o_name})
+    // run_tool("llc", {"llc", "-filetype=obj", "-O2", opt_name, "-o", o_name})
+    // PIC is needed for shared objects (-c); harmless for executables too
+    run_tool("llc", {"llc", "-filetype=obj", "-O2", "-relocation-model=pic", opt_name, "-o", o_name})
 
     debugln("ADDING:", o_name)
     append(&get_ctx().o_files, o_name)

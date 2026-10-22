@@ -180,7 +180,9 @@ destroy_context :: proc(ctx: ^Context, ctx_allocator: mem.Allocator) {
 
 Cli_Args :: struct {
     entry_file:   string,
-    program_name: string,
+    program_name: string,        // output path (executable, or object with -c)
+    output_set:   bool,          // -o was given
+    object_only:  bool,          // -c: emit one merged .o, don't link
     debug:        bool,
     extra_libs:   [dynamic]string, // paths passed via -l/--link, e.g. "-l libfoo.so"
 }
@@ -213,7 +215,7 @@ is_legal_program_name :: proc(path: string) -> bool {
 }
 
 print_usage :: proc() {
-    gala_info("usage: galac <file.gala> [-o <name>] [-l <path-to-lib.so>]...")
+    gala_info("usage: galac <file.gala> [-c] [-o <name>] [-l <path-to-lib.so>]...")
 }
 
 // Parses CLI args in the clang/gcc style: `galac main.gala -o main`.
@@ -239,6 +241,11 @@ parse_cli_args :: proc(args: []string) -> Cli_Args {
                 gala_panic("illegal program name:", name)
             }
             result.program_name = name
+            result.output_set = true
+
+        case arg == "-c":
+            // Compile only: merge all module objects into one .o
+            result.object_only = true
 
         case arg == "-l" || arg == "--link":
             // Link an extra shared library (.so) at the given path, e.g.
@@ -282,7 +289,34 @@ parse_cli_args :: proc(args: []string) -> Cli_Args {
         gala_panic("must specify exactly one \".gala\" file.")
     }
 
+    if result.object_only && !result.output_set {
+        result.program_name = "main.o"
+    }
+
     return result
+}
+
+// Runs `command`, panics if it can't start or exits non-zero.
+// `what` is only used in messages.
+run_command :: proc(command: []string, what: string) {
+    debugf("%s command: ", what)
+    for a in command {
+        debugf("%s ", a)
+    }
+    debugfln("")
+
+    p, err := os.process_start({command = command})
+    if err != .NONE {
+        gala_panic("Failed to start process:", what, err)
+    }
+
+    p_state, werr := os.process_wait(p)
+    if werr != .NONE {
+        gala_panic("Failed to wait for process:", what, werr)
+    }
+    if p_state.exit_code != 0 {
+        gala_panic("Process failed:", what, "exit code:", p_state.exit_code)
+    }
 }
 
 // Links the object files gathered during compilation (ctx.o_files),
@@ -290,14 +324,6 @@ parse_cli_args :: proc(args: []string) -> Cli_Args {
 // executable at ctx.program_name, shelling out to `ld` the same way
 // clang would under the hood.
 link_executable :: proc(ctx: ^Context, extra_libs: []string) {
-    // link ld a.o -o a.out
-    /* ld \
-    /usr/lib/crt1.o \
-    /usr/lib/crti.o \
-    -lc \
-    a.o \
-    /usr/lib/crtn.o
-    -o name*/
     command := make([dynamic]string, allocator = ctx.allocator)
     append(&command, "ld")
     append(&command, "-dynamic-linker")
@@ -342,23 +368,49 @@ link_executable :: proc(ctx: ^Context, extra_libs: []string) {
     append(&command, "-o")
     append(&command, ctx.program_name)
 
-    debug("Link command: ")
-    for a in command {
-        debugf("%s ", a)
-    }
-    debugfln("")
+    run_command(command[:], "link (ld)")
+}
 
-    p, err := os.process_start({command = command[:]})
-    if err != .NONE {
-        gala_panic("Failed to start link (ld) process:", err)
+// -c mode: merge every module's .o into one relocatable object at
+// ctx.program_name (`ld -r`). No crt files, no libraries: those are
+// the final link's job (see write_link_list).
+link_object :: proc(ctx: ^Context) {
+    // ld -r would clobber an input if the output name matched one
+    for f in ctx.o_files {
+        if f == ctx.program_name {
+            gala_panic("output name collides with an intermediate object:", f)
+        }
     }
 
-    p_state, werr := os.process_wait(p)
-    if werr != .NONE {
-        gala_panic("Failed to wait for link (ld) process:", werr)
+    command := make([dynamic]string, allocator = ctx.allocator)
+    append(&command, "ld")
+    append(&command, "-r")
+    for f in ctx.o_files {
+        append(&command, f)
     }
-    if p_state.exit_code != 0 {
-        gala_panic("Failed to link machine code. exit code:", p_state.exit_code)
+    append(&command, "-o")
+    append(&command, ctx.program_name)
+
+    run_command(command[:], "merge objects (ld -r)")
+}
+
+// An object can't remember its libraries, so write them next to it as
+// `<output>.links`, one path per line, for the driver's final link.
+write_link_list :: proc(ctx: ^Context, extra_libs: []string) {
+    sb := strings.builder_make()
+    for f in ctx.links {
+        strings.write_string(&sb, f)
+        strings.write_byte(&sb, '\n')
+    }
+    for f in extra_libs {
+        strings.write_string(&sb, f)
+        strings.write_byte(&sb, '\n')
+    }
+
+    path := fmt.aprintf("%s.links", ctx.program_name)
+    werr := os.write_entire_file(path, sb.buf[:])
+    if werr != nil {
+        gala_panic("Failed to write link list:", path)
     }
 }
 
@@ -406,6 +458,7 @@ main :: proc() { // odins context is passed down, not up, or some shi
     new_type(&ctx.base_mod, Type{name="string", kind=.String}, {});
 
     ctx.program_name = cli.program_name
+    ctx.object_only = cli.object_only
 
     // entry_file is compared against module.path in cg_module to decide
     // whether to emit the C `main` wrapper. module.path is the *resolved*
@@ -434,7 +487,12 @@ main :: proc() { // odins context is passed down, not up, or some shi
         cg_module(mid)
     }
 
-    link_executable(ctx, cli.extra_libs[:])
+    if cli.object_only {
+        link_object(ctx)
+        write_link_list(ctx, cli.extra_libs[:])
+    } else {
+        link_executable(ctx, cli.extra_libs[:])
+    }
 
     debugln("modules:       ", len(get_ctx().mods));
     debugln("items:         ", len(get_ctx().items));

@@ -101,6 +101,7 @@ Context :: struct {
     links:                                  [dynamic]string,
     current_module_id:                      ModId,
     entry_file:                             string,
+    object_only:                            bool, // -c: no C `main`, export gala_init_globals instead
 }
 
 FileLine :: struct {
@@ -317,13 +318,13 @@ get_span_ty :: proc(id: TypeId) -> SpanStruct {
 }
 gala_panic :: proc(args: ..any) -> ! {
     fmt.println(..args)
-    panic("");
-    // os.exit(1);
+    // panic("");
+    os.exit(1);
 }
 gala_panicf :: proc(f: string, args: ..any) -> ! {
     fmt.printfln(f, ..args)
-    panic("");
-    // os.exit(1);
+    // panic("");
+    os.exit(1);
 }
 
 gala_info :: proc(args: ..any) {

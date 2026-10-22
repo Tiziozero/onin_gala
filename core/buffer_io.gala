@@ -1,0 +1,333 @@
+// buffer_io.gala
+//
+// A growable byte buffer with a write side (append) and a read cursor.
+//
+//   b := buffer_make();
+//   buffer_write_string(&b, "GET /index.html HTTP/1.1\r\n");
+//   buffer_write_i64(&b, 42);
+//
+//   line: string = "";
+//   if buffer_read_line(&b, &line) { ... }   // line is a view into the buffer
+//   buffer_destroy(&b);
+//
+// Rules:
+//   - writes return false if the allocator fails (the buffer stays valid)
+//   - reads never go past the end; they return less / false / -1 instead
+//   - "view" results (buffer_bytes, buffer_read_line, ...) point into the
+//     buffer: any write may move the data, so don't keep them across writes
+
+
+import "./core.gala";
+import "./mem.gala";
+import "./cfunctions.gala";
+
+CHAR_CR: byte = 13;
+CHAR_LF: byte = 10;
+
+struct Buffer {
+    data: rawptr,
+    length: i64,    // bytes written
+    cap: i64,       // bytes allocated
+    pos: i64,       // read cursor, 0 <= pos <= length
+    backing: Allocator,
+}
+
+
+// ============================================================
+// Create / destroy
+// ============================================================
+
+fn buffer_make(cap: i64 = 64, a: Allocator = base_allocator): Buffer {
+    b := Buffer{NULL, 0, 0, 0, a};
+    if cap > 0 {
+        buffer_reserve(&b, cap);
+    }
+    return b;
+}
+
+// Copy of `s` as the buffer's content, read cursor at the start.
+fn buffer_from_string(s: string, a: Allocator = base_allocator): Buffer {
+    b := buffer_make(len(s), a);
+    buffer_write_string(&b, s);
+    return b;
+}
+
+fn buffer_destroy(b: ^Buffer) {
+    keep := b^.backing;
+    if b^.data != NULL {
+        dealloc(b^.data, cast(u64)b^.cap, keep);
+    }
+    b^ = Buffer{NULL, 0, 0, 0, keep};
+}
+
+// Empties the buffer but keeps the memory.
+fn buffer_clear(b: ^Buffer) {
+    b^.length = 0;
+    b^.pos = 0;
+}
+
+// Makes room for `extra` more bytes (doubling). false if the allocator fails.
+fn buffer_reserve(b: ^Buffer, extra: i64): bool {
+    need := b^.length + extra;
+    if need <= b^.cap {
+        return true;
+    }
+    new_cap := b^.cap;
+    if new_cap < 16 {
+        new_cap = 16;
+    }
+    while new_cap < need {
+        new_cap = new_cap * 2;
+    }
+    p := resize(b^.data, cast(u64)b^.cap, cast(u64)new_cap, 16, b^.backing);
+    if p == NULL {
+        return false;
+    }
+    b^.data = p;
+    b^.cap = new_cap;
+    return true;
+}
+
+
+// ============================================================
+// Raw access
+// ============================================================
+
+// Pointer to byte `i` of the buffer (0 = first byte written, not the cursor).
+fn buffer_at(b: ^Buffer, i: i64): ^byte {
+    raw := ptr_add(b^.data, cast(u64)i);
+    return transmute(^byte)raw;
+}
+
+// Everything written so far.
+fn buffer_bytes(b: ^Buffer): []byte {
+    return bytes_from(b^.data, b^.length);
+}
+
+// Everything written so far, as a string view.
+fn buffer_string(b: ^Buffer): string {
+    v := buffer_bytes(b);
+    return transmute(string)v;
+}
+
+// What is left to read (from the cursor to the end).
+fn buffer_unread(b: ^Buffer): []byte {
+    raw := ptr_add(b^.data, cast(u64)b^.pos);
+    return bytes_from(raw, b^.length - b^.pos);
+}
+
+// Copy of everything written so far.
+fn buffer_to_string(b: ^Buffer, a: Allocator = base_allocator): string {
+    return clone_string(buffer_string(b), a);
+}
+
+
+// ============================================================
+// Write
+// ============================================================
+
+fn buffer_write(b: ^Buffer, p: rawptr, n: i64): bool {
+    if n <= 0 {
+        return true;
+    }
+    if !buffer_reserve(b, n) {
+        return false;
+    }
+    mem_copy(ptr_add(b^.data, cast(u64)b^.length), p, cast(u64)n);
+    b^.length += n;
+    return true;
+}
+
+fn buffer_write_byte(b: ^Buffer, c: byte): bool {
+    if !buffer_reserve(b, 1) {
+        return false;
+    }
+    dst := buffer_at(b, b^.length);
+    dst^ = c;
+    b^.length += 1;
+    return true;
+}
+
+fn buffer_write_bytes(b: ^Buffer, s: []byte): bool {
+    if len(s) == 0 {
+        return true;
+    }
+    return buffer_write(b, transmute(rawptr)&s[0], len(s));
+}
+
+fn buffer_write_string(b: ^Buffer, s: string): bool {
+    if len(s) == 0 {
+        return true;
+    }
+    return buffer_write(b, transmute(rawptr)&s[0], len(s));
+}
+
+// Decimal text, e.g. 1234 -> "1234".
+fn buffer_write_u64(b: ^Buffer, v: u64): bool {
+    digits: i64 = 1;
+    rest := v / 10;
+    while rest > 0 {
+        digits += 1;
+        rest = rest / 10;
+    }
+    if !buffer_reserve(b, digits) {
+        return false;
+    }
+    i := digits;
+    x := v;
+    while i > 0 {
+        i -= 1;
+        dst := buffer_at(b, b^.length + i);
+        dst^ = cast(byte)(48 + x % 10);
+        x = x / 10;
+    }
+    b^.length += digits;
+    return true;
+}
+
+fn buffer_write_i64(b: ^Buffer, v: i64): bool {
+    if v < 0 {
+        if !buffer_write_byte(b, 45) {
+            return false;
+        }
+        return buffer_write_u64(b, cast(u64)0 - cast(u64)v);
+    }
+    return buffer_write_u64(b, cast(u64)v);
+}
+
+// Appends "\r\n" (HTTP line ending).
+fn buffer_write_crlf(b: ^Buffer): bool {
+    if !buffer_write_byte(b, CHAR_CR) {
+        return false;
+    }
+    return buffer_write_byte(b, CHAR_LF);
+}
+
+
+// ============================================================
+// Read
+// ============================================================
+
+fn buffer_remaining(b: ^Buffer): i64 {
+    return b^.length - b^.pos;
+}
+
+// Moves the cursor. false (and no change) if `pos` is outside 0..length.
+fn buffer_seek(b: ^Buffer, pos: i64): bool {
+    if pos < 0 || pos > b^.length {
+        return false;
+    }
+    b^.pos = pos;
+    return true;
+}
+
+fn buffer_skip(b: ^Buffer, n: i64) {
+    count := n;
+    left := buffer_remaining(b);
+    if count > left {
+        count = left;
+    }
+    if count > 0 {
+        b^.pos += count;
+    }
+}
+
+// Copies up to `n` bytes into `dst`. Returns how many were copied.
+fn buffer_read(b: ^Buffer, dst: rawptr, n: i64): i64 {
+    count := n;
+    left := buffer_remaining(b);
+    if count > left {
+        count = left;
+    }
+    if count <= 0 {
+        return 0;
+    }
+    mem_copy(dst, ptr_add(b^.data, cast(u64)b^.pos), cast(u64)count);
+    b^.pos += count;
+    return count;
+}
+
+// Next byte, or -1 at the end.
+fn buffer_read_byte(b: ^Buffer): i32 {
+    if b^.pos >= b^.length {
+        return -1;
+    }
+    src := buffer_at(b, b^.pos);
+    c := src^;
+    b^.pos += 1;
+    return cast(i32)c;
+}
+
+// Next byte without moving the cursor, or -1 at the end.
+fn buffer_peek_byte(b: ^Buffer): i32 {
+    if b^.pos >= b^.length {
+        return -1;
+    }
+    src := buffer_at(b, b^.pos);
+    c := src^;
+    return cast(i32)c;
+}
+
+// Up to `n` bytes as a view (no copy), moving the cursor past them.
+fn buffer_take(b: ^Buffer, n: i64): []byte {
+    count := n;
+    left := buffer_remaining(b);
+    if count > left {
+        count = left;
+    }
+    if count < 0 {
+        count = 0;
+    }
+    raw := ptr_add(b^.data, cast(u64)b^.pos);
+    b^.pos += count;
+    return bytes_from(raw, count);
+}
+
+// Distance from the cursor to the next `c`, or -1 if there is none.
+fn buffer_find(b: ^Buffer, c: byte): i64 {
+    i := b^.pos;
+    while i < b^.length {
+        p := buffer_at(b, i);
+        if p^ == c {
+            return i - b^.pos;
+        }
+        i += 1;
+    }
+    return -1;
+}
+
+// Reads one line ending in "\n" or "\r\n" (line ending not included) into
+// `out` as a view. If there is no complete line yet it returns false and
+// the cursor doesn't move, so you can wait for more data and try again.
+fn buffer_read_line(b: ^Buffer, out: ^string): bool {
+    idx := buffer_find(b, CHAR_LF);
+    if idx < 0 {
+        return false;
+    }
+    start := b^.pos;
+    n := idx;
+    if n > 0 {
+        prev := buffer_at(b, start + n - 1);
+        if prev^ == CHAR_CR {
+            n -= 1;
+        }
+    }
+    raw := ptr_add(b^.data, cast(u64)start);
+    v := bytes_from(raw, n);
+    out^ = transmute(string)v;
+    b^.pos = start + idx + 1;
+    return true;
+}
+
+// Drops the bytes already read, so a long-lived buffer doesn't grow forever.
+fn buffer_compact(b: ^Buffer) {
+    if b^.pos == 0 {
+        return;
+    }
+    left := b^.length - b^.pos;
+    if left > 0 {
+        mem_copy(b^.data, ptr_add(b^.data, cast(u64)b^.pos), cast(u64)left);
+    }
+    b^.length = left;
+    b^.pos = 0;
+}
