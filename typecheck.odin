@@ -140,6 +140,9 @@ unify_binop :: proc(l, r: TypeId) -> (TypeId, bool, string) {
     if lk == .ZeroInit || rk == .ZeroInit {
         return TypeId(0), false, "a zero initialiser can't be used in an expression"
     }
+    if lk == .UntypedStruct || rk == .UntypedStruct {
+        return TypeId(0), false, "`{...}` can't be used in an expression: it has no type"
+    }
     if l == r do return l, true, ""
 
     if is_pointer(l) || is_pointer(r) do return reduce_pointers(l, r)
@@ -169,6 +172,16 @@ assignable :: proc(expected, got: TypeId) -> (TypeId, bool, string) {
             return TypeId(0), false, "a zero initialiser needs a concrete type here"
         }
         return expected, true, ""
+    }
+    // `{...}` only becomes a struct. The fields are checked when the type
+    // is propagated into it (complete_untyped_struct). It can't be boxed
+    // into `any`, there's nothing to infer the struct from.
+    if gk == .UntypedStruct {
+        if ek == .Struct do return expected, true, ""
+        if ek == .Any {
+            return TypeId(0), false, "can't infer the type of `{...}` for `any` (write the struct name)"
+        }
+        return TypeId(0), false, "`{...}` can only initialise a struct"
     }
     if expected == got do return expected, true, ""
 
@@ -272,6 +285,12 @@ settle_untyped :: proc(id: ExprId) -> TypeId {
         highlight_lines(get_span(id))
         gala_panic("A zero initialiser can't be used here: it has no type.")
     }
+    // checked before is_untyped, so it doesn't matter whether that
+    // predicate covers UntypedStruct
+    if get_type(t).kind == .UntypedStruct {
+        highlight_lines(get_span(id))
+        gala_panic("Can't infer the type of `{...}` here; write the struct name, e.g. `Vector2{...}`.")
+    }
     if is_untyped(t) {
         t = get_untyped_default(t)
         propagate_type(t, id)
@@ -286,6 +305,10 @@ require_typed_value :: proc(id: ExprId, action: string) {
     case .ZeroInit: {
         highlight_lines(get_span(id))
         gala_panicf("Can't %s a zero initialiser: it has no type.", action)
+    }
+    case .UntypedStruct: {
+        highlight_lines(get_span(id))
+        gala_panicf("Can't %s an untyped struct: it has no type.", action)
     }
     case .Void: {
         highlight_lines(get_span(id))
@@ -537,6 +560,40 @@ check_mutable :: proc(id: ExprId, action: string, writing: bool) {
 // Expressions
 // ---------------------------------------------------------------------------
 
+// `{...}` met a struct type it has to become: bind the values to the
+// fields, check each one, and turn the node into an ordinary typed
+// StructLit so codegen doesn't need to know `{...}` exists.
+complete_untyped_struct :: proc(id: ExprId, target: TypeId) {
+    e := get_expr(id).(StructLit)
+    ty := get_type(target)
+
+    if ty.kind != .Struct {
+        highlight_lines(get_span(id))
+        gala_panicf("Can't initialise a value of type %s with `{...}` (not a struct).", tts(target))
+    }
+    if ty.structure.is_generic {
+        highlight_lines(get_span(id))
+        gala_panicf("Can't infer the instance of generic struct %s from `{...}`; write the type, e.g. `%s(i64){...}`.",
+            tts(target), ty.name)
+    }
+
+    bind_struct_lit_fields(id, &e, target, tts(target))
+
+    for sf in ty.structure.fields {
+        f := e.fields[sf.name]
+        r, ok, err := assignable(sf.type, expr_ty(f.expr))
+        if !ok {
+            highlight_lines(get_ctx().current_file, f.span)
+            gala_panicf("Field \"%s\": %s (expected %s, got %s).",
+                sf.name, err, tts(sf.type), tts(expr_ty(f.expr)))
+        }
+        propagate_type(r, f.expr) // nested `{...}` completes itself here
+    }
+
+    get_ctx().expr_resolution_types[id] = target
+    get_ctx().expr_types[id] = target
+    get_expr(id)^ = e
+}
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     switch e in get_expr(id) {
     case TypeIdOf: {
@@ -702,6 +759,15 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         gala_panicf("Field \"%s\" doesn't exist in type %s.", e.field, target_ty.name)
     }
     case StructLit: {
+        if e.ty == nil {
+            // `{...}`: type the values now, the struct type arrives later
+            // through assignable/propagate_type
+            for _, f in e.fields do tc_expr(tc, f.expr)
+            for f in e.positional do tc_expr(tc, f.expr)
+            get_ctx().expr_types[id] = intern_type(Type{kind=.UntypedStruct})
+            return
+        }
+
         tid := get_ctx().expr_resolution_types[id]
         typed_already := false
         if get_type(tid).structure.is_generic {
@@ -1476,9 +1542,17 @@ propagate_type :: proc(ty: TypeId, expr: ExprId) {
     switch e in get_expr(expr) {
     // already typed (or fixed by their own syntax): nothing to propagate
     case UnNot, BoolLitFalse, BoolLitTrue, String, Reference, Deref, TakeSlice,
-         Index, FixedSizeArray, StructLit, Cast, Transmute,
+         Index, FixedSizeArray, Cast, Transmute,
          Symbol, FnCall, FnLit, FieldAccess:
         return
+    // `Foo{..}` is typed already; `{...}` takes its type (and checks its
+    // fields) now that the target is known
+    case StructLit: {
+        if get_type(expr_ty(expr)).kind == .UntypedStruct {
+            complete_untyped_struct(expr, ty)
+        }
+        return
+    }
     // untyped by default: just set the type below
     case TypeIdOf, Len, SizeOf, ZeroInit: {
     }

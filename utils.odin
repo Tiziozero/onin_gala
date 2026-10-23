@@ -49,9 +49,11 @@ tts :: proc(t: TypeId) -> string {
     case .Invalid:
         return "invalid"
     case .UntypedInteger:
-        return "untyped int"
+        return "untyped integer"
     case .UntypedFloat:
         return "untyped float"
+    case .UntypedStruct:
+        return "untyped struct"
     case .ZeroInit:
         return "zero-init"
     case .Void:

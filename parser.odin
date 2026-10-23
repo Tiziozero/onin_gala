@@ -387,7 +387,11 @@ parse_struct_lit :: proc(p: ^Parser) -> ExprId {
     name: string
     ty: TypeSpecifier
     start: int // ASSUMPTION: your span positions are ints, use whatever type Span.start has
-    if is_generic_lit_ahead(p) {
+
+    if is_symbol(current_token(p), "{") {
+        // untyped `{...}`: ty stays nil, the typechecker decides
+        start = current_token(p).span.start
+    } else if is_generic_lit_ahead(p) {
         ty = parse_type(p) // Name(args) -> GenericInstSpecifier
         inst := ty.(GenericInstSpecifier)
         name = inst.name
@@ -483,9 +487,10 @@ parse_expr :: proc(p: ^Parser) -> ExprId {
     // Name(args){...}: generic struct literal
     if (current_token(p).kind == .Ident && is_symbol(next_token(p), "{") || is_generic_lit_ahead(p)) &&
         !p.ignore_struct_lit {
-        // spec := parse_type(p) // gives GenericInstSpecifier
-        return parse_struct_lit(p) // your existing literal parsing, taking a TypeSpecifier
-    } else if cur.kind == .Ident && is_symbol(next_token(p), "{") && !p.ignore_struct_lit {
+        return parse_struct_lit(p)
+    /* } else if cur.kind == .Ident && is_symbol(next_token(p), "{") && !p.ignore_struct_lit {
+        return parse_struct_lit(p) */ 
+    } else if is_symbol(cur, "{") && !p.ignore_struct_lit { // `{...}`: struct literal whose type comes from context
         return parse_struct_lit(p)
     } else if is_symbol(cur, "[") {
         return parse_array_lit(p)

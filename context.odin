@@ -304,6 +304,7 @@ get_span_obj :: proc(id: ObjId) -> SpanStruct {
     get_ctx := get_ctx()
     s, ok := get_ctx.spans.objs_decs[id]
     if !ok {
+        fmt.println(get_obj(id)^);
         panic(fmt.tprintf("get_span_obj: no span recorded for %v", id))
     }
     return s
@@ -312,7 +313,8 @@ get_span_ty :: proc(id: TypeId) -> SpanStruct {
     get_ctx := get_ctx()
     s, ok := get_ctx.spans.ty_decs[id]
     if !ok {
-        panic(fmt.tprintf("get_span_obj: no span recorded for %v", id))
+        fmt.println(get_type(id)^);
+        panic(fmt.tprintf("get_span_ty: no span recorded for %v", id))
     }
     return s
 }

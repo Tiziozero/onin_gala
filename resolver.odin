@@ -488,31 +488,11 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
     }
 }
 
-resolve_struct_lit :: proc(s: ^Scope, id: ExprId) {
-    e := get_expr(id).(StructLit)
-
-    // `Foo`, `Foo(i64)`, or a generic struct named without arguments
-    // (`Box{..}`): the latter keeps the template's id and the type checker
-    // infers the instance.
-    tid: TypeId
-    inferred := false
-    if bt, is_base := e.ty.(BaseType); is_base {
-        if tmpl, found := scope_find_type(s, string(bt.ident)); found {
-            tt := get_type(tmpl)
-            if tt.kind == .Struct && tt.structure.is_generic {
-                tid = tmpl
-                inferred = true
-            }
-        }
-    }
-    if !inferred do tid = resolve_type_specifier(s, e.ty)
-
-    ty := get_type(tid)
-    if ty.kind != .Struct {
-        highlight_lines(get_span(id))
-        gala_panicf("\"%s\" is not a struct type.", e.name)
-    }
-    sfields := ty.structure.fields
+// Maps positional values onto fields, then reports unknown and missing
+// fields. Shared by `Foo{..}` (resolver) and `{..}` (typechecker, once the
+// target type is known). Doesn't resolve or check the values themselves.
+bind_struct_lit_fields :: proc(id: ExprId, e: ^StructLit, tid: TypeId, type_name: string) {
+    sfields := get_type(tid).structure.fields
 
     // `Foo{1, 2}`: assign values to fields in declaration order, so
     // everything after this sees an ordinary named literal.
@@ -520,7 +500,7 @@ resolve_struct_lit :: proc(s: ^Scope, id: ExprId) {
         if len(e.positional) != len(sfields) {
             highlight_lines(get_span(id))
             gala_panicf("Type %s has %d fields, but the literal has %d values.",
-                e.name, len(sfields), len(e.positional))
+                type_name, len(sfields), len(e.positional))
         }
         // the parser may not have allocated the map for a purely positional literal
         if e.fields == nil {
@@ -545,11 +525,10 @@ resolve_struct_lit :: proc(s: ^Scope, id: ExprId) {
             highlight_lines(get_ctx().current_file, f.span)
             if len(best) > 0 {
                 gala_panicf("Field \"%s\" doesn't exist in type %s. Did you mean \"%s\"?",
-                    name, e.name, best)
+                    name, type_name, best)
             }
-            gala_panicf("Field \"%s\" doesn't exist in type %s.", name, e.name)
+            gala_panicf("Field \"%s\" doesn't exist in type %s.", name, type_name)
         }
-        resolve_expr(s, f.expr)
     }
 
     // then missing ones, by name
@@ -560,8 +539,45 @@ resolve_struct_lit :: proc(s: ^Scope, id: ExprId) {
     if len(missing) > 0 {
         highlight_lines(get_span(id))
         gala_panicf("Literal of type %s is missing field(s): %s.",
-            e.name, strings.join(missing[:], ", ", context.temp_allocator))
+            type_name, strings.join(missing[:], ", ", context.temp_allocator))
     }
+}
+
+resolve_struct_lit :: proc(s: ^Scope, id: ExprId) {
+    e := get_expr(id).(StructLit)
+
+    // `{...}`: nothing to look up yet, just resolve the values. Binding to
+    // fields happens in the typechecker once the target type is known.
+    if e.ty == nil {
+        for _, f in e.fields do resolve_expr(s, f.expr)
+        for f in e.positional do resolve_expr(s, f.expr)
+        return
+    }
+
+    // `Foo`, `Foo(i64)`, or a generic struct named without arguments
+    // (`Box{..}`): the latter keeps the template's id and the type checker
+    // infers the instance.
+    tid: TypeId
+    inferred := false
+    if bt, is_base := e.ty.(BaseType); is_base {
+        if tmpl, found := scope_find_type(s, string(bt.ident)); found {
+            tt := get_type(tmpl)
+            if tt.kind == .Struct && tt.structure.is_generic {
+                tid = tmpl
+                inferred = true
+            }
+        }
+    }
+    if !inferred do tid = resolve_type_specifier(s, e.ty)
+
+    ty := get_type(tid)
+    if ty.kind != .Struct {
+        highlight_lines(get_span(id))
+        gala_panicf("\"%s\" is not a struct type.", e.name)
+    }
+
+    bind_struct_lit_fields(id, &e, tid, e.name)
+    for _, f in e.fields do resolve_expr(s, f.expr)
 
     get_ctx().expr_resolution_types[id] = tid
     get_expr(id)^ = e
@@ -583,7 +599,7 @@ new_fn_type :: proc(t: Type) -> TypeId {
 // kinds; structs and functions are nominal and never go through here
 intern_type :: proc(t: Type) -> TypeId {
     assert(t.kind == .Pointer ||
-            t.kind == .UntypedInteger || t.kind == .UntypedFloat ||
+            t.kind == .UntypedInteger || t.kind == .UntypedFloat || t.kind == .UntypedStruct ||
             t.kind == .FixedSizeArray || t.kind == .ZeroInit ||
             t.kind == .Slice || t.kind == .String || t.kind == .Any)
     for ty, id in get_ctx().types {

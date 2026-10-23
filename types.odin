@@ -34,6 +34,7 @@ TypeKind :: enum {
     // literals
     UntypedInteger,
     UntypedFloat,
+    UntypedStruct,
     String,
     ZeroInit,
     FixedSizeArray,
@@ -262,10 +263,10 @@ type_equal :: proc(l, r: Type) -> bool {
                types_equal(l.fixed_size_array.type, r.fixed_size_array.type)
 
     case .UInt64, .UInt32, .UInt16, .UInt_8,
-         .Int64, .Int32, .Int16, .Int_8,
-         .Flt64, .Flt32, .Flt16, .Flt_8,
-         .Rune, .Byte, .Bool, .Void, .Any,
-         .UntypedInteger, .UntypedFloat, .ZeroInit:
+        .Int64, .Int32, .Int16, .Int_8,
+        .Flt64, .Flt32, .Flt16, .Flt_8,
+        .Rune, .Byte, .Bool, .Void, .Any,
+        .UntypedInteger, .UntypedFloat, .UntypedStruct, .ZeroInit:
         return true
 
     case .Invalid:
