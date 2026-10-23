@@ -613,7 +613,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             highlight_lines(get_span(e.target))
             gala_panicf("Can't index a value of type %s (it has no element type).", tts(target_ty))
         }
-        if get_type(ty).kind == .Void || get_type(ty).kind == .Any {
+        if get_type(ty).kind == .Void /* || get_type(ty).kind == .Any */ {
             highlight_lines(get_span(e.target))
             gala_panicf("Can't index a value of type %s: its element type is %s.",
                 tts(target_ty), tts(ty))

@@ -1,5 +1,11 @@
 import "core/core.gala";
 
+fn d(a: any): i32 {
+    return size_of(a);
+}
+struct s {
+}
 fn main(): i32 {
+    println("a:", cast(i32)1, "Hello");
     return 0;
 }
