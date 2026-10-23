@@ -1,11 +1,53 @@
 import "core/core.gala";
+import "core/threads.gala";
+import "core/cfunctions.gala";
+import "core/mem.gala";
 
-fn d(a: any): i32 {
-    return size_of(a);
+
+// fn worker(arg: ^void) {
+fn worker(s: ^State) {
+    // counter := cast(^Counter)arg;
+    /// mutex_lock(&counter^.mu);
+    // counter^.value = counter^.value + 1;
+    /// mutex_unlock(&counter^.mu);
+    // counter := cast(^i32)arg;
+    i := 0;
+    while i < 100 {
+        mutex_lock(&s^.m);
+        s^.c += 1;
+        mutex_unlock(&s^.m);
+        i += 1;
+    }
 }
-struct s {
+
+
+struct State {
+    m: Mutex,
+    c: int,
 }
 fn main(): i32 {
-    println("a:", cast(i32)1, "Hello");
+    s := new::<State>();
+    mutex_init(&s^.m);
+    s^.c = 0;
+    threads := [5]Thread{};
+    i := 0;
+    while i < len(threads) {
+        println("spawning thread", i);
+        th := thread_spawn(worker, s);
+        threads[i] = th;
+        i += 1;
+    }
+    
+    i = 0;
+    while i < len(threads) {
+        println("joining thread", i);
+        th := threads[i];
+        thread_join(th);
+        i += 1;
+    }
+    ts := threads[:];
+    println("Counter:", s^.c);
+    println(transmute(u64)raw_data(ts));
+    println(transmute(u64)raw_data("Hello"));
     return 0;
 }

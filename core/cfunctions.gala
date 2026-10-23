@@ -260,3 +260,33 @@ extern fn ceilf(x: f32): f32;
 extern fn roundf(x: f32): f32;
 
 extern fn fabsf(x: f32): f32;
+
+// threads
+struct Mutex {
+    data: [5]i64,
+}
+
+struct Cond {
+    data: [6]i64,
+}
+
+extern fn pthread_create(th: ^i64, attr: rawptr, start: fn(arg: rawptr): rawptr, arg: rawptr): i32;
+extern fn pthread_join(th: i64, ret: ^rawptr): i32;
+extern fn pthread_detach(th: i64): i32;
+extern fn pthread_self(): i64;
+extern fn pthread_equal(a: i64, b: i64): i32;
+
+extern fn pthread_mutex_init(mu: ^Mutex, attr: rawptr): i32;
+extern fn pthread_mutex_lock(mu: ^Mutex): i32;
+extern fn pthread_mutex_trylock(mu: ^Mutex): i32;
+extern fn pthread_mutex_unlock(mu: ^Mutex): i32;
+extern fn pthread_mutex_destroy(mu: ^Mutex): i32;
+
+extern fn pthread_cond_init(cv: ^Cond, attr: rawptr): i32;
+extern fn pthread_cond_wait(cv: ^Cond, mu: ^Mutex): i32;
+extern fn pthread_cond_signal(cv: ^Cond): i32;
+extern fn pthread_cond_broadcast(cv: ^Cond): i32;
+extern fn pthread_cond_destroy(cv: ^Cond): i32;
+
+extern fn sched_yield(): i32;
+extern fn usleep(us: i32): i32;

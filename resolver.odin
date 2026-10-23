@@ -32,10 +32,19 @@ ObjectKind :: enum {
     Argument,
 }
 
+ReadOnly :: enum {
+    No,
+    Argument,
+    LoopVar,
+    Function,
+    Constant,
+}
+
 Object :: struct {
     kind: ObjectKind,
     name: string,
     type: Maybe(TypeId),
+    read_only: ReadOnly,
 }
 
 // defined here because scopes need it
@@ -893,8 +902,8 @@ resolve_stmt :: proc(s: ^Scope, id: StmtId) {
     case ForLoop: {
         resolve_expr(s, stmt.expr)
         new_s := new_scope(s)
-        // object has no type yet, that's set in type checking
-        get_ctx().stmt_objects[id] = new_object(&new_s, Object{kind=.Argument, name=stmt.name}, get_span(id))
+        get_ctx().stmt_objects[id] = new_object(&new_s,
+            Object{kind=.Argument, name=stmt.name, read_only=.LoopVar}, get_span(id))
         b := stmt.block
         resolve_block(&new_s, &b)
         free_scope(&new_s)
@@ -1101,7 +1110,7 @@ resolve_generic_clone :: proc(g, iid: ItemId, v: FnVersion) {
     tyid := new_fn_type(fnty)
     ctx.spans.ty_decs[tyid] = get_span(iid)
 
-    append(&ctx.objs, Object{kind=.Variable, name=fndec.name, type=tyid})
+    append(&ctx.objs, Object{kind=.Variable, name=fndec.name, type=tyid, read_only=.Function})
     oid := ObjId(len(ctx.objs) - 1)
     ctx.obj_modules[oid] = mid
     ctx.spans.objs_decs[oid] = get_span(iid)
@@ -1210,7 +1219,7 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
             obj_ty: Maybe(TypeId) = t
             if a.inferred do obj_ty = nil
             arg.obj = new_object(&arg_scope,
-                Object{.Argument, a.name, obj_ty},
+                Object{kind=.Argument, name=a.name, type=obj_ty, read_only=.Argument},
                 {file_name=get_ctx().current_file, span=a.span})
 
             args[i] = arg
@@ -1225,7 +1234,8 @@ resolve_fn_dec_signature :: proc(s: ^Scope, fndec: FnDecSignature, extern := fal
             new_ty_id := intern_type(new_ty)
             fnty.fn.gala_abi_ty = new_ty_id
 
-            new_object(&arg_scope, Object{.Argument, name, new_ty_id},
+            new_object(&arg_scope,
+                Object{kind=.Argument, name=name, type=new_ty_id, read_only=.Argument},
                 {file_name=get_ctx().current_file, span=fndec.variadic_arg_span})
             fnty.fn.is_variadic = true
             fnty.fn.variadic_ty = variadic_ty
@@ -1400,15 +1410,16 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
         get_ctx().item_module[id] = modid
     }
     case StructDec:     new_type_fd(s, Type{kind=.Struct, name=i.name}, get_span(id))
-    case FnDec:         new_object_fd(s, Object{kind=.Variable, name=i.name}, get_span(id))
-    case ExternFnDec:   new_object_fd(s, Object{kind=.Variable, name=i.name}, get_span(id))
     // kind=.Variable on purpose: a global is addressable like any local, so
     // the type checker and codegen treat its uses the same way.
     case GlobalVarDec:  new_object_fd(s, Object{kind=.Variable, name=i.name}, get_span(id))
     // never looked up as an object: uses are rewritten, and const_table says
     // which objects are constants
+    case FnDec:         new_object_fd(s, Object{kind=.Variable, name=i.name, read_only=.Function}, get_span(id))
+    case ExternFnDec:   new_object_fd(s, Object{kind=.Variable, name=i.name, read_only=.Function}, get_span(id))
+                        // GlobalVarDec stays as it is: globals are mutable
     case ConstDec: {
-        oid := new_object_fd(s, Object{kind=.Variable, name=i.name}, get_span(id))
+        oid := new_object_fd(s, Object{kind=.Variable, name=i.name, read_only=.Constant}, get_span(id))
         const_table[oid] = ConstEntry{item = id, scope = s}
     }
     case: gala_panic("compiler bug: forward_item doesn't handle this item kind")

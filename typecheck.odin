@@ -490,24 +490,46 @@ order_call_args :: proc(id: ExprId, args: [dynamic]FnCallArg, params: []Arg) -> 
     return ordered
 }
 
-check_not_argument :: proc(id: ExprId) {
+// Why `id` is read-only (bad = true), or "", false when it can be written to
+// (or, with writing = false, referenced). Walks to the root of the place:
+//   x.f, arr[i] (fixed array)  part of x, so x decides
+//   p^, slice[i], ptr[i]       other memory, always fine
+//   str[i]                     read-only for writes
+read_only_reason :: proc(id: ExprId, writing: bool) -> (why: string, bad: bool) {
     #partial switch e in get_expr(id) {
     case Symbol: {
         oid, ok := get_ctx().expr_objects[id]
-        if !ok do return
-
-        obj := get_obj(oid)
-        if obj.kind == .Argument {
-            highlight_lines(get_span(id))
-            gala_panic("Can't modify or reference a function argument directly.")
+        if !ok do return "", false
+        what: string
+        switch get_obj(oid).read_only {
+        case .No:       return "", false
+        case .Argument: what = "a function argument"
+        case .LoopVar:  what = "a loop variable"
+        case .Function: what = "a function"
+        case .Constant: what = "a constant"
         }
+        return strings.concatenate({"\"", e.name, "\" is ", what}, context.temp_allocator), true
     }
-    case FieldAccess: {
-        // arg.field modifies the argument's value
-        check_not_argument(e.target)
+    case FieldAccess:
+        return read_only_reason(e.target, writing)
+    case Index: {
+        #partial switch get_type(expr_ty(e.target)).kind {
+        case .FixedSizeArray: return read_only_reason(e.target, writing)
+        case .String:
+            if writing do return "strings are read-only", true
+        }
+        return "", false
     }
-    // Index and Deref deliberately stop the check: arg[0] and *arg modify
-    // the referenced memory, not the argument variable itself.
+    case Deref:
+        return "", false
+    }
+    return "it's a temporary value", true
+}
+
+check_mutable :: proc(id: ExprId, action: string, writing: bool) {
+    if why, bad := read_only_reason(id, writing); bad {
+        highlight_lines(get_span(id))
+        gala_panicf("Can't %s this expression: %s.", action, why)
     }
 }
 
@@ -573,7 +595,7 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
             gala_panic("Can't take the address of this expression (only variables, fields and elements).")
         }
 
-        check_not_argument(e.expr)
+        check_mutable(e.expr, "take the address of", false)
 
         t := Type{ kind = .Pointer, ptr = expr_ty(e.expr) }
         get_ctx().expr_types[id] = intern_type(t)
@@ -590,6 +612,10 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         if !e.empty_start do tc_index_expr(tc, e.start)
         if !e.empty_end   do tc_index_expr(tc, e.end)
 
+        if get_type(target_ty).kind == .String {
+            get_ctx().expr_types[id] = target_ty;
+            return
+        }
         ty, ok := get_array_base_type(target_ty)
         if !ok {
             highlight_lines(get_span(e.target))
@@ -1219,7 +1245,7 @@ tc_stmt :: proc(tc: ^TcContext, s: StmtId) {
             gala_panic("Can't assign to this expression.")
         }
 
-        check_not_argument(stmt.target)
+        check_mutable(stmt.target, "assign to", true)
 
         // target must have a type
         _, tyok := get_ctx().expr_types[stmt.target]
@@ -1450,8 +1476,8 @@ propagate_type :: proc(ty: TypeId, expr: ExprId) {
     switch e in get_expr(expr) {
     // already typed (or fixed by their own syntax): nothing to propagate
     case UnNot, BoolLitFalse, BoolLitTrue, String, Reference, Deref, TakeSlice,
-         Index, FixedSizeArray, FieldAccess, StructLit, Cast, Transmute,
-         Symbol, FnCall, FnLit:
+         Index, FixedSizeArray, StructLit, Cast, Transmute,
+         Symbol, FnCall, FnLit, FieldAccess:
         return
     // untyped by default: just set the type below
     case TypeIdOf, Len, SizeOf, ZeroInit: {

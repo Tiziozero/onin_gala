@@ -885,7 +885,7 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     cwriteln(c, "")
 }
 // Index and type of field `name`. `any` is { data: ^void, id: i64 }.
-field_of :: proc(tid: TypeId, name: string) -> (idx: int, field_ty: TypeId) {
+field_of :: proc(tid: TypeId, name: string, e: ExprId) -> (idx: int, field_ty: TypeId) {
     ty := get_type(tid)
     if ty.kind == .Any {
         switch name {
@@ -998,7 +998,7 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
         // struct (`make_terrain().pixels[3]`) is spilled to a temporary.
         base_ptr := cg_value_addr(c, e.target)
         base_ty := expr_ty(e.target)
-        idx, _ := field_of(base_ty, e.field)
+        idx, _ := field_of(base_ty, e.field, id)
 
         t := new_tmp(c)
         cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d",

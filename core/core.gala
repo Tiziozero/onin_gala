@@ -3,6 +3,8 @@
 // Small runtime layer: C bindings, `any` helpers, a Builder-based
 // formatter (no C formatting), println and printfmt.
 
+alias int = i32;
+
 @link("/lib/x86_64-linux-gnu/libc.so.6")
 @link("/lib/x86_64-linux-gnu/libm.so.6")
 import "./cfunctions.gala";
@@ -20,6 +22,11 @@ fn any_as::<$T>(v: any): ^T {
         return cast(^T)v.data;
     }
     return 0;
+}
+
+fn raw_data(v: []$T): ^T {
+    if len(v) == 0 { return 0; }
+    return &v[0];
 }
 
 // ============================================================

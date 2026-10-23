@@ -664,3 +664,13 @@ fn tracking_report(t: ^Tracking) {
     println("allocs:", t^.allocs, "frees:", t^.frees, "failed:", t^.fails);
     println("live bytes:", t^.live, "peak:", t^.peak, "total:", t^.total);
 }
+
+struct SliceRepr {
+    ptr: ^$T,
+    length: i64,
+}
+
+fn slice_from(ptr: ^$T, length: $L): []T {
+    r := SliceRepr{ptr, cast(i64)length};
+    return transmute([]T)r;
+}
