@@ -3,49 +3,12 @@ import "core/threads.gala";
 import "core/cfunctions.gala";
 import "core/mem.gala";
 
-fn worker(s: ^State) {
-    i := 0; while i < 100 {
-        mutex_lock(&s^.m);
-        s^.c += 1;
-        mutex_unlock(&s^.m);
-        i += 1;
-    }
-}
+struct Vector2 { x, y: $T }
 
-struct Vector2 { x, y: f32 }
-
-fn do_s(v: Vector2): f32 {
+fn do_s(v: Vector2($T)): T {
     return v.x + v.y;
 }
-struct State {
-    m: Mutex,
-    c: int,
-}
 fn main(): i32 {
-    s := new::<State>();
-    mutex_init(&s^.m);
-    s^.c = 0;
-    threads := [5]Thread{};
-    i := 0;
-    while i < len(threads) {
-        println("spawning thread", i);
-        th := thread_spawn(worker, s);
-        threads[i] = th;
-        i += 1;
-    }
-    
-    i = 0;
-    while i < len(threads) {
-        println("joining thread", i);
-        th := threads[i];
-        thread_join(th);
-        i += 1;
-    }
-    ts := threads[:];
-    println("Counter:", s^.c);
-    println(transmute(u64)raw_data(ts));
-    println(transmute(u64)raw_data(transmute([]string)("Hello")[:]));
     println(do_s({1.2, 3.4}));
-    free(cast(rawptr)s);
     return 0;
 }

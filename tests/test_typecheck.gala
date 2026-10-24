@@ -233,7 +233,7 @@ fn test_arrays_and_slices() {
     check(ints[2] == 30, "computed index on the left of =");
 
     text := "hello";
-    chunk: []byte = text[1:4];
+    chunk: string = text[1:4];
     check(len(chunk) == 3 && chunk[0] == 101, "string slice is a []byte for now");
     first: byte = text[0];
     check(first == 104, "string index is a byte");

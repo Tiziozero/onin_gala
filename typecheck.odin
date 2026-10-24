@@ -163,7 +163,7 @@ unify_binop :: proc(l, r: TypeId) -> (TypeId, bool, string) {
 //                     an untyped integer may also become a pointer (`p = 0`)
 //   anything       -> `any` (boxing); untyped numbers box as their default type
 //   otherwise      -> types_equal. `any` never converts back implicitly.
-assignable :: proc(expected, got: TypeId) -> (TypeId, bool, string) {
+assignable :: proc(expected, got: TypeId, allow_box := false) -> (TypeId, bool, string) {
     ek := get_type(expected).kind
     gk := get_type(got).kind
 
@@ -186,6 +186,10 @@ assignable :: proc(expected, got: TypeId) -> (TypeId, bool, string) {
     if expected == got do return expected, true, ""
 
     if ek == .Any {
+        // boxing is a call-site thing: only function arguments may do it
+        if !allow_box {
+            return TypeId(0), false, "values are only converted to `any` when passed as function arguments"
+        }
         if gk == .Void {
             return TypeId(0), false, "can't use a value of type void"
         }
@@ -259,11 +263,6 @@ can_equal :: proc(id: TypeId, op: BinopKind) -> bool {
 
     #partial switch t.kind {
     case .Bool, .Pointer, .String:
-        return true
-    }
-
-    if is_pointer(id) && (op == .Addition ||
-        op == .Subtraction || op == .NotEqual || op == .Equal) {
         return true
     }
     return false
@@ -381,7 +380,7 @@ mark_arg :: proc(arg: ^FnCallArg, param_ty: TypeId, r: TypeId) {
 // `name` is empty for variadic arguments.
 tc_check_arg :: proc(arg: ^FnCallArg, pos: int, name: string, expected: TypeId) {
     earg := arg.expr
-    r, ok, err := assignable(expected, expr_ty(earg))
+    r, ok, err := assignable(expected, expr_ty(earg), allow_box = true)
     if !ok {
         highlight_lines(get_span(earg))
         if len(name) > 0 {
@@ -866,8 +865,8 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
         assert(get_type(tid).kind == .Function)
 
         if get_type(tid).fn.is_generic {
-            append(tc.generic_exprs, id)
-            return
+            highlight_lines(get_span(id))
+            gala_panic("Function literals can't be generic; declare a named generic function instead.")
         }
 
         // validate parameter defaults before anything can call this literal
@@ -906,18 +905,24 @@ tc_binop :: proc(tc: ^TcContext, id: ExprId, e: Binop) {
     switch e.kind {
     case .Addition, .Subtraction, .Multiply, .Divide, .Modulo: {
         // pointer arithmetic: `ptr +- int`, `int + ptr`, `ptr - ptr`.
-        // not `ptr + ptr` and not `int - ptr`.
-        if is_pointer(right_ty) {
-            if is_pointer(left_ty) {
-                if e.kind == .Addition {
-                    highlight_lines(get_span(id))
-                    gala_panic("Can't add two pointers.")
-                }
-            } else if e.kind != .Addition {
+        // nothing else: not `ptr + ptr`, `int - ptr`, `*`, `/` or `%`.
+        if is_pointer(left_ty) || is_pointer(right_ty) {
+            if e.kind != .Addition && e.kind != .Subtraction {
                 highlight_lines(get_span(id))
-                gala_panicf("Invalid pointer arithmetic: with the pointer on the right, only `int + ptr` is allowed (got %v).", e.kind)
+                gala_panicf("Operator %v can't be applied to pointers (only + and - are allowed).", e.kind)
             }
+            if e.kind == .Addition && is_pointer(left_ty) && is_pointer(right_ty) {
+                highlight_lines(get_span(id))
+                gala_panic("Can't add two pointers.")
+            }
+            if e.kind == .Subtraction && is_pointer(right_ty) && !is_pointer(left_ty) {
+                highlight_lines(get_span(id))
+                gala_panic("Can't subtract a pointer from an integer.")
+            }
+            get_ctx().expr_types[id] = ty
+            return
         }
+
         if !can_binop(ty, e.kind) {
             highlight_lines(get_span(id))
             gala_panicf("Operator %v can't be applied to type %s.", e.kind, tts(ty))
