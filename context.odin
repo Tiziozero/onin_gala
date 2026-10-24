@@ -7,11 +7,28 @@ import "core:os"
 import "core:strings"
 
 
-ExprId :: distinct u32
-StmtId :: distinct u32
-ItemId :: distinct u32
-TypeId :: distinct u32
-ObjId  :: distinct u32
+ExprId  :: distinct u64
+StmtId  :: distinct u64
+ItemId  :: distinct u64
+TypeId  :: distinct u64
+ObjId   :: distinct u64
+ModId   :: distinct u64
+
+// where a generic function was declared; its clones are resolved,
+// type-checked and emitted there
+GenericOwner :: struct {
+    ast:  ^AST,
+    mod:  ModId,
+    file: string,
+}
+
+// a module that has been parsed, resolved and type-checked
+ModuleUnit :: struct {
+    ast:  ^AST,
+    mod:  ModId,
+    file: string,
+}
+
 Context :: struct {
     program_name:       string,
     arena:              virtual.Arena,
@@ -21,6 +38,7 @@ Context :: struct {
     exprs:              [dynamic]Expr,
     stmts:              [dynamic]Stmt,
     items:              [dynamic]Item,
+    mods:               [dynamic]Module,
     types:              [dynamic]Type,
     objs :              [dynamic]Object,
     // strings
@@ -32,9 +50,27 @@ Context :: struct {
 
     item_types:         map[ItemId]TypeId,
     item_objects:       map[ItemId]ObjId,
+    item_module:        map[ItemId]ModId, // import module ids
 
     stmt_objects:       map[StmtId]ObjId,
     stmt_types:         map[StmtId]TypeId,
+    break_lables:       map[StmtId]StmtId, // includes continue
+
+    obj_modules:        map[ObjId]ModId,
+    ty_modules:         map[TypeId]ModId,
+    // generics
+    // functions shouldn't be interned, so one type per function
+    // generics: call expr -> the instantiation it uses
+    expr_fn_version:        map[ExprId]FnVersionRef,
+    fn_generic_variations:  map[TypeId]struct{},
+
+    // every generic fn item of every module, who owns it, and how many of
+    // its versions have been instantiated so far
+    generic_items:          [dynamic]ItemId,
+    generic_owner:          map[ItemId]GenericOwner,
+    generic_done:           map[ItemId]int,
+    // type-checked modules, imports first
+    units:                  [dynamic]ModuleUnit,
 
     // for other stuff that need to know things only available
     // at resolution phase
@@ -46,15 +82,26 @@ Context :: struct {
 
 
     spans: struct {
-        exprs: map[ExprId]struct{file_name: string, span: Span},
-        stmts: map[StmtId]struct{file_name: string, span: Span},
-        items: map[ItemId]struct{file_name: string, span: Span},
+        exprs: map[ExprId]SpanStruct,
+        stmts: map[StmtId]SpanStruct,
+        items: map[ItemId]SpanStruct,
         // includes item decs + regular vardecs since both use ObjId
-        objs_decs: map[ObjId]struct{file_name: string, span: Span},
+        objs_decs: map[ObjId]SpanStruct,
+        ty_decs: map[TypeId]SpanStruct,
     },
-    files:      map[string]string,
-    o_files:    [dynamic]string,
-    modules:    map[string]struct{declarations: ModuleScope, ast: AST},
+    files:                                  map[string]string,
+    parsing:                                map[string]string,
+    o_files:                                [dynamic]string,
+    modules:                                map[string]ModId,
+
+    llvm_ty:                                map[TypeId]string,
+    cg_item_names:                          map[ItemId]string,
+    cg_ty_names:                            map[TypeId]string,
+    cg_module_prefix:                       map[ModId]string,
+    links:                                  [dynamic]string,
+    current_module_id:                      ModId,
+    entry_file:                             string,
+    object_only:                            bool, // -c: no C `main`, export gala_init_globals instead
 }
 
 FileLine :: struct {
@@ -99,17 +146,25 @@ get_file_lines :: proc(file_name: string, span: Span) -> []FileLine {
 
 highlight_lines_file_name :: proc(file_name:string, span:Span) {
     f := file_name
+    fmt.printfln("in \"%s\":", f);
     lines := get_file_lines(f, span);
     print_lines(lines, span);
 }
 highlight_lines_span :: proc(span:Span) {
     f := get_ctx().current_file
+    fmt.printfln("in \"%s\":", f);
     lines := get_file_lines(f, span);
     print_lines(lines, span);
 }
+highlight_lines_struct :: proc(span:SpanStruct) {
+    f := span.file_name
+    fmt.printfln("in \"%s\":", span.file_name);
+    lines := get_file_lines(f, span.span);
+    print_lines(lines, span.span);
+}
 highlight_lines :: proc {
-    highlight_lines_span,
     highlight_lines_file_name,
+    highlight_lines_struct,
 }
 print_lines :: proc(lines: []FileLine, highlight: Span = {0, 0}) {
     has_highlight := highlight.start != highlight.end
@@ -215,9 +270,10 @@ get_span :: proc {
     get_span_stmt,
     get_span_item,
     get_span_obj,
+    get_span_ty,
 }
-
-get_span_expr :: proc(id: ExprId) -> struct{file_name: string, span: Span} {
+SpanStruct :: struct{file_name: string, span: Span}
+get_span_expr :: proc(id: ExprId) -> SpanStruct {
     get_ctx := get_ctx()
     s, ok := get_ctx.spans.exprs[id]
     if !ok {
@@ -226,7 +282,7 @@ get_span_expr :: proc(id: ExprId) -> struct{file_name: string, span: Span} {
     return s
 }
 
-get_span_stmt :: proc(id: StmtId) -> struct{file_name: string, span: Span} {
+get_span_stmt :: proc(id: StmtId) -> SpanStruct {
     get_ctx := get_ctx()
     s, ok := get_ctx.spans.stmts[id]
     if !ok {
@@ -235,7 +291,7 @@ get_span_stmt :: proc(id: StmtId) -> struct{file_name: string, span: Span} {
     return s
 }
 
-get_span_item :: proc(id: ItemId) -> struct{file_name: string, span: Span} {
+get_span_item :: proc(id: ItemId) -> SpanStruct {
     get_ctx := get_ctx()
     s, ok := get_ctx.spans.items[id]
     if !ok {
@@ -244,20 +300,32 @@ get_span_item :: proc(id: ItemId) -> struct{file_name: string, span: Span} {
     return s
 }
 
-get_span_obj :: proc(id: ObjId) -> struct{file_name: string, span: Span} {
+get_span_obj :: proc(id: ObjId) -> SpanStruct {
     get_ctx := get_ctx()
     s, ok := get_ctx.spans.objs_decs[id]
     if !ok {
+        fmt.println(get_obj(id)^);
         panic(fmt.tprintf("get_span_obj: no span recorded for %v", id))
+    }
+    return s
+}
+get_span_ty :: proc(id: TypeId) -> SpanStruct {
+    get_ctx := get_ctx()
+    s, ok := get_ctx.spans.ty_decs[id]
+    if !ok {
+        fmt.println(get_type(id)^);
+        panic(fmt.tprintf("get_span_ty: no span recorded for %v", id))
     }
     return s
 }
 gala_panic :: proc(args: ..any) -> ! {
     fmt.println(..args)
+    // panic("");
     os.exit(1);
 }
 gala_panicf :: proc(f: string, args: ..any) -> ! {
     fmt.printfln(f, ..args)
+    // panic("");
     os.exit(1);
 }
 

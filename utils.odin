@@ -9,7 +9,15 @@ tts :: proc(t: TypeId) -> string {
         return "<invalid>"
     }
 
+    if ty.kind == .Generic {
+        return fmt.aprintf("(generic type) %s", ty.name);
+    }
+    if ty.name != "" {
+        return ty.name
+    }
     switch ty.kind {
+    case .Generic:
+        return "generic_type"
     case .Int64: 
         return "Int64"
     case .Int32: 
@@ -41,9 +49,11 @@ tts :: proc(t: TypeId) -> string {
     case .Invalid:
         return "invalid"
     case .UntypedInteger:
-        return "untyped int"
+        return "untyped integer"
     case .UntypedFloat:
         return "untyped float"
+    case .UntypedStruct:
+        return "untyped struct"
     case .ZeroInit:
         return "zero-init"
     case .Void:
@@ -78,8 +88,8 @@ tts :: proc(t: TypeId) -> string {
         return strings.to_string(sb)
 
     case .Function:
-        sb := strings.builder_make()
-        strings.write_string(&sb, "proc(")
+        sb := strings.builder_make(allocator=get_ctx().allocator)
+        strings.write_string(&sb, "fn(")
         for arg, i in ty.fn.args {
             if i > 0 do strings.write_string(&sb, ", ")
             strings.write_string(&sb, tts(arg.type))
@@ -88,7 +98,7 @@ tts :: proc(t: TypeId) -> string {
 
         ret := get_type(ty.fn.ret_ty)
         if ret != nil && ret.kind != .Void {
-            strings.write_string(&sb, " -> ")
+            strings.write_string(&sb, ": ")
             strings.write_string(&sb, tts(ty.fn.ret_ty))
         }
         return strings.to_string(sb)

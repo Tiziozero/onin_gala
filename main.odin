@@ -1,12 +1,15 @@
 package main
 
+import "core:c"
+import "core:fmt"
+import "core:path/filepath"
 import "core:strings"
 import "core:mem/virtual"
 import "core:mem"
 import "core:os"
 import "core:io"
 
-init_context :: proc() -> ^Context {
+init_context :: proc(debug := false) -> ^Context {
     ctx := new(Context)
     ctx.program_name = "main"; // overwrite eventually
     // NOTE: no context.user_ptr assignment here — it wouldn't survive return
@@ -16,7 +19,7 @@ init_context :: proc() -> ^Context {
     ctx.allocator = virtual.arena_allocator(&ctx.arena)
 
     al := ctx.allocator
-    ctx.debug = true
+    ctx.debug = debug
     ctx.items = make([dynamic]Item, allocator = al)
     ctx.exprs = make([dynamic]Expr, allocator = al)
     ctx.stmts = make([dynamic]Stmt, allocator = al)
@@ -26,215 +29,486 @@ init_context :: proc() -> ^Context {
     ctx.data  = make([dynamic]string, allocator = al)
     ctx.table = make(map[string]StringId, allocator = al)
 
+    ctx.obj_modules   = make(map[ObjId]ModId, allocator = al)
     ctx.expr_types   = make(map[ExprId]TypeId, allocator = al)
     ctx.expr_objects = make(map[ExprId]ObjId, allocator = al)
     ctx.item_types   = make(map[ItemId]TypeId, allocator = al)
     ctx.item_objects = make(map[ItemId]ObjId, allocator = al)
+    ctx.item_module = make(map[ItemId]ModId, allocator = al)
     ctx.stmt_objects = make(map[StmtId]ObjId, allocator = al)
     ctx.stmt_types   = make(map[StmtId]TypeId, allocator = al)
     ctx.expr_resolution_types = make(map[ExprId]TypeId, allocator = al)
 
-    ctx.spans.exprs = make(map[ExprId]struct{file_name: string, span: Span}, allocator = al)
-    ctx.spans.items = make(map[ItemId]struct{file_name: string, span: Span}, allocator = al)
-    ctx.spans.stmts = make(map[StmtId]struct{file_name: string, span: Span}, allocator = al)
-    ctx.spans.objs_decs = make(map[ObjId]struct{file_name: string, span: Span}, allocator = al)
+    ctx.generic_items = make([dynamic]ItemId, allocator = al)
+    ctx.generic_owner = make(map[ItemId]GenericOwner, allocator = al)
+    ctx.generic_done  = make(map[ItemId]int, allocator = al)
+    ctx.units         = make([dynamic]ModuleUnit, allocator = al)
+
+    ctx.spans.exprs = make(map[ExprId]SpanStruct, allocator = al)
+    ctx.spans.items = make(map[ItemId]SpanStruct, allocator = al)
+    ctx.spans.stmts = make(map[StmtId]SpanStruct, allocator = al)
+    ctx.spans.objs_decs = make(map[ObjId]SpanStruct, allocator = al)
+    ctx.spans.ty_decs = make(map[TypeId]SpanStruct, allocator = al)
 
     ctx.files = make(map[string]string, allocator = al)
+    ctx.parsing = make(map[string]string, allocator = al)
     ctx.o_files = make([dynamic]string, allocator = al)
 
     ctx.base_mod = new_module_scope(allocator=ctx.allocator)
+    ctx.llvm_ty = make(map[TypeId]string, allocator=ctx.allocator);
+    ctx.cg_item_names = make(map[ItemId]string, allocator=ctx.allocator);
+    ctx.cg_module_prefix =  make(map[ModId]string, allocator=ctx.allocator);
+    ctx.links = make([dynamic]string, allocator=ctx.allocator);
+
     return ctx
 }
 
-handle_file :: proc(ctx: ^Context, file_name: string) {
-    data, err := os.read_entire_file(file_name, ctx.allocator)
-    if err != io.Error.None {
-        gala_panic("Failed to read file")
+// Resolves `import_path` (as written in source) to a canonical path
+// relative to the process's working directory.
+//
+//   "./x.gala", "../x.gala"  -> relative to the importing file's directory
+//   "x.gala", "lib/x.gala"   -> working directory, then the directory the
+//                               compiler executable lives in (stdlib)
+//   "/abs/x.gala"            -> used as is
+//
+// `importer_path` may be "" (top-level file from the command line), in
+// which case only the working directory is considered.
+resolve_import_path :: proc(importer_path: string, import_path: string) -> string {
+    joined: string
+
+    is_relative := strings.has_prefix(import_path, "./") ||
+                   strings.has_prefix(import_path, "../")
+
+    if filepath.is_abs(import_path) {
+        joined = import_path
+    } else if is_relative && len(importer_path) > 0 {
+        importer_dir := filepath.dir(importer_path)
+        joined, _ = filepath.join({importer_dir, import_path}, allocator=get_ctx().allocator)
+    } else {
+        // plain path: working directory first
+        joined = import_path
+
+        // not the entry file, and not found in cwd: try next to the compiler
+        if len(importer_path) > 0 && !os.exists(import_path) {
+            exe_dir, eerr := os.get_executable_directory(get_ctx().allocator)
+            if eerr == nil {
+                candidate, _ := filepath.join({exe_dir, import_path}, allocator=get_ctx().allocator)
+                if os.exists(candidate) {
+                    joined = candidate
+                }
+            }
+        }
     }
 
-    debugln("file size:", len(data));
-    get_ctx().files[file_name] = string(data)
+    abs_path, abs_ok := filepath.abs(joined)
+    if abs_ok != .NONE {
+        abs_path = joined
+    }
 
+    cleaned, cerr := filepath.clean(abs_path, allocator=get_ctx().allocator)
+    assert(cerr == .None)
 
-    ctx.current_file = file_name;
+    cwd, _ := os.get_working_directory(get_ctx().allocator)
+
+    rel, rerr := filepath.rel(cwd, cleaned, allocator=get_ctx().allocator)
+    if rerr != .None {
+        // Can't be made relative (e.g. different drive on Windows)
+        return cleaned
+    }
+
+    return rel
+}
+
+// `file_name` is the raw path as written (CLI arg or `import` string).
+// It's resolved with resolve_import_path against `ctx.current_file`, and
+// the resolved path is the key everywhere (ctx.files, ctx.parsing,
+// ctx.modules). Returns the resolved path.
+//
+// Only parses, resolves and type-checks. Generic instantiation and
+// lowering happen once the whole import graph is done (see main).
+handle_file :: proc(file_name: string) -> string {
+    resolved := resolve_import_path(get_ctx().current_file, file_name)
+
+    if _, ok := get_ctx().parsing[resolved]; ok {
+        gala_panicf("Cyclical imports with file: \"%s\".", resolved)
+    }
+    if _, ok := get_ctx().modules[resolved]; ok {
+        // Already fully parsed/resolved (e.g. two files import the same
+        // dependency) — nothing more to do.
+        return resolved
+    }
+
+    data, err := os.read_entire_file(resolved, get_ctx().allocator)
+    if err != io.Error.None {
+        gala_panic("Failed to read file:", resolved)
+    }
+
+    get_ctx().files[resolved] = string(data)
+    get_ctx().parsing[resolved] = string(data)
+
+    // Save/restore current_file so that once this imported file is done,
+    // the importer resolves its own further imports relative to itself.
+    prev_file := get_ctx().current_file
+    get_ctx().current_file = resolved
 
     tokens := lex_file(data)
-    defer delete(tokens)
+    ast := new(AST, get_ctx().allocator)
+    ast^ = parse_tokens(resolved, tokens[:])
+    mid := resolve_module_ast(ast, resolved)
+    typecheck_module(ast, mid, resolved)
+    append(&get_ctx().units, ModuleUnit{ast = ast, mod = mid, file = resolved})
+    // get_ctx().mods[mid].ast = ast   // the module holds a copy; sync it
 
-    ast := parse_tokens(file_name, tokens[:])
-    decs := resolve_module_ast(&ast)
-    typecheck_module(&ast)
-    cg_module(&ast)
-    ctx.modules[file_name] = {decs, ast};
+    get_ctx().modules[resolved] = mid
+    delete_key(&get_ctx().parsing, resolved)
+
+    get_ctx().current_file = prev_file
+    return resolved
 }
-destroy_context :: proc(ctx: ^Context) {
+
+// `ctx_allocator` is the allocator `ctx` itself was created with (the
+// heap, see main) — NOT ctx.allocator, which is the arena being destroyed
+// here and can't free individual blocks anyway.
+destroy_context :: proc(ctx: ^Context, ctx_allocator: mem.Allocator) {
     virtual.arena_destroy(&ctx.arena)
-    free(ctx)
+    free(ctx, ctx_allocator)
 }
-main :: proc() { // odins context is passed down, not up, or some shi
-    ctx := init_context()
-    context.user_ptr = ctx   // <-- set it here, so it's live for the rest of main's scope
 
-    // integer types
-    new_type(&ctx.base_mod, Type{name="i8", kind=.Int_8});
-    new_type(&ctx.base_mod, Type{name="i16", kind=.Int16});
-    new_type(&ctx.base_mod, Type{name="i32", kind=.Int32});
-    new_type(&ctx.base_mod, Type{name="i64", kind=.Int64});
+// ---------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------
 
-    new_type(&ctx.base_mod, Type{name="u8", kind=.UInt_8});
-    new_type(&ctx.base_mod, Type{name="u16", kind=.UInt16});
-    new_type(&ctx.base_mod, Type{name="u32", kind=.UInt32});
-    new_type(&ctx.base_mod, Type{name="u64", kind=.UInt64});
+Cli_Args :: struct {
+    entry_file:   string,
+    program_name: string,        // output path (executable, or object with -c)
+    output_set:   bool,          // -o was given
+    object_only:  bool,          // -c: emit one merged .o, don't link
+    debug:        bool,
+    extra_libs:   [dynamic]string, // paths passed via -l/--link, e.g. "-l libfoo.so"
+}
 
-    new_type(&ctx.base_mod, Type{name="f8", kind=.Flt_8});
-    new_type(&ctx.base_mod, Type{name="f16", kind=.Flt16});
-    new_type(&ctx.base_mod, Type{name="f32", kind=.Flt32});
-    new_type(&ctx.base_mod, Type{name="f64", kind=.Flt64});
-    new_type(&ctx.base_mod, Type{name="void", kind=.Void});
-    new_type(&ctx.base_mod, Type{name="any", kind=.Any});
-    new_type(&ctx.base_mod, Type{name="bool", kind=.Bool});
-    new_type(&ctx.base_mod, Type{name="byte", kind=.Byte});
-    new_type(&ctx.base_mod, Type{name="rawptr", kind=.Pointer, ptr=void_type()});
-    new_type(&ctx.base_mod, Type{name="string", kind=.String});
-
-    is_legal_program_name :: proc(n: string) -> bool {
-        if len(n) == 0 {
-            return false
-        }
-        for c, i in n {
-            switch {
-            case c >= 'a' && c <= 'z':
-            case c >= 'A' && c <= 'Z':
-            case c == '_':
-            case c == '-' && i > 0: // allow dash, but not as first char
-            case c >= '0' && c <= '9' && i > 0: // digits ok, just not first char
-            case:
-                return false
-            }
-        }
-        return true
-    }
-
-    next_arg :: proc(args: []string) -> ([]string, string, bool) {
-        if len(args) > 0 {
-            t := args[0]
-            return args[1:], t, true
-        }
-        return args, "", false
-    }
-
-    files := make([dynamic]string, ctx.allocator)
-    args := os.args[1:] // skip program name itself
-    for {
-        arg: string
-        ok: bool
-        args, arg, ok = next_arg(args) // note: `=`, reassigns outer args
-        if !ok {
+// Validates the file name of `-o <path>`; the directory part is free-form.
+// No leading '-' (option confusion in the tools we spawn), no leading '.'
+// or digit; '.' and '-' are fine after the first character.
+is_legal_program_name :: proc(path: string) -> bool {
+    base := path
+    for i := len(path) - 1; i >= 0; i -= 1 {
+        if path[i] == '/' {
+            base = path[i+1:]
             break
         }
-        if arg == "-o" {
-            name: string
-            name_ok: bool
-            args, name, name_ok = next_arg(args)
-            if !name_ok {
-                gala_panic("expected name after \"-o\".")
+    }
+    if len(base) == 0 do return false // "" or a trailing '/'
+
+    for c, i in base {
+        switch {
+        case c >= 'a' && c <= 'z':
+        case c >= 'A' && c <= 'Z':
+        case c == '_':
+        case (c == '-' || c == '.') && i > 0:
+        case c >= '0' && c <= '9' && i > 0:
+        case:
+            return false
+        }
+    }
+    return true
+}
+
+print_usage :: proc() {
+    gala_info("usage: galac <file.gala> [-c] [-o <name>] [-l <path-to-lib.so>]...")
+}
+
+// Parses CLI args in the clang/gcc style: `galac main.gala -o main`.
+// Exactly one ".gala" file is allowed (the entry point); anything else
+// unrecognized is a hard error rather than being silently ignored.
+parse_cli_args :: proc(args: []string) -> Cli_Args {
+    result := Cli_Args{program_name = "main", debug = false}
+    result.extra_libs = make([dynamic]string)
+    entry_file_set := false
+
+    i := 0
+    for i < len(args) {
+        arg := args[i]
+
+        switch {
+        case arg == "-o":
+            i += 1
+            if i >= len(args) {
+                gala_panic("expected program name after \"-o\".")
             }
+            name := args[i]
             if !is_legal_program_name(name) {
                 gala_panic("illegal program name:", name)
             }
-            ctx.program_name = name
-        } else if strings.has_suffix(arg, ".gala") && len(arg) > 5 { // "not ".gala"
-            append(&files, arg)
+            result.program_name = name
+            result.output_set = true
+
+        case arg == "-c":
+            // Compile only: merge all module objects into one .o
+            result.object_only = true
+
+        case arg == "-l" || arg == "--link":
+            // Link an extra shared library (.so) at the given path, e.g.
+            // "-l ./libfoo.so" or "--link /usr/lib/libbar.so". Passed
+            // straight through to `ld` alongside our own .o files.
+            i += 1
+            if i >= len(args) {
+                gala_panic("expected a path to a .so file after \"-l\".")
+            }
+            lib_path := args[i]
+            if !strings.has_suffix(lib_path, ".so") {
+                gala_panic("expected a \".so\" file after \"-l\", got:", lib_path)
+            }
+            if !os.exists(lib_path) {
+                gala_panic("cannot find library to link:", lib_path)
+            }
+            append(&result.extra_libs, lib_path)
+
+        case arg == "-h" || arg == "--help":
+            print_usage()
+            os.exit(0)
+
+        case arg == "-d" || arg == "--debug":
+            result.debug = true
+        case strings.has_suffix(arg, ".gala") && len(arg) > len(".gala"): // "not just \".gala\""
+            if entry_file_set {
+                gala_panic("must specify exactly one \".gala\" file, got an extra one:", arg)
+            }
+            result.entry_file = arg
+            entry_file_set = true
+
+        case:
+            gala_panic("unrecognized argument:", arg)
         }
-    }
-    if len(files) < 1 {
-        gala_panic("Must specify at leas one \".gala\" file.");
-    }
-    for f in files {
-        handle_file(ctx, f);
+
+        i += 1
     }
 
-    {
-        // link ld a.o -o a.out
-        /* ld \
-        /usr/lib/crt1.o \
-        /usr/lib/crti.o \
-        -lc \
-        a.o \
-        /usr/lib/crtn.o
-        -o name*/
-        /*command := make([dynamic]string, allocator=get_ctx().allocator);
-        append(&command, "ld");
-        append(&command, "-dynamic-linker");
-        append(&command, "/lib64/ld-linux-x86-64.so.2");
+    if !entry_file_set {
+        print_usage()
+        gala_panic("must specify exactly one \".gala\" file.")
+    }
+
+    if result.object_only && !result.output_set {
+        result.program_name = "main.o"
+    }
+
+    return result
+}
+
+// Runs `command`, panics if it can't start or exits non-zero.
+// `what` is only used in messages.
+run_command :: proc(command: []string, what: string) {
+    debugf("%s command: ", what)
+    for a in command {
+        debugf("%s ", a)
+    }
+    debugfln("")
+
+    p, err := os.process_start({command = command})
+    if err != .NONE {
+        gala_panic("Failed to start process:", what, err)
+    }
+
+    p_state, werr := os.process_wait(p)
+    if werr != .NONE {
+        gala_panic("Failed to wait for process:", what, werr)
+    }
+    if p_state.exit_code != 0 {
+        gala_panic("Process failed:", what, "exit code:", p_state.exit_code)
+    }
+}
+
+// Links the object files gathered during compilation (ctx.o_files),
+// plus any extra shared libraries passed via -l/--link, into a final
+// executable at ctx.program_name, shelling out to `ld` the same way
+// clang would under the hood.
+link_executable :: proc(ctx: ^Context, extra_libs: []string) {
+    command := make([dynamic]string, allocator = ctx.allocator)
+    append(&command, "ld")
+    append(&command, "-dynamic-linker")
+    append(&command, "/lib64/ld-linux-x86-64.so.2")
+
+    if os.exists("/usr/lib/crt1.o") {
+        // Arch and similar
         append(&command, "/usr/lib/crt1.o")
         append(&command, "/usr/lib/crti.o")
-        append(&command, "-lc")
-        append(&command, "-lm")
-        append(&command, "-L./lib")
-        append(&command, "-lraylib")
-        for f in get_ctx().o_files {
-            append(&command, f)
-        }
-        append(&command, "/usr/lib/crtn.o")
-        append(&command, "-o")
-        append(&command, get_ctx().program_name)
-        */
-        command := make([dynamic]string, allocator=get_ctx().allocator)
-        append(&command, "ld")
-        append(&command, "-dynamic-linker")
-        append(&command, "/lib64/ld-linux-x86-64.so.2")
-        if os.exists("/usr/lib/crt1.o") {
-            // Arch and similar
-            append(&command, "/usr/lib/crt1.o")
-            append(&command, "/usr/lib/crti.o")
-            append(&command, "-L/usr/lib")
-        } else {
-            // Ubuntu/Debian
-            append(&command, "/usr/lib/x86_64-linux-gnu/crt1.o")
-            append(&command, "/usr/lib/x86_64-linux-gnu/crti.o")
-            append(&command, "-L/usr/lib/x86_64-linux-gnu")
-        }
-
-        append(&command, "-L./lib")
-        append(&command, "-lraylib")
-        append(&command, "-lc")
-        append(&command, "-lm")
-
-        for f in get_ctx().o_files {
-            append(&command, f)
-        }
-
-        if os.exists("/usr/lib/crtn.o") {
-            append(&command, "/usr/lib/crtn.o")
-        } else {
-            append(&command, "/usr/lib/x86_64-linux-gnu/crtn.o")
-        }
-
-        append(&command, "-o")
-        append(&command, get_ctx().program_name)
-
-        debug("Link command: ");
-        for a in command {
-            debugf("%s ", a);
-        }
-        debugfln("")
-
-        p, err := os.process_start({command=command[:]});
-        if err != .NONE {
-            gala_panic("Failed to start link (ld) process:", err);
-        }
-        p_state, werr := os.process_wait(p)
-        if werr != .NONE {
-            gala_panic("Failed to wait for link (ld) process:", werr);
-        }
-        if p_state.exit_code != 0 {
-            gala_panic("Failed to link machine code. exit code:", p_state.exit_code);
-        }
-        debugln("clang exit code:", p_state.exit_code);
+        append(&command, "-L/usr/lib")
+    } else {
+        // Ubuntu/Debian
+        append(&command, "/usr/lib/x86_64-linux-gnu/crt1.o")
+        append(&command, "/usr/lib/x86_64-linux-gnu/crti.o")
+        append(&command, "-L/usr/lib/x86_64-linux-gnu")
     }
-    destroy_context(ctx);
-    free_all(context.temp_allocator);
 
-    gala_info("Finished parsing");
+    // append(&command, "-lc")
+    // append(&command, "-lm")
+
+    // Objects first: ld only pulls archive members for symbols that are
+    // already undefined, so .a files have to come after the .o files.
+    for f in ctx.o_files {
+        append(&command, f)
+    }
+
+    for f in ctx.links { // @link libs
+        append(&command, f)
+    }
+
+    // Extra shared libraries requested via -l/--link on the CLI.
+    for lib in extra_libs {
+        append(&command, lib)
+    }
+
+    if os.exists("/usr/lib/crtn.o") {
+        append(&command, "/usr/lib/crtn.o")
+    } else {
+        append(&command, "/usr/lib/x86_64-linux-gnu/crtn.o")
+    }
+
+    append(&command, "-o")
+    append(&command, ctx.program_name)
+
+    run_command(command[:], "link (ld)")
+}
+
+// -c mode: merge every module's .o into one relocatable object at
+// ctx.program_name (`ld -r`). No crt files, no libraries: those are
+// the final link's job (see write_link_list).
+link_object :: proc(ctx: ^Context) {
+    // ld -r would clobber an input if the output name matched one
+    for f in ctx.o_files {
+        if f == ctx.program_name {
+            gala_panic("output name collides with an intermediate object:", f)
+        }
+    }
+
+    command := make([dynamic]string, allocator = ctx.allocator)
+    append(&command, "ld")
+    append(&command, "-r")
+    for f in ctx.o_files {
+        append(&command, f)
+    }
+    append(&command, "-o")
+    append(&command, ctx.program_name)
+
+    run_command(command[:], "merge objects (ld -r)")
+}
+
+// An object can't remember its libraries, so write them next to it as
+// `<output>.links`, one path per line, for the driver's final link.
+write_link_list :: proc(ctx: ^Context, extra_libs: []string) {
+    sb := strings.builder_make()
+    for f in ctx.links {
+        strings.write_string(&sb, f)
+        strings.write_byte(&sb, '\n')
+    }
+    for f in extra_libs {
+        strings.write_string(&sb, f)
+        strings.write_byte(&sb, '\n')
+    }
+
+    path := fmt.aprintf("%s.links", ctx.program_name)
+    werr := os.write_entire_file(path, sb.buf[:])
+    if werr != nil {
+        gala_panic("Failed to write link list:", path)
+    }
+}
+
+main :: proc() { // odins context is passed down, not up, or some shi
+    cli := parse_cli_args(os.args[1:]) // skip program name itself
+    // extra_libs was made on the heap before we switch allocators below; a
+    // dynamic array remembers its own allocator, so this frees it correctly
+    // even though it runs after context.allocator has been changed.
+    defer delete(cli.extra_libs)
+
+    // `ctx` itself is allocated from the heap (it holds the arena, so it
+    // can't live inside it). Remember that allocator so it can be freed at
+    // the end.
+    heap := context.allocator
+
+    ctx := init_context(debug=cli.debug)
+    context.user_ptr = ctx   // <-- set it here, so it's live for the rest of main's scope
+
+    // Route EVERYTHING below main (every bare make/append/aprintf/
+    // strings.builder_make/filepath.* call, and every lazily-allocated nil
+    // map such as ctx.modules or ctx.ty_modules) into the arena, so it's all
+    // released by one arena_destroy instead of showing up as a heap leak.
+    context.allocator = ctx.allocator
+
+    // integer types
+    new_type(&ctx.base_mod, Type{name="i8", kind=.Int_8}, {});
+    new_type(&ctx.base_mod, Type{name="i16", kind=.Int16}, {});
+    new_type(&ctx.base_mod, Type{name="i32", kind=.Int32}, {});
+    new_type(&ctx.base_mod, Type{name="i64", kind=.Int64}, {});
+
+    new_type(&ctx.base_mod, Type{name="u8", kind=.UInt_8 }, {});
+    new_type(&ctx.base_mod, Type{name="u16", kind=.UInt16}, {});
+    new_type(&ctx.base_mod, Type{name="u32", kind=.UInt32}, {});
+    new_type(&ctx.base_mod, Type{name="u64", kind=.UInt64}, {});
+
+    new_type(&ctx.base_mod, Type{name="f8", kind=.Flt_8}, {});
+    new_type(&ctx.base_mod, Type{name="f16", kind=.Flt16}, {});
+    new_type(&ctx.base_mod, Type{name="f32", kind=.Flt32}, {});
+    new_type(&ctx.base_mod, Type{name="f64", kind=.Flt64}, {});
+    new_type(&ctx.base_mod, Type{name="void", kind=.Void}, {});
+    new_type(&ctx.base_mod, Type{name="any", kind=.Any}, {});
+    new_type(&ctx.base_mod, Type{name="bool", kind=.Bool}, {});
+    new_type(&ctx.base_mod, Type{name="byte", kind=.Byte}, {});
+    new_type(&ctx.base_mod, Type{name="rawptr", kind=.Pointer, ptr=void_type()}, {});
+    new_type(&ctx.base_mod, Type{name="string", kind=.String}, {});
+
+    ctx.program_name = cli.program_name
+    ctx.object_only = cli.object_only
+
+    // entry_file is compared against module.path in cg_module to decide
+    // whether to emit the C `main` wrapper. module.path is the *resolved*
+    // path (see handle_file), so the entry file has to go through the exact
+    // same resolution, otherwise `galac /tmp/x.gala` never matches and no
+    // entry point is emitted. ctx.current_file is "" here, same as it will
+    // be when handle_file resolves it below.
+    get_ctx().entry_file = resolve_import_path("", cli.entry_file)
+    handle_file(cli.entry_file)
+
+    // every module is type-checked now, so all generic calls are known
+    typecheck_generics()
+
+    // lowering runs after generics so the clones get lowered too
+    for u in get_ctx().units {
+        get_ctx().current_file = u.file
+        get_ctx().current_module_id = u.mod
+        lower_module(u.ast)
+    }
+
+    // then generate
+    for m, mid in get_ctx().modules {
+        // set for codegen
+        get_ctx().current_file = m;
+        debugln("CG MOD:", m, mid);
+        cg_module(mid)
+    }
+
+    if cli.object_only {
+        link_object(ctx)
+        write_link_list(ctx, cli.extra_libs[:])
+    } else {
+        link_executable(ctx, cli.extra_libs[:])
+    }
+
+    debugln("modules:       ", len(get_ctx().mods));
+    debugln("items:         ", len(get_ctx().items));
+    debugln("stmts:         ", len(get_ctx().stmts));
+    debugln("exprs:         ", len(get_ctx().exprs));
+    debugln("objects:       ", len(get_ctx().objs));
+    debugln("types:         ", len(get_ctx().types));
+    dump_type_stats :: proc() {
+        counts: map[TypeKind]int
+        defer delete(counts)
+        for t in get_ctx().types do counts[t.kind] += 1
+        for k, n in counts do fmt.println(k, n)
+    }
+    if get_ctx().debug  do dump_type_stats()
+    destroy_context(ctx, heap);
+    free_all(context.temp_allocator);
+    debugln("Finished compiling");
+    // gala_info("Finished parsed");
 }

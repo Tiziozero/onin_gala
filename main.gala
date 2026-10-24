@@ -1,131 +1,14 @@
-extern fn printf(fmt: ^byte, ..any);
-extern fn calloc(n: i64, size: i64): rawptr;
-extern fn memcpy(dest: rawptr, src: rawptr, size: i64);
-extern fn free(ptr: rawptr);
+import "core/core.gala";
+import "core/threads.gala";
+import "core/cfunctions.gala";
+import "core/mem.gala";
 
-// RLAPI void InitWindow(i64 width, i64 height, const char *title);  // Initialize window and OpenGL context
-extern fn InitWindow(width: i64, height: i64, title: ^byte): void;
-// RLAPI void CloseWindow(void);                                     // Close window and unload OpenGL context
-extern fn CloseWindow(): void;
-// RLAPI bool WindowShouldClose(void);                               // Check if application should close (KEY_ESCAPE pressed or windows close icon clicked)
-extern fn WindowShouldClose(): bool;
+struct Vector2 { x, y: $T }
 
-// RLAPI void BeginDrawing(void);                                    // Setup canvas (framebuffer) to start drawing
-extern fn BeginDrawing(): void;
-// RLAPI void EndDrawing(void);                                      // End canvas drawing and swap buffers (double buffering)
-extern fn EndDrawing(): void;
-// RLAPI void ClearBackground(Color color);                          // Set background color (framebuffer clear color)
-extern fn ClearBackground(color: Color): void;
-
-// RLAPI Color GetColor(unsigned i64 hexValue);                                // Get Color structure from hexadecimal value
-extern fn GetColor(v: i32): Color;
-
-
-struct Color {
-    r: byte,        // Color red value
-    g: byte,        // Color green value
-    b: byte,        // Color blue value
-    a: byte        // Color alpha value
+fn do_s(v: Vector2($T)): T {
+    return v.x + v.y;
 }
-fn to_cstr(s: string): ^byte {
-    size := len(s)*sizeof(byte);
-    cstr := calloc(1, size + 1);
-    memcpy(cstr, transmute(rawptr)&s[0], size);
-    return cast(^byte)cstr;
-}
-fn print_int(s: string, n: i64) {
-    data := to_cstr(s);
-    printf(data, n);
-    free(cast(rawptr)data);
-    return;
-}
-fn print_flt(s: string, n: f32) {
-    data := to_cstr(s);
-    printf(data, n);
-    free(cast(rawptr)data);
-    return;
-}
-fn print_byte(s: string, n: byte) {
-    data := to_cstr(s);
-    printf(data, n);
-    free(cast(rawptr)data);
-    return;
-}
-struct v2 {
-    x: f32, y: f32
-}
-
-extern fn Vector2Add(a: v2, b: v2): v2;
-
-
-fn dump_i32_2(n: i32): [4]byte {
-    y := n;
-    buf := [4]byte{};
-    memcpy(cast(rawptr)&buf, cast(rawptr)&y, 4);
-    return buf;
-}
-fn dump_i32(n: i32): [4]byte {
-    buf := [4]byte{};
-    y := n;
-    s1 :byte = (cast(^byte)&y)^;
-    a := sizeof(byte);
-    print_byte("n byte 0: %.2x\n", s1);
-    s2 := (cast(^byte)(cast(i64)(&y) + 1))^;
-    print_byte("n byte 1: %.2x\n", s2);
-    s3 := (cast(^byte)(cast(i64)(&y) + 2))^;
-    print_byte("n byte 2: %.2x\n", s3);
-    s4 := (cast(^byte)(cast(i64)(&y) + 3))^;
-    print_byte("n byte 3: %.2x\n", s4);
-    buf[0] = s1;
-    buf[1] = s2;
-    buf[2] = s3;
-    buf[3] = s4;
-    return buf;
-}
-fn main(): i64 {
-    s := "Hello, World! %d\n";
-    data := to_cstr(s);
-    printf(data, 9);
-    printf(data, 8);
-    name := to_cstr("Hello, Raylib from Gala!!");
-    // InitWindow(800, 600, name);
-
-    c := Color{r=123, g=222, b=255, a= 255};
-    if !true {
-        printf(data, 7);
-    }
-    print_int("r: %d\n", cast(i64)c.r);
-    print_int("g: %d\n", cast(i64)c.g);
-    print_int("b: %d\n", cast(i64)c.b);
-    print_int("a: %d\n", cast(i64)c.a);
-    from_int := GetColor(4278190335);
-    print_int("GetColor:\n", 0);
-    print_int("\tr: %d\n", cast(i64)from_int.r);
-    print_int("\tg: %d\n", cast(i64)from_int.g);
-    print_int("\tb: %d\n", cast(i64)from_int.b);
-    print_int("\ta: %d\n", cast(i64)from_int.a);
-    print_flt("smth: %f\n", 3.1416);
-
-
-    a := v2{x=1.2, y=2.2};
-    b := v2{x=1.0, y=2.0};
-    v := Vector2Add(a, b);
-    print_flt("\tx: %f\n",  v.x);
-    print_flt("\ty: %f\n",  v.y);
-
-    x : i32 = transmute(i32)v.x;
-    buf := dump_i32_2(x);
-    print_byte("xbuf 0: %.2x\n", buf[0]);
-    print_byte("xbuf 1: %.2x\n", buf[1]);
-    print_byte("xbuf 2: %.2x\n", buf[2]);
-    print_byte("xbuf 3: %.2x\n", buf[3]);
-    y : i32 = transmute(i32)v.y;
-    buf = dump_i32_2(y);
-    print_byte("ybuf 0: %.2y\n", buf[0]);
-    print_byte("ybuf 1: %.2y\n", buf[1]);
-    print_byte("ybuf 2: %.2y\n", buf[2]);
-    print_byte("ybuf 3: %.2y\n", buf[3]);
-    free(cast(rawptr)data);
-    free(cast(rawptr)name);
-    return cast(i64)buf[2];
+fn main(): i32 {
+    println(do_s({1.2, 3.4}));
+    return 0;
 }

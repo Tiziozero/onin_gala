@@ -1,123 +1,501 @@
+// cg_abi.odin
 package main
 
 import "core:fmt"
 
-CAbiInfo :: struct {
-    type: TypeId,
-    needs_conversion: bool,
+// ============================================================================
+// Unified ABI layer.
+//
+// Every function definition, declaration, and call goes through
+// cg_abi_lower_signature instead of branching on `is_external`. AbiKind
+// exists so a distinct calling convention can be added later without
+// touching call sites — right now BOTH .None and .SysV resolve to the same
+// SysV x86-64 lowering below (per design decision: internal Gala-to-Gala
+// calls get full SysV treatment too, not a separate "raw aggregate"
+// convention). If that's ever wanted, give .None its own branch inside
+// cg_abi_lower_signature.
+// ============================================================================
+
+AbiKind :: enum {
+    None,
+    SysV,
 }
 
-lower_c_abi_type :: proc(type_id: TypeId) -> CAbiInfo {
-    ty := get_type(type_id)
+AbiClass :: enum {
+    NoClass,
+    Integer,
+    Sse,
+    Memory,
+}
 
+AbiEightbyte :: struct {
+    class: AbiClass,
+    llvm_type: string,
+    hi: int,
+
+    f32_count: int,
+    f16_count: int,
+    only_f32: bool,
+}
+
+// Result of classifying an aggregate (struct / fixed array / slice /
+// string) for argument/return purposes. Scalars are handled separately in
+// lower_abi_value and never go through this.
+AbiClassified :: struct {
+    is_memory:      bool,
+    eightbytes:     [2]AbiEightbyte,
+    num_eightbytes: int, // 0 if is_memory, else 1 or 2
+    size:           int,
+    align:          int,
+}
+
+merge_abi_class :: proc(a, b: AbiClass) -> AbiClass {
+    if a == b do return a
+    if a == .NoClass do return b
+    if b == .NoClass do return a
+    if a == .Memory || b == .Memory do return .Memory
+    if a == .Integer || b == .Integer do return .Integer
+    return .Sse
+}
+
+scalar_abi_class :: proc(k: TypeKind) -> AbiClass {
+    #partial switch k {
+    case .Flt64, .Flt32, .Flt16:
+        return .Sse
+    case:
+        // ints, Byte, Rune, Bool, Pointer, Function — and Flt_8, which has
+        // no real 8-bit float representation and is lowered as a plain i8
+        // (see scalar_llvm_str), so it must travel in an integer register
+        // exactly like that i8 would.
+        return .Integer
+    }
+}
+
+// Naive sequential (no field reordering) struct layout — natural C-style
+// alignment, no explicit #packed support. Good enough for classification.
+type_align_of :: proc(type_id: TypeId) -> int {
+    ty := get_type(type_id)
     #partial switch ty.kind {
+    case .UInt64, .Int64, .Flt64, .Pointer, .Function:
+        return 8
+    case .UInt32, .Int32, .Flt32:
+        return 4
+    case .UInt16, .Int16, .Flt16:
+        return 2
+    case .UInt_8, .Int_8, .Flt_8, .Byte, .Rune, .Bool:
+        return 1
+    case .Slice, .String, .Any:
+        // `any` is boxed as { ptr, i64 } — identical header shape to a
+        // slice/string, so it carries the same 8-byte alignment.
+        return 8
+    case .FixedSizeArray:
+        return type_align_of(ty.fixed_size_array.type)
     case .Struct:
-        size := type_size(type_id)
-        switch {
-        case size <= 8:
-            // one eightbyte, treated as INTEGER class. (SSE/float
-            // classification not implemented — an all-float small
-            // struct should go in an XMM reg, not GPR. Known gap.)
-            return {type = int_type_for_size(size), needs_conversion = true}
-        case size <= 16:
-            // two eightbytes, both INTEGER class
-            return {type = two_eightbytes_type(), needs_conversion = true}
-        case:
-            // MEMORY class: passed/returned via hidden pointer
-            return {type = intern_type({kind = .Pointer, ptr = type_id}), needs_conversion = true}
+        a := 1
+        for f in ty.structure.fields {
+            fa := type_align_of(f.type)
+            if fa > a do a = fa
+        }
+        return a
+    case:
+        gala_panic("type_align_of: unhandled kind")
+    }
+    return 1
+}
+
+// Offsets of each field of a struct, laid out sequentially with natural
+// alignment padding (no reordering).
+struct_field_offsets :: proc(type_id: TypeId) -> []int {
+    ty := get_type(type_id)
+    assert(ty.kind == .Struct)
+    offsets := make([]int, len(ty.structure.fields), allocator = context.temp_allocator)
+    off := 0
+    for f, i in ty.structure.fields {
+        fa := type_align_of(f.type)
+        if off % fa != 0 {
+            off += fa - (off % fa)
+        }
+        offsets[i] = off
+        off += type_size(f.type)
+    }
+    return offsets
+}
+
+// Walks a (possibly nested) type and merges its scalar leaves into the
+// eightbyte buckets covering [base_offset .. base_offset+size). Only ever
+// called on types whose total containing aggregate is <=16 bytes, so the
+// two-element `eb` array is always in bounds.
+classify_into_eightbytes :: proc(type_id: TypeId, base_offset: int, eb: ^[2]AbiEightbyte) {
+    ty := get_type(type_id)
+    #partial switch ty.kind {
+    case .Struct: {
+        offsets := struct_field_offsets(type_id)
+        for f, i in ty.structure.fields {
+            classify_into_eightbytes(f.type, base_offset + offsets[i], eb)
+        }
+    }
+    case .FixedSizeArray: {
+        elem_size := type_size(ty.fixed_size_array.type)
+        for i in 0 ..< ty.fixed_size_array.size {
+            classify_into_eightbytes(ty.fixed_size_array.type, base_offset + i * elem_size, eb)
+        }
+    }
+    case .Slice, .String, .Any: {
+        // { ptr, i64 } — two INTEGER eightbytes. Always eightbyte-aligned
+        // within the parent since its own alignment is 8. `any`'s second
+        // field is a runtime typeid tag rather than a length, but that's
+        // irrelevant to classification: both fields are still 8-byte
+        // Integer-class words, so it merges exactly like a slice header.
+        // Without this case an `any` nested inside a larger struct/array
+        // would fall through to the scalar default below and get
+        // misclassified as a single 8-byte field, silently dropping its
+        // second word.
+        idx0 := base_offset / 8
+        eb[idx0].class = merge_abi_class(eb[idx0].class, .Integer)
+        eb[idx0 + 1].class = merge_abi_class(eb[idx0 + 1].class, .Integer)
+        if base_offset + 8 > eb[idx0].hi do eb[idx0].hi = base_offset + 8
+        if base_offset + 16 > eb[idx0 + 1].hi do eb[idx0 + 1].hi = base_offset + 16
+    }
+    case: {
+        class := scalar_abi_class(ty.kind)
+        idx := base_offset / 8
+
+        eb[idx].class = merge_abi_class(eb[idx].class, class)
+
+        if ty.kind == .Flt32 {
+            eb[idx].f32_count += 1
+        }
+        if ty.kind == .Flt16 {
+            eb[idx].f16_count += 1
         }
 
-    case .Slice, .String:
-        // Already { ptr, i64 } — exactly the two-eightbyte layout SysV
-        // wants for a 16-byte aggregate. No repacking needed.
-        return {type = type_id, needs_conversion = false}
+        end := base_offset + type_size(type_id)
+        if end > eb[idx].hi do eb[idx].hi = end
+    }
+    }
+}
 
+// Integer type covering exactly `nbytes` bytes of real data. Clang uses
+// odd-width integers (i24, i40, i48, i56) for 3/5/6/7-byte remainders —
+// rounding those up to i32/i64 would make the memory round-trip in
+// cg_emit_abi_arg / cg_emit_call read or write PAST the end of a slot
+// that is only `nbytes` large.
+int_class_llvm_type :: proc(nbytes: int) -> string {
+    switch nbytes {
+    case 1: return "i8"
+    case 2: return "i16"
+    case 3: return "i24"
+    case 4: return "i32"
+    case 5: return "i40"
+    case 6: return "i48"
+    case 7: return "i56"
+    case: return "i64"
+    }
+}
+
+// Scalar LLVM type strings, hardcoded rather than routed through
+// ty_to_llvm_str/CGCtx — classify_type doesn't always have a CGCtx handy,
+// and scalars never need memory-roundtrip coercion anyway (see
+// AbiArgLowering.needs_coercion), so there's nothing to memoize.
+scalar_llvm_str :: proc(type_id: TypeId) -> string {
+    ty := get_type(type_id)
+    #partial switch ty.kind {
+    case .Pointer, .Function: return "ptr"
+    case .Flt64: return "double"
+    case .Flt32: return "float"
+    case .Flt16: return "half"
+    case .Flt_8: return "i8" // no dedicated llvm 8-bit float type in use here
+    case .Int64, .UInt64: return "i64"
+    case .Int32, .UInt32: return "i32"
+    case .Int16, .UInt16: return "i16"
+    case .Int_8, .UInt_8, .Byte: return "i8"
+    case .Rune: return "i32"
+    case .Bool: return "i1"
+    case:
+        debugln(type_id, ty, get_span(type_id))
+        highlight_lines(get_span(type_id))
+        gala_panic("scalar_llvm_str: unhandled scalar kind", ty.kind)
+    }
+    return ""
+}
+
+// Extension attribute a scalar parameter / return value needs under the
+// x86-64 SysV ABI as implemented by clang: anything narrower than 32 bits
+// is extended to 32 bits by the CALLER, and callees compiled by clang/gcc
+// rely on that. Without this attribute LLVM is free to leave garbage in
+// the upper bits of the register.
+//
+//   bool, unsigned char/short -> "zeroext"
+//   signed char/short         -> "signext"
+//
+// Returns "" for everything else (including all aggregates).
+abi_scalar_ext :: proc(type_id: TypeId) -> string {
+    ty := get_type(type_id)
+    #partial switch ty.kind {
+    case .Bool, .Byte, .UInt_8, .UInt16:
+        return "zeroext"
+    case .Int_8, .Int16:
+        return "signext"
+    }
+    return ""
+}
+
+abi_content_size :: proc(type_id: TypeId) -> int {
+    ty := get_type(type_id)
+    #partial switch ty.kind {
+    case .Struct: {
+        n := len(ty.structure.fields)
+        if n == 0 do return 0
+        offsets := struct_field_offsets(type_id)
+        last := n - 1
+        return offsets[last] + abi_content_size(ty.structure.fields[last].type)
+    }
+    case .FixedSizeArray: {
+        if ty.fixed_size_array.size == 0 do return 0
+        elem_size := type_size(ty.fixed_size_array.type)
+        return (ty.fixed_size_array.size - 1) * elem_size + abi_content_size(ty.fixed_size_array.type)
+    }
+    case:
+        return type_size(type_id)
+    }
+}
+// Classifies an aggregate (struct / fixed array) for ABI purposes. Slices
+// and strings are handled inline in lower_abi_value since they're always
+// exactly the right shape already.
+classify_type :: proc(type_id: TypeId) -> AbiClassified {
+    size := type_size(type_id)
+    align := type_align_of(type_id)
+
+    r: AbiClassified
+    r.size = size
+    r.align = align
+
+    // MEMORY class: too big, or over-aligned past 16 bytes.
+    if size > 16 || align > 16 {
+        r.is_memory = true
+        return r
+    }
+
+    eb: [2]AbiEightbyte
+    classify_into_eightbytes(type_id, 0, &eb)
+    r.num_eightbytes = size <= 8 ? 1 : 2
+
+    for i in 0 ..< r.num_eightbytes {
+        eb[i].only_f32 = true
+        class := eb[i].class
+        if class == .NoClass do class = .Integer
+        r.eightbytes[i].class = class
+        r.eightbytes[i].f32_count = eb[i].f32_count
+        r.eightbytes[i].f16_count = eb[i].f16_count
+
+        // SysV/clang shrink a coercion type to how much real data THIS
+        // eightbyte alone holds. Padding elsewhere in the struct -- even a
+        // same-eightbyte gap before the next field starts -- never widens
+        // it, and data sitting in the OTHER eightbyte never does either.
+        // (Previously this used `size - i*8`, i.e. the struct's overall
+        // size minus this eightbyte's offset -- that leaks information
+        // from one eightbyte into the other's width decision. It happened
+        // to agree with the correct answer for S12/DoubleInt/LongFloat,
+        // where only ONE of the two eightbytes is ever short on data, but
+        // it's wrong for IntDouble/FloatLong, where eightbyte 0 is short
+        // (only 4 real bytes, alignment padding fills the rest) while
+        // eightbyte 1 is completely full -- confirmed against clang's
+        // actual output: `{i32,f64}` -> `{i32,double}`, `{f32,i64}` ->
+        // `{float,i64}`, not `{i64,double}` / `{double,i64}`.)
+        lo := i * 8
+        nbytes := eb[i].hi - lo
+        if nbytes <= 0 || nbytes > 8 do nbytes = 8
+
+        if class == .Sse {
+            n32 := eb[i].f32_count
+            n16 := eb[i].f16_count
+            switch {
+            case n16 == 0 && n32 == 2:
+                r.eightbytes[i].llvm_type = "<2 x float>"
+            case n16 == 0 && n32 == 1:
+                r.eightbytes[i].llvm_type = "float"
+            case n32 == 0 && n16 == 1:
+                r.eightbytes[i].llvm_type = "half"
+            case n32 == 0 && n16 == 2:
+                r.eightbytes[i].llvm_type = "<2 x half>"
+            case n32 == 0 && n16 > 2:
+                r.eightbytes[i].llvm_type = "<4 x half>"
+            case:
+                // a plain double (or an exotic float/half mix that just
+                // needs to occupy one SSE register)
+                r.eightbytes[i].llvm_type = "double"
+            }
+        } else {
+            r.eightbytes[i].llvm_type = int_class_llvm_type(nbytes)
+        }
+    }
+    return r
+}
+
+// ----------------------------------------------------------------------------
+// Per-value lowering shared by arguments and the return value.
+// ----------------------------------------------------------------------------
+
+// is_memory, coerced llvm type (Direct only), needs_coercion, alignment.
+lower_abi_value :: proc(type_id: TypeId) -> (bool, string, bool, int) {
+    ty := get_type(type_id)
+    #partial switch ty.kind {
     case .UInt64, .UInt32, .UInt16, .UInt_8,
          .Int64, .Int32, .Int16, .Int_8,
          .Flt64, .Flt32, .Flt16, .Flt_8,
-         .Bool, .Byte, .Rune, .Pointer:
-        return {type = type_id, needs_conversion = false}
-
-    case:
-        gala_panic(fmt.tprintf("unsupported C ABI argument type: %v", ty.kind))
-    }
-}
-
-int_type_for_size :: proc(size: int) -> TypeId {
-    switch {
-    case size <= 1: return ty_from_name("i8")
-    case size <= 2: return ty_from_name("i16")
-    case size <= 4: return ty_from_name("i32")
-    case size <= 8: return ty_from_name("i64")
-    case: gala_panic("int_type_for_size: size too large for a single eightbyte")
-    }
-}
-
-// NOTE: assumes Field is roughly {name, type}. Adjust if your Field
-// struct needs offsets or anything else filled in.
-two_eightbytes_type :: proc() -> TypeId {
-    i64_ty := ty_from_name("i64");
-    return intern_type({
-        kind = .Struct,
-        structure = {fields = {
-            {name = "_0", type = i64_ty},
-            {name = "_1", type = i64_ty},
-        }},
-    })
-}
-
-cg_abi_convert :: proc(c: ^CGCtx, value: string, from: TypeId, to: TypeId) -> string {
-    from_ty := get_type(from)
-    to_ty := get_type(to)
-
-    #partial switch from_ty.kind {
-    case .Struct:
-        // Indirect (MEMORY class): spill to a stack slot and hand back
-        // the pointer itself. Nothing to load — the pointer IS the arg.
-        if to_ty.kind == .Pointer {
-            slot := new_tmp(c)
-            cwritef(c, "\t%s = alloca %s\n", slot, ty_to_llvm_str(c, from))
-            cwritef(c, "\tstore %s %s, ptr %s\n", ty_to_llvm_str(c, from), value, slot)
-            return slot
+         .Bool, .Byte, .Rune, .Pointer, .Function:
+        // plain scalar, passed as-is, never coerced
+        return false, scalar_llvm_str(type_id), false, type_align_of(type_id)
+    case .Slice, .String, .Any:
+        // already the correct 2-eightbyte { ptr, i64 } layout — `any` is
+        // boxed at the call site (see cg_box_any in codegen.odin) into
+        // exactly this shape before it ever reaches ABI lowering, so a
+        // function declared/defined/called with an `any` parameter or
+        // return type needs no different treatment here than a
+        // slice/string header would. This is the one place that has to
+        // know about it for fn definitions, extern declarations, AND
+        // call sites to all agree — they all funnel through
+        // cg_abi_lower_signature below.
+        return false, "{ ptr, i64 }", false, 8
+    case .Struct, .FixedSizeArray:
+        c := classify_type(type_id)
+        if c.is_memory {
+            // x86-64 SysV: byval arguments are always at least 8-byte
+            // aligned (clang emits `byval(%T) align 8` even for a struct
+            // whose natural alignment is 4). For sret the natural
+            // alignment is used instead — see cg_abi_lower_signature.
+            return true, "", false, max(c.align, 8)
         }
-
-        // Register class: bit-reinterpret through memory. Slot must be
-        // sized to the LARGER of from/to or a small struct overreads
-        // when loaded back as a wider integer.
-        n := max(type_size(from), type_size(to))
-        slot := new_tmp(c)
-        cwritef(c, "\t%s = alloca [%d x i8]\n", slot, n)
-        cwritef(c, "\tstore %s %s, ptr %s\n", ty_to_llvm_str(c, from), value, slot)
-        loaded := new_tmp(c)
-        cwritef(c, "\t%s = load %s, ptr %s\n", loaded, ty_to_llvm_str(c, to), slot)
-        return loaded
-
+        if c.num_eightbytes == 1 {
+            return false, c.eightbytes[0].llvm_type, true, c.align
+        }
+        coerced := fmt.tprintf("{{ %s, %s }}", c.eightbytes[0].llvm_type, c.eightbytes[1].llvm_type)
+        return false, coerced, true, c.align
     case:
-        gala_panic("missing abi conversion")
+        debugln(get(type_id))
+        gala_panic("lower_abi_value: unhandled kind")
     }
+    return false, "", false, 0
 }
 
-// Reverse of cg_abi_convert: given a raw ABI-typed value, unpack it into
-// the real type.
-cg_abi_unconvert :: proc(c: ^CGCtx, value: string, from: TypeId, to: TypeId) -> string {
-    from_ty := get_type(from)
+AbiArgMode :: enum {
+    Direct, // passed as a (possibly coerced) SSA value
+    ByVal,  // passed as `ptr byval(%T) align N`
+}
 
-    // Indirect: `value` already points at the real data (sret-style
-    // return, or a >16-byte struct received by address). Load straight
-    // out of it — don't alloca a slot and copy the pointer's bytes in,
-    // that stores 8 bytes then overreads them as a whole struct.
-    if from_ty.kind == .Pointer {
-        loaded := new_tmp(c)
-        cwritef(c, "\t%s = load %s, ptr %s\n", loaded, ty_to_llvm_str(c, to), value)
-        return loaded
+AbiArgLowering :: struct {
+    orig_type:      TypeId,
+    mode:           AbiArgMode,
+    coerced_type:   string, // Direct only
+    needs_coercion: bool,   // Direct only
+    byval_align:    int,    // ByVal only
+    ext:            string, // Direct scalars only: "", "zeroext" or "signext".
+                            // Emit as `<coerced_type> <ext>` in defs/decls/calls.
+}
+
+AbiRetMode :: enum {
+    Direct,
+    Indirect, // sret
+}
+
+AbiRetLowering :: struct {
+    orig_type:      TypeId,
+    mode:           AbiRetMode,
+    coerced_type:   string, // Direct: llvm return type. Indirect: "void"
+    needs_coercion: bool,   // Direct only
+    sret_align:     int,    // Indirect only
+    ext:            string, // Direct scalars only: "", "zeroext" or "signext".
+                            // Emit as `<ext> <coerced_type>` in defs/decls/calls.
+}
+
+AbiSignature :: struct {
+    ret:  AbiRetLowering,
+    args: []AbiArgLowering,
+}
+
+// The single entry point every function definition, declaration, and call
+// goes through.
+cg_abi_lower_signature :: proc(c: ^CGCtx, fn_type_id: TypeId, kind: AbiKind) -> AbiSignature {
+    _ = kind // .None and .SysV currently lower identically — see AbiKind doc comment
+    fn_ty := get_type(fn_type_id)
+    sig: AbiSignature
+
+    if get_type(fn_ty.fn.ret_ty).kind == .Void {
+        sig.ret = AbiRetLowering{orig_type = fn_ty.fn.ret_ty, mode = .Direct, coerced_type = "void"}
+    } else {
+        is_mem, coerced, needs_coerce, _ := lower_abi_value(fn_ty.fn.ret_ty)
+        if is_mem {
+            // sret uses the type's natural alignment (not the >=8 byval
+            // minimum lower_abi_value reports for memory-class values).
+            sig.ret = AbiRetLowering{
+                orig_type = fn_ty.fn.ret_ty,
+                mode      = .Indirect,
+                coerced_type = "void",
+                sret_align = type_align_of(fn_ty.fn.ret_ty),
+            }
+        } else {
+            sig.ret = AbiRetLowering{
+                orig_type      = fn_ty.fn.ret_ty,
+                mode           = .Direct,
+                coerced_type   = coerced,
+                needs_coercion = needs_coerce,
+                ext            = abi_scalar_ext(fn_ty.fn.ret_ty),
+            }
+        }
     }
 
-    // Register class: same oversized-slot fix as cg_abi_convert.
-    n := max(type_size(from), type_size(to))
-    tmp := new_tmp(c)
-    cwritef(c, "\t%s = alloca [%d x i8]\n", tmp, n)
-    cwritef(c, "\tstore %s %s, ptr %s\n", ty_to_llvm_str(c, from), value, tmp)
-    loaded := new_tmp(c)
-    cwritef(c, "\t%s = load %s, ptr %s\n", loaded, ty_to_llvm_str(c, to), tmp)
-    return loaded
+    args := make([dynamic]AbiArgLowering, allocator = get_ctx().allocator)
+    for a in fn_ty.fn.args {
+        is_mem, coerced, needs_coerce, align := lower_abi_value(a.type)
+        if is_mem {
+            append(&args, AbiArgLowering{orig_type = a.type, mode = .ByVal, byval_align = align})
+        } else {
+            append(&args, AbiArgLowering{
+                orig_type      = a.type,
+                mode           = .Direct,
+                coerced_type   = coerced,
+                needs_coercion = needs_coerce,
+                ext            = abi_scalar_ext(a.type),
+            })
+        }
+    }
+    sig.args = args[:]
+    return sig
+}
+// C "default argument promotions" (C11 §6.5.2.2p7), applied to every
+// argument landing in a true C-variadic `...` slot — never to a fixed
+// parameter, and never to a Gala `..T` slice-packed tail (which has a
+// real declared element type the callee expects exactly).
+//
+// This is pure C-language semantics, decided before SysV classification
+// ever runs: `float` becomes `double`, and any integer type narrower
+// than `int` gets widened to `int`, *before* the value is considered
+// "in" the variadic slot at all. SysV then classifies the promoted type
+// exactly as it would any other `double`/`i32` — it has no separate rule
+// for "a float that arrived via variadic," because by that point there
+// isn't one anymore.
+AbiVariadicPromotion :: enum {
+    None,
+    FloatToDouble,   // fpext
+    ZeroExtendToInt, // zext  (unsigned sub-int types, and bool)
+    SignExtendToInt, // sext  (signed sub-int types)
+}
+
+// Returns the promotion (if any) required for `type_id` in a C-variadic
+// slot, plus the resulting LLVM type string after promotion (identical
+// to scalar_llvm_str(type_id) when no promotion applies).
+c_variadic_promote :: proc(type_id: TypeId) -> (AbiVariadicPromotion, string) {
+    ty := get_type(type_id)
+    #partial switch ty.kind {
+    case .Flt32, .Flt16, .Flt_8:
+        return .FloatToDouble, "double"
+    case .Bool, .Byte, .UInt_8, .UInt16:
+        return .ZeroExtendToInt, "i32"
+    case .Int_8, .Int16:
+        return .SignExtendToInt, "i32"
+    case:
+        // Int32/UInt32 and wider, Flt64, Rune (already i32-sized),
+        // Pointer, Function: already >= variadic minimum width.
+        return .None, scalar_llvm_str(type_id)
+    }
 }

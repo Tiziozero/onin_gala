@@ -1,0 +1,598 @@
+// rl.gala
+import "./core.gala";
+
+@link("./lib/libraylib.so")
+
+// ============================================================
+// Basic types
+// ============================================================
+
+struct Vector2 {
+    x: f32,
+    y: f32,
+}
+
+struct Vector3 {
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+struct Vector4 {
+    x: f32,
+    y: f32,
+    z: f32,
+    w: f32,
+}
+
+struct Color {
+    r: byte,
+    g: byte,
+    b: byte,
+    a: byte,
+}
+
+struct Rectangle {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+struct Texture {
+    id: u32,
+    width: i32,
+    height: i32,
+    mipmaps: i32,
+    format: i32,
+}
+
+
+struct Image {
+    data: ^void,
+    width: i32,
+    height: i32,
+    mipmaps: i32,
+    format: i32,
+}
+
+struct Font {
+    baseSize: i32,
+    glyphCount: i32,
+    glyphPadding: i32,
+    texture: Texture,
+    recs: ^Rectangle,
+    glyphs: ^GlyphInfo,
+}
+
+struct GlyphInfo {
+    value: i32,
+    offsetX: i32,
+    offsetY: i32,
+    advanceX: i32,
+    image: Image,
+}
+
+struct Camera2D {
+    offset: Vector2,
+    target: Vector2,
+    rotation: f32,
+    zoom: f32,
+}
+
+struct Camera {
+    position: Vector3,
+    target: Vector3,
+    up: Vector3,
+    fovy: f32,
+    projection: i32,
+}
+
+
+
+// ============================================================
+// Window
+// ============================================================
+
+extern fn InitWindow(w: i32, h: i32, title: ^byte);
+extern fn CloseWindow();
+extern fn WindowShouldClose(): bool;
+
+extern fn IsWindowReady(): bool;
+extern fn IsWindowFullscreen(): bool;
+extern fn IsWindowHidden(): bool;
+extern fn IsWindowMinimized(): bool;
+extern fn IsWindowMaximized(): bool;
+extern fn IsWindowFocused(): bool;
+extern fn IsWindowResized(): bool;
+
+extern fn ToggleFullscreen();
+extern fn ToggleBorderlessWindowed();
+
+extern fn SetWindowTitle(title: ^byte);
+extern fn SetWindowPosition(x: i32, y: i32);
+extern fn SetWindowSize(width: i32, height: i32);
+
+extern fn GetScreenWidth(): i32;
+extern fn GetScreenHeight(): i32;
+extern fn GetRenderWidth(): i32;
+extern fn GetRenderHeight(): i32;
+
+
+// ============================================================
+// Drawing
+// ============================================================
+
+extern fn ClearBackground(color: Color);
+
+extern fn BeginDrawing();
+extern fn EndDrawing();
+
+extern fn BeginMode2D(camera: Camera2D);
+extern fn EndMode2D();
+
+extern fn BeginMode3D(camera: Camera);
+extern fn EndMode3D();
+
+extern fn BeginTextureMode(target: RenderTexture);
+extern fn EndTextureMode();
+
+extern fn BeginScissorMode(x: i32, y: i32, width: i32, height: i32);
+extern fn EndScissorMode();
+
+
+// ============================================================
+// Frame timing
+// ============================================================
+
+extern fn SetTargetFPS(fps: i32);
+extern fn GetFrameTime(): f32;
+extern fn GetTime(): f64;
+extern fn GetFPS(): i32;
+
+
+// ============================================================
+// Keyboard
+// ============================================================
+
+extern fn IsKeyPressed(key: i32): bool;
+extern fn IsKeyPressedRepeat(key: i32): bool;
+extern fn IsKeyDown(key: i32): bool;
+extern fn IsKeyReleased(key: i32): bool;
+extern fn IsKeyUp(key: i32): bool;
+
+extern fn GetKeyPressed(): i32;
+extern fn GetCharPressed(): i32;
+
+extern fn SetExitKey(key: i32);
+
+
+// ============================================================
+// Mouse
+// ============================================================
+
+extern fn IsMouseButtonPressed(button: i32): bool;
+extern fn IsMouseButtonDown(button: i32): bool;
+extern fn IsMouseButtonReleased(button: i32): bool;
+extern fn IsMouseButtonUp(button: i32): bool;
+
+extern fn GetMouseX(): i32;
+extern fn GetMouseY(): i32;
+extern fn GetMousePosition(): Vector2;
+extern fn GetMouseDelta(): Vector2;
+
+extern fn SetMousePosition(x: i32, y: i32);
+
+extern fn GetMouseWheelMove(): f32;
+extern fn GetMouseWheelMoveV(): Vector2;
+
+extern fn SetMouseCursor(cursor: i32);
+
+
+// ============================================================
+// 2D shapes
+// ============================================================
+
+extern fn DrawPixel(x: i32, y: i32, color: Color);
+extern fn DrawPixelV(position: Vector2, color: Color);
+
+extern fn DrawLine(
+    startX: i32,
+    startY: i32,
+    endX: i32,
+    endY: i32,
+    color: Color,
+);
+
+extern fn DrawLineV(
+    startPos: Vector2,
+    endPos: Vector2,
+    color: Color,
+);
+
+extern fn DrawLineEx(
+    startPos: Vector2,
+    endPos: Vector2,
+    thick: f32,
+    color: Color,
+);
+
+extern fn DrawRectangle(
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    color: Color,
+);
+
+extern fn DrawRectangleV(
+    position: Vector2,
+    size: Vector2,
+    color: Color,
+);
+
+extern fn DrawRectangleRec(
+    rec: Rectangle,
+    color: Color,
+);
+
+extern fn DrawRectanglePro(
+    rec: Rectangle,
+    origin: Vector2,
+    rotation: f32,
+    color: Color,
+);
+
+extern fn DrawRectangleLines(
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    color: Color,
+);
+
+extern fn DrawRectangleLinesEx(
+    rec: Rectangle,
+    thick: f32,
+    color: Color,
+);
+
+extern fn DrawCircle(
+    centerX: i32,
+    centerY: i32,
+    radius: f32,
+    color: Color,
+);
+
+extern fn DrawCircleV(
+    center: Vector2,
+    radius: f32,
+    color: Color,
+);
+
+extern fn DrawCircleLines(
+    centerX: i32,
+    centerY: i32,
+    radius: f32,
+    color: Color,
+);
+
+extern fn DrawCircleLinesV(
+    center: Vector2,
+    radius: f32,
+    color: Color,
+);
+
+extern fn DrawTriangle(
+    v1: Vector2,
+    v2: Vector2,
+    v3: Vector2,
+    color: Color,
+);
+
+
+// ============================================================
+// Text
+// ============================================================
+
+extern fn DrawText(
+    text: ^byte,
+    posX: i32,
+    posY: i32,
+    fontSize: i32,
+    color: Color,
+);
+
+extern fn DrawTextEx(
+    font: Font,
+    text: ^byte,
+    position: Vector2,
+    fontSize: f32,
+    spacing: f32,
+    tint: Color,
+);
+
+extern fn MeasureText(
+    text: ^byte,
+    fontSize: i32,
+): i32;
+
+extern fn MeasureTextEx(
+    font: Font,
+    text: ^byte,
+    fontSize: f32,
+    spacing: f32,
+): Vector2;
+
+extern fn LoadFont(fileName: ^byte): Font;
+extern fn LoadFontEx(
+    fileName: ^byte,
+    fontSize: i32,
+    codepoints: ^i32,
+    codepointCount: i32,
+): Font;
+
+extern fn GetFontDefault(): Font;
+extern fn UnloadFont(font: Font);
+
+
+// ============================================================
+// Textures
+// ============================================================
+
+extern fn LoadTexture(fileName: ^byte): Texture;
+extern fn LoadTextureFromImage(image: Image): Texture;
+
+extern fn IsTextureValid(texture: Texture): bool;
+
+extern fn UnloadTexture(texture: Texture);
+
+extern fn DrawTexture(
+    texture: Texture,
+    posX: i32,
+    posY: i32,
+    tint: Color,
+);
+
+extern fn DrawTextureV(
+    texture: Texture,
+    position: Vector2,
+    tint: Color,
+);
+
+extern fn DrawTextureEx(
+    texture: Texture,
+    position: Vector2,
+    rotation: f32,
+    scale: f32,
+    tint: Color,
+);
+
+extern fn DrawTextureRec(
+    texture: Texture,
+    source: Rectangle,
+    position: Vector2,
+    tint: Color,
+);
+
+extern fn DrawTexturePro(
+    texture: Texture,
+    source: Rectangle,
+    dest: Rectangle,
+    origin: Vector2,
+    rotation: f32,
+    tint: Color,
+);
+
+
+// ============================================================
+// Images
+// ============================================================
+
+extern fn LoadImage(fileName: ^byte): Image;
+extern fn IsImageValid(image: Image): bool;
+extern fn UnloadImage(image: Image);
+
+extern fn ImageResize(
+    image: ^Image,
+    newWidth: i32,
+    newHeight: i32,
+);
+
+extern fn ImageFlipVertical(image: ^Image);
+extern fn ImageFlipHorizontal(image: ^Image);
+
+extern fn GenImageColor(
+    width: i32,
+    height: i32,
+    color: Color,
+): Image;
+
+
+// ============================================================
+// Render textures
+// ============================================================
+
+
+extern fn LoadRenderTexture(
+    width: i32,
+    height: i32,
+): RenderTexture;
+
+extern fn IsRenderTextureValid(
+    target: RenderTexture,
+): bool;
+
+extern fn UnloadRenderTexture(
+    target: RenderTexture,
+);
+
+
+// ============================================================
+// Camera
+// ============================================================
+
+extern fn UpdateCamera(
+    camera: ^Camera,
+    mode: i32,
+);
+
+extern fn GetWorldToScreen(
+    position: Vector3,
+    camera: Camera,
+): Vector2;
+
+extern fn GetScreenToWorldRay(
+    position: Vector2,
+    camera: Camera,
+): Ray;
+
+extern fn GetWorldToScreen2D(
+    position: Vector2,
+    camera: Camera2D,
+): Vector2;
+
+extern fn GetScreenToWorld2D(
+    position: Vector2,
+    camera: Camera2D,
+): Vector2;
+
+
+// ============================================================
+// Collision
+// ============================================================
+
+extern fn CheckCollisionRecs(
+    rec1: Rectangle,
+    rec2: Rectangle,
+): bool;
+
+extern fn CheckCollisionCircles(
+    center1: Vector2,
+    radius1: f32,
+    center2: Vector2,
+    radius2: f32,
+): bool;
+
+extern fn CheckCollisionCircleRec(
+    center: Vector2,
+    radius: f32,
+    rec: Rectangle,
+): bool;
+
+extern fn CheckCollisionPointRec(
+    point: Vector2,
+    rec: Rectangle,
+): bool;
+
+extern fn CheckCollisionPointCircle(
+    point: Vector2,
+    center: Vector2,
+    radius: f32,
+): bool;
+
+extern fn GetCollisionRec(
+    rec1: Rectangle,
+    rec2: Rectangle,
+): Rectangle;
+
+
+// ============================================================
+// Random
+// ============================================================
+
+extern fn SetRandomSeed(seed: u32);
+extern fn GetRandomValue(min: i32, max: i32): i32;
+
+
+// ============================================================
+// Misc
+// ============================================================
+
+extern fn TakeScreenshot(fileName: ^byte);
+extern fn OpenURL(url: ^byte);
+
+extern fn SetClipboardText(text: ^byte);
+extern fn GetClipboardText(): ^byte;
+
+struct Ray {
+    position: Vector3,
+    direction: Vector3,
+}
+
+struct RenderTexture {
+    id: u32,
+    texture: Texture,
+    depth: Texture,
+}
+
+// Constants
+KEY_NULL        : i32 = 0;
+KEY_SPACE       : i32 = 32;
+KEY_ESCAPE      : i32 = 256;
+KEY_ENTER       : i32 = 257;
+KEY_TAB         : i32 = 258;
+KEY_BACKSPACE   : i32 = 259;
+KEY_INSERT      : i32 = 260;
+KEY_DELETE      : i32 = 261;
+KEY_RIGHT       : i32 = 262;
+KEY_LEFT        : i32 = 263;
+KEY_DOWN        : i32 = 264;
+KEY_UP          : i32 = 265;
+KEY_PAGE_UP     : i32 = 266;
+KEY_PAGE_DOWN   : i32 = 267;
+KEY_HOME        : i32 = 268;
+KEY_END         : i32 = 269;
+
+KEY_F1          : i32 = 290;
+KEY_F2          : i32 = 291;
+KEY_F3          : i32 = 292;
+KEY_F4          : i32 = 293;
+KEY_F5          : i32 = 294;
+KEY_F6          : i32 = 295;
+KEY_F7          : i32 = 296;
+KEY_F8          : i32 = 297;
+KEY_F9          : i32 = 298;
+KEY_F10         : i32 = 299;
+KEY_F11         : i32 = 300;
+KEY_F12         : i32 = 301;
+
+KEY_LEFT_SHIFT  : i32 = 340;
+KEY_LEFT_CONTROL: i32 = 341;
+KEY_LEFT_ALT    : i32 = 342;
+KEY_LEFT_SUPER  : i32 = 343;
+KEY_RIGHT_SHIFT : i32 = 344;
+KEY_RIGHT_CONTROL: i32 = 345;
+KEY_RIGHT_ALT   : i32 = 346;
+KEY_RIGHT_SUPER : i32 = 347;
+
+KEY_A           : i32 = 65;
+KEY_B           : i32 = 66;
+KEY_C           : i32 = 67;
+KEY_D           : i32 = 68;
+KEY_E           : i32 = 69;
+KEY_F           : i32 = 70;
+KEY_G           : i32 = 71;
+KEY_H           : i32 = 72;
+KEY_I           : i32 = 73;
+KEY_J           : i32 = 74;
+KEY_K           : i32 = 75;
+KEY_L           : i32 = 76;
+KEY_M           : i32 = 77;
+KEY_N           : i32 = 78;
+KEY_O           : i32 = 79;
+KEY_P           : i32 = 80;
+KEY_Q           : i32 = 81;
+KEY_R           : i32 = 82;
+KEY_S           : i32 = 83;
+KEY_T           : i32 = 84;
+KEY_U           : i32 = 85;
+KEY_V           : i32 = 86;
+KEY_W           : i32 = 87;
+KEY_X           : i32 = 88;
+KEY_Y           : i32 = 89;
+KEY_Z           : i32 = 90;
+
+MOUSE_BUTTON_LEFT  : i32 = 0;
+MOUSE_BUTTON_RIGHT : i32 = 1;
+MOUSE_BUTTON_MIDDLE: i32 = 2;
