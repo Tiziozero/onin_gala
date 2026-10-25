@@ -15,6 +15,9 @@ struct big_fella {
     c: struct { a: int, b: int },
 }
 
+fn abc(a: struct{a:i32, b: i32}) {
+    println(a.a, a.b);
+}
 fn do_s(v: Vector2($T)): T {
     return v.x + v.y;
 }
@@ -24,5 +27,6 @@ fn main(): i32 {
     println(do_s({1.2, 3.4}));
     println(v.x, v.y);
     println(d.a, d.b, d.c.a, d.c.b);
+    abc({123, 456});
     return 0;
 }
