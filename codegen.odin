@@ -171,7 +171,7 @@ LARGE_AGGREGATE_BYTES :: 64
 
 is_memory_type :: proc(t: TypeId) -> bool {
     k := get_type(t).kind
-    if k != .Struct && k != .FixedSizeArray {
+    if k != .Struct && k != .FixedSizeArray && k != .Union {
         return false
     }
     return type_size(t) > LARGE_AGGREGATE_BYTES
@@ -377,6 +377,10 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
         n := aprintf(c, "%%%s", type_llvm_name(id))
         get_ctx().llvm_ty[id] = n
         return n
+    }
+    case .Union: {
+        a := type_align_of(id)
+        return aprintf(c, "[%d x i%d]", type_size(id) / a, a * 8)
     }
     case .FixedSizeArray: {
         n := aprintf(c, "[%d x %s]", ty.fixed_size_array.size,
@@ -905,19 +909,6 @@ cg_stmt :: proc(c: ^CGCtx, id: StmtId) {
     }
     cwriteln(c, "")
 }
-// Index and type of field `name`. `any` is { data: ^void, id: i64 }.
-field_of :: proc(tid: TypeId, name: string, e: ExprId) -> (idx: int, field_ty: TypeId) {
-    ty := get_type(tid)
-    if ty.kind == .Any {
-        switch name {
-        case "data": return 0, intern_type(Type{kind = .Pointer, ptr = void_type()})
-        case "id":   return 1, integer_type()
-        }
-        gala_panic("any has no field", name)
-    }
-    idx = struct_field_index(ty, name)
-    return idx, ty.structure.fields[idx].type
-}
 
 // Evaluates an iterable expression (for `for x in <expr>`) EXACTLY ONCE and
 // returns everything the loop needs:
@@ -1000,6 +991,13 @@ cg_elem_ptr :: proc(c: ^CGCtx, target: ExprId, index: ExprId) -> string {
     return t
 }
 
+cg_field_ptr :: proc(c: ^CGCtx, base_ptr: string, base_ty: TypeId, idx: int) -> string {
+    if get_type(base_ty).kind == .Union do return base_ptr
+    t := new_tmp(c)
+    cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d",
+        t, ty_to_llvm_str(c, base_ty), base_ptr, idx)
+    return t
+}
 cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
     #partial switch e in get_expr(id) {
     case Symbol: {
@@ -1020,11 +1018,7 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
         base_ptr := cg_value_addr(c, e.target)
         base_ty := expr_ty(e.target)
         idx, _ := field_of(base_ty, e.field, id)
-
-        t := new_tmp(c)
-        cwritefln(c, "\t%s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d",
-            t, ty_to_llvm_str(c, base_ty), base_ptr, idx)
-        return t
+        return cg_field_ptr(c, base_ptr, base_ty, idx)
     }
     case Index:
         return cg_elem_ptr(c, e.target, e.index)
@@ -1047,6 +1041,25 @@ cg_addr :: proc(c: ^CGCtx, id: ExprId) -> string {
     debugln(get(id))
     highlight_lines(get_span(id))
     gala_panic("not an lvalue")
+}
+
+field_of :: proc(tid: TypeId, name: string, e: ExprId) -> (idx: int, field_ty: TypeId) {
+    ty := get_type(tid)
+    if ty.kind == .Any {
+        switch name {
+        case "data": return 0, intern_type(Type{kind = .Pointer, ptr = void_type()})
+        case "id":   return 1, integer_type()
+        }
+        gala_panic("any has no field", name)
+    }
+    if ty.kind == .Union {
+        for f, k in ty.union_fields {
+            if f.name == name do return k, f.type
+        }
+        gala_panic("union has no field", name)
+    }
+    idx = struct_field_index(ty, name)
+    return idx, ty.structure.fields[idx].type
 }
 
 // ============================================================================
@@ -1854,7 +1867,7 @@ hash_string :: proc(s: string) -> u64 {
 mod_prefix_from_path :: proc(path: string, prefix: string = "") -> string {
     hash := fmt.aprintf("{}", hash_string(path));
     if len(hash) > 6 do hash = hash[:6];
-    return fmt.aprintf("{}{}", prefix, hash);
+    return fmt.aprintf("{}{}.{}", prefix, hash, mod_prefix_from_path_old(path));
 }
 // "abc/efg/abc.txt" -> "myprefix_abc_efg_abc"
 mod_prefix_from_path_old :: proc(path: string, prefix: string = "") -> string {

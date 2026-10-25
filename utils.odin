@@ -71,6 +71,17 @@ tts :: proc(t: TypeId) -> string {
     case .FixedSizeArray:
         return fmt.tprintf("[%d]%s", ty.fixed_size_array.size, tts(ty.fixed_size_array.type))
 
+    case .Union:
+        sb := strings.builder_make(allocator=get_ctx().allocator)
+        strings.write_string(&sb, "union { ")
+        for field, i in ty.union_fields {
+            if i > 0 do strings.write_string(&sb, ", ")
+            strings.write_string(&sb, field.name)
+            strings.write_string(&sb, ": ")
+            strings.write_string(&sb, tts(field.type))
+        }
+        strings.write_string(&sb, " }")
+        return strings.to_string(sb)
     case .Struct:
         if ty.name != "" {
             return ty.name

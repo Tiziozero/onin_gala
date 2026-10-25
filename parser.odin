@@ -181,6 +181,10 @@ StructSpecifier :: struct {
     fields: []StructField,
     span:   Span,
 }
+UnionSpecifier :: struct {
+    fields: []StructField,
+    span:   Span,
+}
 TypeSpecifier :: union {
     BaseType,
     PointerType,
@@ -189,6 +193,7 @@ TypeSpecifier :: union {
     AnySpecifier,
     FnSpecifier,
     StructSpecifier,
+    UnionSpecifier,
     GenericSpecifier,
     GenericInstSpecifier,
 }
@@ -1232,6 +1237,7 @@ parse_block :: proc(p: ^Parser) -> Block{
 
 base_span :: proc(t: ^TypeSpecifier) -> Span {
     switch t in t {
+    case UnionSpecifier: return t.span;
     case StructSpecifier: return t.span;
     case BaseType: return t.span;
     case PointerType: return t.span;
@@ -1360,6 +1366,14 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
             fields=fields,
             span={start=kw.span.start, end=close.span.end},
         });
+    }
+    if is_kw(current_token(p), .Union) {
+        kw := consume_token(p) // "union"
+        fields, close := parse_struct_body(p)
+        return TypeSpecifier(UnionSpecifier{
+            fields=fields,
+            span={start=kw.span.start, end=close.span.end},
+        })
     }
     if is_symbol(current_token(p), "^") {
         token := consume_token(p); // "^"

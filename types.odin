@@ -27,6 +27,7 @@ TypeKind :: enum {
     Bool,
     // aggregate
     Struct,
+    Union, // untagged, all fields at offset 0
     // pointer stuff
     Slice, // { ptr, i64 }
     Pointer,
@@ -88,6 +89,8 @@ Type :: struct {
         origin: TypeId,  // its template
         args: []TypeId,  // one per generic_names entry
     },
+    // always anonymous and interned, never generic
+    union_fields: []Field,
     fixed_size_array: struct { type: TypeId, size: int },
     slice: struct{type: TypeId},
 }
@@ -187,6 +190,15 @@ type_size :: proc(type_id: TypeId) -> int {
             end += a - (end % a)
         }
         return end
+    case .Union:
+        // biggest member, rounded up to the union's alignment
+        biggest := 0
+        for f in ty.union_fields do biggest = max(biggest, type_size(f.type))
+        a := type_align_of(type_id)
+        if biggest % a != 0 {
+            biggest += a - (biggest % a)
+        }
+        return biggest
     case:
         gala_panic("type_size: unhandled kind", ty.kind)
     }
@@ -202,6 +214,11 @@ type_size_no_abi :: proc(id: TypeId) -> int {
             size += type_size(f.type)
         }
         return size
+
+    case .Union:
+        biggest := 0
+        for f in t.union_fields do biggest = max(biggest, type_size(f.type))
+        return biggest
 
     case .Slice:
         return 16 // { ptr, i64 }
@@ -222,6 +239,7 @@ type_size_no_abi :: proc(id: TypeId) -> int {
 // "Are these the same type?" and nothing else: no `any` wildcard, no untyped
 // literal reduction (those live in assignable / unify_binop in the type checker).
 //   structs   nominal: same id, or different types
+//   unions    always anonymous, so structural (same fields, names and order)
 //   functions structural (never interned, see new_fn_type); arg names ignored
 //   pointer / slice / array: structural over their element types
 type_equal :: proc(l, r: Type) -> bool {
@@ -258,6 +276,14 @@ type_equal :: proc(l, r: Type) -> bool {
         if len(l.structure.fields) != len(r.structure.fields) do return false
         for lf, i in l.structure.fields {
             rf := r.structure.fields[i]
+            if lf.name != rf.name || !types_equal(lf.type, rf.type) do return false
+        }
+        return true
+
+    case .Union:
+        if len(l.union_fields) != len(r.union_fields) do return false
+        for lf, i in l.union_fields {
+            rf := r.union_fields[i]
             if lf.name != rf.name || !types_equal(lf.type, rf.type) do return false
         }
         return true
@@ -344,7 +370,7 @@ can_cast_to :: proc(target_id, to_id: TypeId) -> bool {
         return is_integer(to_id) || is_byte_like(to_id)
     }
 
-    // Struct, Slice, FixedSizeArray, Function, Void, ZeroInit, Untyped*, Invalid
+    // Struct, Union, Slice, FixedSizeArray, Function, Void, ZeroInit, Untyped*, Invalid
     return false
 }
 is_array_type :: proc(t: TypeId) -> bool {
@@ -442,7 +468,8 @@ is_concrete_type :: proc(id: TypeId) -> bool {
     case .UInt64, .UInt32, .UInt16, .UInt_8,
          .Int64, .Int32, .Int16, .Int_8,
          .Flt64, .Flt32, .Flt16, .Flt_8,
-         .Rune, .Byte, .Bool, .String, .Any, .Void:
+         .Rune, .Byte, .Bool, .String, .Any, .Void,
+         .Union: // fields can't be generic (the resolver rejects `$T` in them)
         return true
 
     case:

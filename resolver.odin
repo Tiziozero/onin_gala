@@ -492,11 +492,17 @@ resolve_expr :: proc(s: ^Scope, id: ExprId) {
 // fields. Shared by `Foo{..}` (resolver) and `{..}` (typechecker, once the
 // target type is known). Doesn't resolve or check the values themselves.
 bind_struct_lit_fields :: proc(id: ExprId, e: ^StructLit, tid: TypeId, type_name: string) {
-    sfields := get_type(tid).structure.fields
+    ty := get_type(tid)
+    is_union := ty.kind == .Union
+    sfields := ty.union_fields if is_union else ty.structure.fields
 
     // `Foo{1, 2}`: assign values to fields in declaration order, so
     // everything after this sees an ordinary named literal.
     if len(e.positional) > 0 {
+        if is_union {
+            highlight_lines(get_span(id))
+            gala_panicf("A union literal sets one field by name, e.g. `{%s = ...}`.", sfields[0].name)
+        }
         if len(e.positional) != len(sfields) {
             highlight_lines(get_span(id))
             gala_panicf("Type %s has %d fields, but the literal has %d values.",
@@ -529,6 +535,15 @@ bind_struct_lit_fields :: proc(id: ExprId, e: ^StructLit, tid: TypeId, type_name
             }
             gala_panicf("Field \"%s\" doesn't exist in type %s.", name, type_name)
         }
+    }
+
+    if is_union {
+        // exactly one member may be set; the rest overlap it
+        if len(e.fields) != 1 {
+            highlight_lines(get_span(id))
+            gala_panicf("A union literal sets exactly one field, got %d.", len(e.fields))
+        }
+        return
     }
 
     // then missing ones, by name
@@ -602,7 +617,7 @@ intern_type :: proc(t: Type) -> TypeId {
     assert(t.kind == .Pointer ||
         t.kind == .UntypedInteger || t.kind == .UntypedFloat || t.kind == .UntypedStruct ||
         t.kind == .FixedSizeArray || t.kind == .ZeroInit ||
-        t.kind == .Slice || t.kind == .String || t.kind == .Any ||
+        t.kind == .Slice || t.kind == .String || t.kind == .Any || t.kind == .Union || 
         (t.kind == .Struct && t.structure.is_anonymous))
     for ty, id in get_ctx().types {
         if type_equal(ty, t) { return TypeId(id) }
@@ -644,6 +659,32 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier, no_declare_generic :
         }
         // interned: identical anonymous structs get the same TypeId
         return intern_type({kind=.Struct, structure={is_anonymous=true, fields=fields}})
+    }
+    case UnionSpecifier: {
+        if len(k.fields) == 0 {
+            highlight_lines({get_ctx().current_file, k.span})
+            gala_panic("A union needs at least one field.")
+        }
+        fields := make([]Field, len(k.fields), allocator=get_ctx().allocator)
+        for f, i in k.fields {
+            for prev in fields[:i] {
+                if prev.name == f.name {
+                    highlight_lines({get_ctx().current_file, f.span})
+                    gala_panicf("Duplicate field \"%s\".", f.name)
+                }
+            }
+            if _, is_generic := f.t.(GenericSpecifier); is_generic {
+                highlight_lines({get_ctx().current_file, f.span})
+                gala_panic("Can't specify generic in a union.")
+            }
+            ft := resolve_type_specifier(s, f.t, true, bindings)
+            if ft == void_type() {
+                highlight_lines({get_ctx().current_file, f.span})
+                gala_panic("A union field can't be void.")
+            }
+            fields[i] = {name=f.name, type=ft}
+        }
+        return intern_type({kind=.Union, union_fields=fields})
     }
     case GenericSpecifier: {
         // instantiating a clone: declare the name as the concrete type
@@ -1575,6 +1616,7 @@ by_value_struct :: proc(t: TypeId) -> (TypeId, bool) {
             }
             return cur, true
         }
+        case .Union: return cur, true
         case:                 return TypeId(0), false
         }
     }
@@ -1585,7 +1627,9 @@ visit_struct :: proc(tid: TypeId, state: ^map[TypeId]int) {
     if state^[tid] == 2 do return
     state^[tid] = 1
     ty := get_type(tid)
-    for f in ty.structure.fields {
+    fields := ty.structure.fields
+    if ty.kind == .Union do fields = ty.union_fields
+    for f in fields {
         inner, ok := by_value_struct(f.type)
         if !ok do continue
         if state^[inner] == 1 {

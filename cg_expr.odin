@@ -154,6 +154,18 @@ reduce_expr_to_single_value :: proc(c: ^CGCtx, e: CGExprRes) -> (string, bool) {
     unreachable()
 }
 
+// `{name = value}` for a union: zero the whole union if the member is
+// smaller (so padding is deterministic), then write the one member at
+// offset 0. The typechecker guarantees exactly one field.
+cg_union_lit_into :: proc(c: ^CGCtx, lit: StructLit, tid: TypeId, dest: string) {
+    for _, f in lit.fields {
+        if type_size(expr_ty(f.expr)) < type_size(tid) {
+            cg_memset(c, dest, 0, int(type_size(tid)))
+        }
+        cg_expr_into(c, f.expr, dest)
+    }
+}
+
 // Evaluates expression `id` and writes its value into memory at `dest`
 // (an LLVM pointer operand, e.g. "%x.3", "%.sret", "@global").
 //
@@ -168,6 +180,12 @@ reduce_expr_to_single_value :: proc(c: ^CGCtx, e: CGExprRes) -> (string, bool) {
 cg_expr_into :: proc(c: ^CGCtx, id: ExprId, dest: string) {
     tid := expr_ty(id)
     ty_str := ty_to_llvm_str(c, tid)
+    if get_type(tid).kind == .Union {
+        if lit, ok := get_expr(id).(StructLit); ok {
+            cg_union_lit_into(c, lit, tid, dest)
+            return
+        }
+    }
 
     if is_memory_type(tid) {
         #partial switch e in get_expr(id) {
@@ -629,6 +647,23 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         target_ty := expr_ty(e.target)
         idx, field_ty := field_of(target_ty, e.field, id)
 
+        // unions
+        if is_addressable(c, e.target) || is_memory_type(target_ty) ||
+           get_type(target_ty).kind == .Union {
+            base_ptr := cg_value_addr(c, e.target)
+            field_ptr := cg_field_ptr(c, base_ptr, target_ty, idx)
+
+            // large field (e.g. `t.pixels`): address only
+            if is_memory_type(field_ty) {
+                return {kind=.Place, v=field_ptr, id=id}
+            }
+
+            loaded := new_tmp(c)
+            cwritefln(c, "\t%s = load %s, ptr %s",
+                loaded, ty_to_llvm_str(c, field_ty), field_ptr)
+            return {kind=.Value, v=loaded}
+        }
+
         // Memory-backed target (a variable / deref / index, or any large
         // aggregate rvalue): GEP to the field and load just that field.
         // The whole struct is never loaded. An rvalue large aggregate
@@ -663,6 +698,13 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     }
     case StructLit: {
         ty := get_ctx().expr_resolution_types[id]
+        if get_type(ty).kind == .Union {
+            // lives in memory; reduce_expr_to_single_value loads the whole
+            // thing if someone needs it as a value
+            slot := new_entry_alloca(c, ty_to_llvm_str(c, ty))
+            cg_union_lit_into(c, e, ty, slot)
+            return {kind=.Place, v=slot, id=id}
+        }
         sfields := get_type(ty).structure.fields
         fields := make([]string, len(sfields), allocator=get_ctx().allocator)
         for f, k in sfields {
