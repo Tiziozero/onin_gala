@@ -3,12 +3,26 @@ import "core/threads.gala";
 import "core/cfunctions.gala";
 import "core/mem.gala";
 
+
+alias v2 = struct { x: int, y: int };
+
 struct Vector2 { x, y: $T }
+
+
+struct big_fella {
+    a: int,
+    b: int,
+    c: struct { a: int, b: int },
+}
 
 fn do_s(v: Vector2($T)): T {
     return v.x + v.y;
 }
 fn main(): i32 {
+    v: v2 = {123, 456};
+    d := big_fella{123, 456, { 123, 123} };
     println(do_s({1.2, 3.4}));
+    println(v.x, v.y);
+    println(d.a, d.b, d.c.a, d.c.b);
     return 0;
 }

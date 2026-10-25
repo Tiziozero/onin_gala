@@ -76,6 +76,8 @@ Type :: struct {
         // for generics
         // template: has $T fields, never lowered, can't be used as a bare type
         is_generic: bool,
+        // is anonymous
+        is_anonymous: bool,
         // $ names in order of first appearance, this is the order of Name(a, b)
         generic_names: []string,
         // on a template: one entry per distinct args
@@ -251,9 +253,14 @@ type_equal :: proc(l, r: Type) -> bool {
         return types_equal(l.ptr, r.ptr)
 
     case .Struct:
-        // only reached for two different ids (types_equal short-circuits
-        // equal ids), and structs are nominal
-        return false
+        // named structs stay nominal; anonymous ones are structural
+        if !l.structure.is_anonymous || !r.structure.is_anonymous do return false
+        if len(l.structure.fields) != len(r.structure.fields) do return false
+        for lf, i in l.structure.fields {
+            rf := r.structure.fields[i]
+            if lf.name != rf.name || !types_equal(lf.type, rf.type) do return false
+        }
+        return true
 
     case .Slice:
         return types_equal(l.slice.type, r.slice.type)

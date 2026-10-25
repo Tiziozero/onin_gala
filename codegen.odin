@@ -199,7 +199,14 @@ ensure_type_declared :: proc(c: ^CGCtx, id: TypeId) {
     ty := get_type(id)
     #partial switch ty.kind {
     case .Struct:
-        if ty.name == "" || c.declared_types[id] do return
+        if c.declared_types[id] do return
+        if ty.structure.is_anonymous {
+            // nothing to emit, but named structs nested inside must be declared
+            c.declared_types[id] = true
+            for f in ty.structure.fields do ensure_type_declared(c, f.type)
+            return
+        }
+        if ty.name == "" do return
         c.declared_types[id] = true
         llvm_name := type_llvm_name(id)
         fields := ty.structure.fields
@@ -350,9 +357,22 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
         // as a runtime type tag instead of a length. See cg_box_any.
         return "{ ptr, i64 }"
     case .Struct: {
+        if ty.structure.is_anonymous {
+            // literal LLVM type, no %name
+            sb := strings.builder_make(get_ctx().allocator)
+            strings.write_string(&sb, "{")
+            for f, k in ty.structure.fields {
+                if k > 0 do strings.write_string(&sb, ", ")
+                strings.write_string(&sb, ty_to_llvm_str(c, f.type))
+            }
+            strings.write_string(&sb, "}")
+            n := strings.to_string(sb)
+            get_ctx().llvm_ty[id] = n
+            return n
+        }
         if ty.name == "" {
             debugln(ty)
-            gala_panic("ty_to_llvm_str: anonymous struct has no LLVM name")
+            gala_panic("ty_to_llvm_str: struct has no LLVM name")
         }
         n := aprintf(c, "%%%s", type_llvm_name(id))
         get_ctx().llvm_ty[id] = n
@@ -369,6 +389,7 @@ ty_to_llvm_str :: proc(c: ^CGCtx, id: TypeId) -> string {
     }
     unreachable()
 }
+
 
 // eg "%t1"
 new_tmp :: proc(c: ^CGCtx, p := "", symbol := false) -> string {

@@ -598,10 +598,12 @@ new_fn_type :: proc(t: Type) -> TypeId {
 // only interns pointers, slices, fixed arrays, strings, any and the untyped
 // kinds; structs and functions are nominal and never go through here
 intern_type :: proc(t: Type) -> TypeId {
+    // big assert
     assert(t.kind == .Pointer ||
-            t.kind == .UntypedInteger || t.kind == .UntypedFloat || t.kind == .UntypedStruct ||
-            t.kind == .FixedSizeArray || t.kind == .ZeroInit ||
-            t.kind == .Slice || t.kind == .String || t.kind == .Any)
+        t.kind == .UntypedInteger || t.kind == .UntypedFloat || t.kind == .UntypedStruct ||
+        t.kind == .FixedSizeArray || t.kind == .ZeroInit ||
+        t.kind == .Slice || t.kind == .String || t.kind == .Any ||
+        (t.kind == .Struct && t.structure.is_anonymous))
     for ty, id in get_ctx().types {
         if type_equal(ty, t) { return TypeId(id) }
     }
@@ -620,6 +622,29 @@ new_generic_ty :: proc(s: ^Scope, t: TypeSpecifier) -> TypeId {
 resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier, no_declare_generic := false,
         bindings: map[string]TypeId = nil) -> TypeId {
     switch k in t {
+    case StructSpecifier: {
+        fields := make([]Field, len(k.fields), allocator=get_ctx().allocator)
+        for f, i in k.fields {
+            for prev in fields[:i] {
+                if prev.name == f.name {
+                    highlight_lines({get_ctx().current_file, f.span})
+                    gala_panicf("Duplicate field \"%s\".", f.name)
+                }
+            }
+            if _, is_generic := f.t.(GenericSpecifier); is_generic {
+                highlight_lines({get_ctx().current_file, f.span})
+                gala_panic("Can't specify generic in an anonymous struct.")
+            }
+            ft := resolve_type_specifier(s, f.t, true, bindings)
+            if ft == void_type() {
+                highlight_lines({get_ctx().current_file, f.span})
+                gala_panic("A struct field can't be void.")
+            }
+            fields[i] = {name=f.name, type=ft}
+        }
+        // interned: identical anonymous structs get the same TypeId
+        return intern_type({kind=.Struct, structure={is_anonymous=true, fields=fields}})
+    }
     case GenericSpecifier: {
         // instantiating a clone: declare the name as the concrete type
         if bindings != nil {
