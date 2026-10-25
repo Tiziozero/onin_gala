@@ -1477,7 +1477,8 @@ forward_item :: proc(s: ^ModuleScope, id: ItemId) {
             _, exists := s.objects[obj]
             if exists {
                 debugln(item, v)
-                gala_panicf("Duplicate name \"%s\" in import (object).", obj)
+                gala_panicf("Duplicate name \"%s\" in import (from %s importing %s)(object). ",
+                    obj, get_ctx().current_file, resolved)
             }
             s.objects[obj] = v
         }

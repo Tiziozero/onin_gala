@@ -3,6 +3,18 @@ import "core/threads.gala";
 import "core/cfunctions.gala";
 import "core/mem.gala";
 
+struct Message {
+    kind: MsgKind,
+    data: union {
+        connect: struct {
+        id: int,
+        },
+        other_thing: struct { },
+    }
+}
+fn domsg(msg: Message) {
+    println(msg.data.connect);
+}
 
 alias v2 = struct { x: int, y: int };
 
