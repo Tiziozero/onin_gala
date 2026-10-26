@@ -177,6 +177,14 @@ GenericInstSpecifier :: struct {
     span: Span,
 }
 FnSpecifier :: struct { span: Span, using signature: ^FnDecSignature }
+StructSpecifier :: struct {
+    fields: []StructField,
+    span:   Span,
+}
+UnionSpecifier :: struct {
+    fields: []StructField,
+    span:   Span,
+}
 TypeSpecifier :: union {
     BaseType,
     PointerType,
@@ -184,6 +192,8 @@ TypeSpecifier :: union {
     SliceSpecifier,
     AnySpecifier,
     FnSpecifier,
+    StructSpecifier,
+    UnionSpecifier,
     GenericSpecifier,
     GenericInstSpecifier,
 }
@@ -1227,6 +1237,8 @@ parse_block :: proc(p: ^Parser) -> Block{
 
 base_span :: proc(t: ^TypeSpecifier) -> Span {
     switch t in t {
+    case UnionSpecifier: return t.span;
+    case StructSpecifier: return t.span;
     case BaseType: return t.span;
     case PointerType: return t.span;
     case SliceSpecifier: return t.span;
@@ -1254,6 +1266,33 @@ parse_array_size :: proc(p: ^Parser) -> (size: int, expr: Maybe(ExprId)) {
     }
     return 0, parse_binop(p, 0)
 }
+
+// parses `{ a, b: T, c: U }`; returns the fields and the closing brace token
+parse_struct_body :: proc(p: ^Parser) -> (fields: []StructField, close: Token) {
+    expect_symbol(p, "{");
+    out := make([dynamic]StructField, allocator=get_ctx().allocator);
+    for !is_symbol(current_token(p), "}") {
+        names := parse_ident_group(p) // `a, b: type`
+        expect_symbol(p, ":");
+        ty := parse_type(p);
+
+        // all names share the type; only the first may declare a `$T`
+        for n, i in names {
+            field_ty := ty
+            if g, is_generic := ty.(GenericSpecifier); is_generic && i > 0 {
+                field_ty = TypeSpecifier(BaseType{ident=g.name, span=g.span})
+            }
+            append(&out, StructField{name=n.text, t=field_ty, span=n.span});
+        }
+        if is_symbol(current_token(p), ",") {
+            consume_token(p); // ","
+        } else do break
+    }
+    close = current_token(p);
+    expect_symbol(p, "}");
+    return out[:], close;
+}
+
 parse_type :: proc(p: ^Parser) -> TypeSpecifier {
     if is_symbol(current_token(p), "$") {
         g := consume_token(p);
@@ -1319,7 +1358,24 @@ parse_type :: proc(p: ^Parser) -> TypeSpecifier {
                 end=base_span(base_specifier).end
             }
         })
-    } else if is_symbol(current_token(p), "^") {
+    }
+    if is_kw(current_token(p), .Struct) {
+        kw := consume_token(p); // "struct"
+        fields, close := parse_struct_body(p);
+        return TypeSpecifier(StructSpecifier{
+            fields=fields,
+            span={start=kw.span.start, end=close.span.end},
+        });
+    }
+    if is_kw(current_token(p), .Union) {
+        kw := consume_token(p) // "union"
+        fields, close := parse_struct_body(p)
+        return TypeSpecifier(UnionSpecifier{
+            fields=fields,
+            span={start=kw.span.start, end=close.span.end},
+        })
+    }
+    if is_symbol(current_token(p), "^") {
         token := consume_token(p); // "^"
         base_specifier := new(TypeSpecifier, allocator=get_ctx().allocator);
         base_specifier^ = parse_type(p);
@@ -1580,29 +1636,10 @@ parse_module_kw :: proc(p: ^Parser) -> ItemId {
     case .Struct: {
         consume_token(p); // "struct"
         name := expect_ident(p);
-        expect_symbol(p, "{");
-        fields := make([dynamic]StructField, allocator=get_ctx().allocator);
-        for !is_symbol(current_token(p), "}") {
-            names := parse_ident_group(p) // `a, b: type`
-            expect_symbol(p, ":");
-            ty := parse_type(p);
-
-            // all names share the type; only the first may declare a `$T`
-            for n, i in names {
-                field_ty := ty
-                if g, is_generic := ty.(GenericSpecifier); is_generic && i > 0 {
-                    field_ty = TypeSpecifier(BaseType{ident=g.name, span=g.span})
-                }
-                append(&fields, StructField{name=n.text, t=field_ty, span=n.span});
-            }
-            if is_symbol(current_token(p), ",") {
-                consume_token(p); // ","
-            } else do break
-        }
-        expect_symbol(p, "}");
+        fields, _ := parse_struct_body(p);
         sd := StructDec{
             name=name.text,
-            fields=fields[:],
+            fields=fields,
         }
         id := new_item(sd)
         get_ctx().spans.items[id] = {

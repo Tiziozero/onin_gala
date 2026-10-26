@@ -177,11 +177,11 @@ assignable :: proc(expected, got: TypeId, allow_box := false) -> (TypeId, bool, 
     // is propagated into it (complete_untyped_struct). It can't be boxed
     // into `any`, there's nothing to infer the struct from.
     if gk == .UntypedStruct {
-        if ek == .Struct do return expected, true, ""
+        if ek == .Struct || ek == .Union do return expected, true, ""
         if ek == .Any {
             return TypeId(0), false, "can't infer the type of `{...}` for `any` (write the struct name)"
         }
-        return TypeId(0), false, "`{...}` can only initialise a struct"
+        return TypeId(0), false, "`{...}` can only initialise a struct or a union"
     }
     if expected == got do return expected, true, ""
 
@@ -566,6 +566,11 @@ complete_untyped_struct :: proc(id: ExprId, target: TypeId) {
     e := get_expr(id).(StructLit)
     ty := get_type(target)
 
+    if ty.kind == .Union { // your flag or kind check
+        complete_untyped_union(id, e, target)
+        return
+    }
+
     if ty.kind != .Struct {
         highlight_lines(get_span(id))
         gala_panicf("Can't initialise a value of type %s with `{...}` (not a struct).", tts(target))
@@ -592,6 +597,34 @@ complete_untyped_struct :: proc(id: ExprId, target: TypeId) {
     get_ctx().expr_resolution_types[id] = target
     get_ctx().expr_types[id] = target
     get_expr(id)^ = e
+}
+// `{name = value}` becoming a union: exactly one field, set by name.
+complete_untyped_union :: proc(id: ExprId, e: StructLit, target: TypeId) {
+    ufields := get_type(target).union_fields
+    if len(e.positional) > 0 || len(e.fields) != 1 {
+        highlight_lines(get_span(id))
+        gala_panicf("A union literal sets exactly one field by name, e.g. `{%s = ...}`.", ufields[0].name)
+    }
+    for name, f in e.fields {
+        found := false
+        for uf in ufields {
+            if uf.name != name do continue
+            found = true
+            r, ok, err := assignable(uf.type, expr_ty(f.expr))
+            if !ok {
+                highlight_lines(get_ctx().current_file, f.span)
+                gala_panicf("Field \"%s\": %s (expected %s, got %s).",
+                    name, err, tts(uf.type), tts(expr_ty(f.expr)))
+            }
+            propagate_type(r, f.expr)
+        }
+        if !found {
+            highlight_lines(get_ctx().current_file, f.span)
+            gala_panicf("Field \"%s\" doesn't exist in union %s.", name, tts(target))
+        }
+    }
+    get_ctx().expr_resolution_types[id] = target
+    get_ctx().expr_types[id] = target
 }
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     switch e in get_expr(id) {
@@ -741,6 +774,16 @@ tc_expr :: proc(tc: ^TcContext, id: ExprId) {
                 gala_panicf("Field \"%s\" doesn't exist in type any (it has \"data\" and \"id\").", e.field)
             }
             return
+        }
+        if target_ty.kind == .Union {
+            for f in target_ty.union_fields {
+                if f.name == e.field {
+                    get_ctx().expr_types[id] = f.type
+                    return
+                }
+            }
+            highlight_lines(get_span(id))
+            gala_panicf("Field \"%s\" doesn't exist in %s.", e.field, tts(target_tid))
         }
 
         if target_ty.kind != .Struct {

@@ -36,9 +36,11 @@ AbiEightbyte :: struct {
     f32_count: int,
     f16_count: int,
     only_f32: bool,
+    // a double lives in this eightbyte (only mixes with floats via unions)
+    has_double: bool,
 }
 
-// Result of classifying an aggregate (struct / fixed array / slice /
+// Result of classifying an aggregate (struct / fixed array / union / slice /
 // string) for argument/return purposes. Scalars are handled separately in
 // lower_abi_value and never go through this.
 AbiClassified :: struct {
@@ -97,6 +99,13 @@ type_align_of :: proc(type_id: TypeId) -> int {
             if fa > a do a = fa
         }
         return a
+    case .Union:
+        a := 1
+        for f in ty.union_fields {
+            fa := type_align_of(f.type)
+            if fa > a do a = fa
+        }
+        return a
     case:
         gala_panic("type_align_of: unhandled kind")
     }
@@ -134,6 +143,30 @@ classify_into_eightbytes :: proc(type_id: TypeId, base_offset: int, eb: ^[2]AbiE
             classify_into_eightbytes(f.type, base_offset + offsets[i], eb)
         }
     }
+    case .Union: {
+        // All members sit at base_offset and overlap. Classify each into a
+        // scratch buffer and combine them there (float counts via max, since
+        // overlapping members don't add up), then add that into `eb`.
+        merged: [2]AbiEightbyte
+        for f in ty.union_fields {
+            tmp: [2]AbiEightbyte
+            classify_into_eightbytes(f.type, base_offset, &tmp)
+            for i in 0 ..< 2 {
+                merged[i].class      = merge_abi_class(merged[i].class, tmp[i].class)
+                merged[i].hi         = max(merged[i].hi, tmp[i].hi)
+                merged[i].f32_count  = max(merged[i].f32_count, tmp[i].f32_count)
+                merged[i].f16_count  = max(merged[i].f16_count, tmp[i].f16_count)
+                merged[i].has_double = merged[i].has_double || tmp[i].has_double
+            }
+        }
+        for i in 0 ..< 2 {
+            eb[i].class      = merge_abi_class(eb[i].class, merged[i].class)
+            eb[i].hi         = max(eb[i].hi, merged[i].hi)
+            eb[i].f32_count  += merged[i].f32_count
+            eb[i].f16_count  += merged[i].f16_count
+            eb[i].has_double = eb[i].has_double || merged[i].has_double
+        }
+    }
     case .FixedSizeArray: {
         elem_size := type_size(ty.fixed_size_array.type)
         for i in 0 ..< ty.fixed_size_array.size {
@@ -167,6 +200,9 @@ classify_into_eightbytes :: proc(type_id: TypeId, base_offset: int, eb: ^[2]AbiE
         }
         if ty.kind == .Flt16 {
             eb[idx].f16_count += 1
+        }
+        if ty.kind == .Flt64 {
+            eb[idx].has_double = true
         }
 
         end := base_offset + type_size(type_id)
@@ -250,6 +286,13 @@ abi_content_size :: proc(type_id: TypeId) -> int {
         last := n - 1
         return offsets[last] + abi_content_size(ty.structure.fields[last].type)
     }
+    case .Union: {
+        biggest := 0
+        for f in ty.union_fields {
+            biggest = max(biggest, abi_content_size(f.type))
+        }
+        return biggest
+    }
     case .FixedSizeArray: {
         if ty.fixed_size_array.size == 0 do return 0
         elem_size := type_size(ty.fixed_size_array.type)
@@ -259,9 +302,9 @@ abi_content_size :: proc(type_id: TypeId) -> int {
         return type_size(type_id)
     }
 }
-// Classifies an aggregate (struct / fixed array) for ABI purposes. Slices
-// and strings are handled inline in lower_abi_value since they're always
-// exactly the right shape already.
+// Classifies an aggregate (struct / fixed array / union) for ABI purposes.
+// Slices and strings are handled inline in lower_abi_value since they're
+// always exactly the right shape already.
 classify_type :: proc(type_id: TypeId) -> AbiClassified {
     size := type_size(type_id)
     align := type_align_of(type_id)
@@ -310,6 +353,9 @@ classify_type :: proc(type_id: TypeId) -> AbiClassified {
             n32 := eb[i].f32_count
             n16 := eb[i].f16_count
             switch {
+            case eb[i].has_double:
+                // only possible through a union overlapping a double
+                r.eightbytes[i].llvm_type = "double"
             case n16 == 0 && n32 == 2:
                 r.eightbytes[i].llvm_type = "<2 x float>"
             case n16 == 0 && n32 == 1:
@@ -357,7 +403,7 @@ lower_abi_value :: proc(type_id: TypeId) -> (bool, string, bool, int) {
         // call sites to all agree — they all funnel through
         // cg_abi_lower_signature below.
         return false, "{ ptr, i64 }", false, 8
-    case .Struct, .FixedSizeArray:
+    case .Struct, .FixedSizeArray, .Union:
         c := classify_type(type_id)
         if c.is_memory {
             // x86-64 SysV: byval arguments are always at least 8-byte

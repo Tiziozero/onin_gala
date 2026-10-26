@@ -287,3 +287,23 @@ fn println(data: ..any) {
 fn generic_fn(a: $T) {
     println("a:", a);
 }
+
+
+struct Timespec {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
+
+extern fn nanosleep(req: ^Timespec, rem: ^Timespec): i32;
+
+fn sleep_ms(ms: i64) {
+    if ms <= 0 {
+        return;
+    }
+    ts := Timespec{ tv_sec = ms / 1000, tv_nsec = (ms % 1000) * 1000000 };
+    // POSIX allows req and rem to be the same object, so on an early wakeup
+    // ts already holds the time left. The only error that can happen here is
+    // EINTR (tv_nsec is always in range), so -1 means "interrupted, go again".
+    while nanosleep(&ts, &ts) == -1 {
+    }
+}
