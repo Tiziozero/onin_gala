@@ -183,6 +183,7 @@ Cli_Args :: struct {
     program_name: string,        // output path (executable, or object with -c)
     output_set:   bool,          // -o was given
     object_only:  bool,          // -c: emit one merged .o, don't link
+    check_only:   bool,          // --check: no codegen
     debug:        bool,
     extra_libs:   [dynamic]string, // paths passed via -l/--link, e.g. "-l libfoo.so"
 }
@@ -246,6 +247,9 @@ parse_cli_args :: proc(args: []string) -> Cli_Args {
         case arg == "-c":
             // Compile only: merge all module objects into one .o
             result.object_only = true
+        case arg == "--check":
+            // check only. no codegen
+            result.check_only = true
 
         case arg == "-l" || arg == "--link":
             // Link an extra shared library (.so) at the given path, e.g.
@@ -479,19 +483,21 @@ main :: proc() { // odins context is passed down, not up, or some shi
         lower_module(u.ast)
     }
 
-    // then generate
-    for m, mid in get_ctx().modules {
-        // set for codegen
-        get_ctx().current_file = m;
-        debugln("CG MOD:", m, mid);
-        cg_module(mid)
-    }
+    if !cli.check_only {
+        // then generate
+        for m, mid in get_ctx().modules {
+            // set for codegen
+            get_ctx().current_file = m;
+            debugln("CG MOD:", m, mid);
+            cg_module(mid)
+        }
 
-    if cli.object_only {
-        link_object(ctx)
-        write_link_list(ctx, cli.extra_libs[:])
-    } else {
-        link_executable(ctx, cli.extra_libs[:])
+        if cli.object_only {
+            link_object(ctx)
+            write_link_list(ctx, cli.extra_libs[:])
+        } else {
+            link_executable(ctx, cli.extra_libs[:])
+        }
     }
 
     debugln("modules:       ", len(get_ctx().mods));

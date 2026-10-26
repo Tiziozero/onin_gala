@@ -8,7 +8,7 @@ endif
 " Keywords
 " ─────────────────────────────────────────────
 
-syn keyword galaKeyword fn struct return if else while for otherwise
+syn keyword galaKeyword fn struct union return if else while for otherwise
 syn keyword galaKeyword extern export break continue import alias
 
 " Builtin compiler/type operations

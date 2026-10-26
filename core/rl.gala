@@ -1,7 +1,7 @@
 // rl.gala
 import "./core.gala";
 
-@link("./lib/libraylib.so")
+@link("./libraylib.so.600")
 
 // ============================================================
 // Basic types
@@ -47,6 +47,8 @@ struct Texture {
     format: i32,
 }
 
+alias Texture2D = Texture;
+
 
 struct Image {
     data: ^void,
@@ -87,6 +89,7 @@ struct Camera {
     fovy: f32,
     projection: i32,
 }
+alias Camera3D = Camera;
 
 
 
@@ -596,3 +599,92 @@ KEY_Z           : i32 = 90;
 MOUSE_BUTTON_LEFT  : i32 = 0;
 MOUSE_BUTTON_RIGHT : i32 = 1;
 MOUSE_BUTTON_MIDDLE: i32 = 2;
+
+
+// extra
+struct Matrix {
+    data: [16]f32,
+}
+
+struct Mesh {
+    vertexCount: i32,
+    triangleCount: i32,
+
+    vertices: ^f32,
+    texcoords: ^f32,
+    texcoords2: ^f32,
+    normals: ^f32,
+    tangents: ^f32,
+    colors: ^u8,
+    indices: ^u16,
+
+    boneCount: i32,
+    boneIndices: ^u8,
+    boneWeights: ^f32,
+
+    animVertices: ^f32,
+    animNormals: ^f32,
+
+    vaoId: u32,
+    vboId: ^u32,
+}
+
+struct Model {
+    transform: Matrix,
+
+    meshCount: i32,
+    materialCount: i32,
+    meshes: ^Mesh,
+    materials: ^Material,
+    meshMaterial: ^i32,
+
+    skeleton: ModelSkeleton,
+    currentPose: ModelAnimPose,
+    boneMatrices: ^Matrix,
+}
+struct Shader {
+    id: u32,
+    locs: ^i32,
+}
+
+struct MaterialMap {
+    texture: Texture2D,
+    color: Color,
+    value: f32,
+}
+
+struct Material {
+    shader: Shader,
+    maps: ^MaterialMap,
+    params: [4]f32,
+}
+alias ModelAnimPose = ^Transform;
+
+struct BoneInfo {
+    name: [32]byte,
+    parent: i32,
+}
+
+struct ModelSkeleton {
+    boneCount: u32,
+    bones: ^BoneInfo,
+    bindPose: ModelAnimPose,
+}
+extern fn DrawModel(model: Model, position: Vector3 , scale: f32, tint:Color );
+extern fn LoadModel(c: ^byte): Model;
+struct Transform {
+    padding: [40]u8,
+}
+extern fn DrawGrid(a: i32, b: f32);
+extern fn DrawFPS(a: i32, b: i32);
+
+// extern fn UpdateCamera(camera: ^camera, mode: i32);
+PI :: 3.14159265358979323846;
+extern fn MatrixMultiply(left, right: Matrix): Matrix;
+extern fn MatrixRotateX(angle: f32): Matrix;
+extern fn MatrixRotateY(angle: f32): Matrix;
+extern fn MatrixRotateZ(angle: f32): Matrix;
+extern fn Vector2Normalize(v: Vector2): Vector2;
+extern fn Vector2Rotate(v: Vector2, angle: f32): Vector2;
+
+
