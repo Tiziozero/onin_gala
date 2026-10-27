@@ -42,7 +42,6 @@ import "./cfunctions.gala";
 // Constants and raw helpers
 // ============================================================
 
-NULL: rawptr = transmute(rawptr)cast(u64)0;
 
 KB: u64 = 1024;
 MB: u64 = 1048576;

@@ -1,13 +1,13 @@
 // core.gala
-//
-// Runtime layer: C bindings, `any` helpers, a Builder-based
-// formatter driven by type_info, println and print_fmt.
 
-alias int = i32;
+alias int = i64;
+NULL :: 0;
 
 @link("/lib/x86_64-linux-gnu/libc.so.6")
 @link("/lib/x86_64-linux-gnu/libm.so.6")
 import "./cfunctions.gala";
+
+extern fn write(fd: i32, buf: ^byte, count: i64): i64;
 
 
 // ============================================================

@@ -290,6 +290,3 @@ extern fn pthread_cond_destroy(cv: ^Cond): i32;
 
 extern fn sched_yield(): i32;
 extern fn usleep(us: i32): i32;
-
-
-extern fn write(fd: i32, buf: ^byte, count: i64): i64;

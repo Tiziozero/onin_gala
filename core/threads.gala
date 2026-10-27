@@ -3,6 +3,7 @@
 // cond = 48). Locals avoid module-level names (no shadowing in gala).
 
 import "./mem.gala";
+import "./core.gala";
 import "./cfunctions.gala";
 
 
