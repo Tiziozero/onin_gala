@@ -7,15 +7,16 @@
 //   buffer_write_i64(&b, 42);
 //
 //   line: string = "";
-//   if buffer_read_line(&b, &line) { ... }   // line is a view into the buffer
+//   if buffer_read_line(&b, &line) { ... }
+//   head := buffer_slice_string(&b, 0, 3);      // "GET"
 //   buffer_destroy(&b);
 //
 // Rules:
 //   - writes return false if the allocator fails (the buffer stays valid)
 //   - reads never go past the end; they return less / false / -1 instead
-//   - "view" results (buffer_bytes, buffer_read_line, ...) point into the
-//     buffer: any write may move the data, so don't keep them across writes
-
+//   - slices never go out of range; indices are clamped to 0..length
+//   - slices and other "view" results point into the buffer: any write may
+//     move the data, so don't keep them across writes
 
 import "./core.gala";
 import "./mem.gala";
@@ -26,10 +27,25 @@ CHAR_LF: byte = 10;
 
 struct Buffer {
     data: rawptr,
-    length: i64,    // bytes written
-    cap: i64,       // bytes allocated
-    pos: i64,       // read cursor, 0 <= pos <= length
-    backing: Allocator,
+    length: i64,        // bytes written
+    capacity: i64,      // bytes allocated
+    read_pos: i64,      // read cursor, 0 <= read_pos <= length
+    allocator: Allocator,
+}
+
+
+// ============================================================
+// Helpers
+// ============================================================
+
+fn clamp_index(x: i64, lo: i64, hi: i64): i64 {
+    if x < lo { return lo; }
+    if x > hi { return hi; }
+    return x;
+}
+
+fn buffer_as_string(v: []byte): string {
+    return transmute(string)v;
 }
 
 
@@ -37,60 +53,60 @@ struct Buffer {
 // Create / destroy
 // ============================================================
 
-fn buffer_make(cap: i64 = 64, a: Allocator = base_allocator): Buffer {
-    b := Buffer{NULL, 0, 0, 0, a};
-    if cap > 0 {
-        buffer_reserve(&b, cap);
+fn buffer_make(capacity: i64 = 64, allocator: Allocator = base_allocator): Buffer {
+    b := Buffer{NULL, 0, 0, 0, allocator};
+    if capacity > 0 {
+        buffer_reserve(&b, capacity);
     }
     return b;
 }
 
 // Copy of `s` as the buffer's content, read cursor at the start.
-fn buffer_from_string(s: string, a: Allocator = base_allocator): Buffer {
-    b := buffer_make(len(s), a);
+fn buffer_from_string(s: string, allocator: Allocator = base_allocator): Buffer {
+    b := buffer_make(len(s), allocator);
     buffer_write_string(&b, s);
     return b;
 }
 
 fn buffer_destroy(b: ^Buffer) {
-    keep := b^.backing;
+    allocator := b^.allocator;
     if b^.data != NULL {
-        dealloc(b^.data, cast(u64)b^.cap, keep);
+        dealloc(b^.data, cast(u64)b^.capacity, allocator);
     }
-    b^ = Buffer{NULL, 0, 0, 0, keep};
+    b^ = Buffer{NULL, 0, 0, 0, allocator};
 }
 
 // Empties the buffer but keeps the memory.
 fn buffer_clear(b: ^Buffer) {
     b^.length = 0;
-    b^.pos = 0;
+    b^.read_pos = 0;
 }
 
 // Makes room for `extra` more bytes (doubling). false if the allocator fails.
 fn buffer_reserve(b: ^Buffer, extra: i64): bool {
     need := b^.length + extra;
-    if need <= b^.cap {
+    if need <= b^.capacity {
         return true;
     }
-    new_cap := b^.cap;
-    if new_cap < 16 {
-        new_cap = 16;
+    new_capacity := b^.capacity;
+    if new_capacity < 16 {
+        new_capacity = 16;
     }
-    while new_cap < need {
-        new_cap = new_cap * 2;
+    while new_capacity < need {
+        new_capacity = new_capacity * 2;
     }
-    p := resize(b^.data, cast(u64)b^.cap, cast(u64)new_cap, 16, b^.backing);
+    p := resize(b^.data, cast(u64)b^.capacity, cast(u64)new_capacity, 16, b^.allocator);
     if p == NULL {
         return false;
     }
     b^.data = p;
-    b^.cap = new_cap;
+    b^.capacity = new_capacity;
     return true;
 }
 
 
 // ============================================================
-// Raw access
+// Raw access and slicing
 // ============================================================
 
 // Pointer to byte `i` of the buffer (0 = first byte written, not the cursor).
@@ -99,26 +115,43 @@ fn buffer_at(b: ^Buffer, i: i64): ^byte {
     return transmute(^byte)raw;
 }
 
-// Everything written so far.
-fn buffer_bytes(b: ^Buffer): []byte {
-    return bytes_from(b^.data, b^.length);
+// Bytes lo..hi as a view. Indices are clamped, and hi is never below lo.
+fn buffer_slice(b: ^Buffer, lo: i64 = -1, hi: i64 = -1): []byte {
+    if lo == -1 && hi == -1 {
+        return bytes_from(b^.data, b^.length);
+    }
+    start := clamp_index(lo, 0, b^.length);
+    stop := clamp_index(hi, start, b^.length);
+    raw := ptr_add(b^.data, cast(u64)start);
+    return bytes_from(raw, stop - start);
 }
 
-// Everything written so far, as a string view.
+fn buffer_slice_string(b: ^Buffer, lo: i64, hi: i64): string {
+    return buffer_as_string(buffer_slice(b, lo, hi));
+}
+
+// Bytes from `lo` to the end.
+fn buffer_slice_from(b: ^Buffer, lo: i64): []byte {
+    return buffer_slice(b, lo, b^.length);
+}
+
+// Everything written so far.
+fn buffer_bytes(b: ^Buffer): []byte {
+    return buffer_slice(b, 0, b^.length);
+}
+
 fn buffer_string(b: ^Buffer): string {
-    v := buffer_bytes(b);
-    return transmute(string)v;
+    return buffer_as_string(buffer_bytes(b));
 }
 
 // What is left to read (from the cursor to the end).
 fn buffer_unread(b: ^Buffer): []byte {
-    raw := ptr_add(b^.data, cast(u64)b^.pos);
-    return bytes_from(raw, b^.length - b^.pos);
+    return buffer_slice(b, b^.read_pos, b^.length);
 }
 
 // Copy of everything written so far.
-fn buffer_to_string(b: ^Buffer, a: Allocator = base_allocator): string {
-    return clone_string(buffer_string(b), a);
+fn buffer_to_string(b: ^Buffer, allocator: Allocator = base_allocator): string {
+    return clone_string(buffer_string(b), allocator);
 }
 
 
@@ -126,7 +159,7 @@ fn buffer_to_string(b: ^Buffer, a: Allocator = base_allocator): string {
 // Write
 // ============================================================
 
-fn buffer_write(b: ^Buffer, p: rawptr, n: i64): bool {
+fn buffer_write_raw(b: ^Buffer, p: rawptr, n: i64): bool {
     if n <= 0 {
         return true;
     }
@@ -136,6 +169,12 @@ fn buffer_write(b: ^Buffer, p: rawptr, n: i64): bool {
     mem_copy(ptr_add(b^.data, cast(u64)b^.length), p, cast(u64)n);
     b^.length += n;
     return true;
+}
+
+// Raw bytes of any value.
+fn buffer_write(b: ^Buffer, v: $T): bool {
+    copy := v;
+    return buffer_write_raw(b, cast(rawptr)&copy, size_of(v));
 }
 
 fn buffer_write_byte(b: ^Buffer, c: byte): bool {
@@ -152,14 +191,14 @@ fn buffer_write_bytes(b: ^Buffer, s: []byte): bool {
     if len(s) == 0 {
         return true;
     }
-    return buffer_write(b, transmute(rawptr)&s[0], len(s));
+    return buffer_write_raw(b, transmute(rawptr)&s[0], len(s));
 }
 
 fn buffer_write_string(b: ^Buffer, s: string): bool {
     if len(s) == 0 {
         return true;
     }
-    return buffer_write(b, transmute(rawptr)&s[0], len(s));
+    return buffer_write_raw(b, transmute(rawptr)&s[0], len(s));
 }
 
 // Decimal text, e.g. 1234 -> "1234".
@@ -178,7 +217,7 @@ fn buffer_write_u64(b: ^Buffer, v: u64): bool {
     while i > 0 {
         i -= 1;
         dst := buffer_at(b, b^.length + i);
-        dst^ = cast(byte)(48 + x % 10);
+        dst^ = cast(byte)(CHAR_ZERO + x % 10);
         x = x / 10;
     }
     b^.length += digits;
@@ -187,9 +226,10 @@ fn buffer_write_u64(b: ^Buffer, v: u64): bool {
 
 fn buffer_write_i64(b: ^Buffer, v: i64): bool {
     if v < 0 {
-        if !buffer_write_byte(b, 45) {
+        if !buffer_write_byte(b, CHAR_MINUS) {
             return false;
         }
+        // negate in u64 so i64 min works
         return buffer_write_u64(b, cast(u64)0 - cast(u64)v);
     }
     return buffer_write_u64(b, cast(u64)v);
@@ -209,7 +249,7 @@ fn buffer_write_crlf(b: ^Buffer): bool {
 // ============================================================
 
 fn buffer_remaining(b: ^Buffer): i64 {
-    return b^.length - b^.pos;
+    return b^.length - b^.read_pos;
 }
 
 // Moves the cursor. false (and no change) if `pos` is outside 0..length.
@@ -217,79 +257,68 @@ fn buffer_seek(b: ^Buffer, pos: i64): bool {
     if pos < 0 || pos > b^.length {
         return false;
     }
-    b^.pos = pos;
+    b^.read_pos = pos;
     return true;
 }
 
 fn buffer_skip(b: ^Buffer, n: i64) {
-    count := n;
-    left := buffer_remaining(b);
-    if count > left {
-        count = left;
-    }
-    if count > 0 {
-        b^.pos += count;
-    }
+    b^.read_pos += clamp_index(n, 0, buffer_remaining(b));
 }
 
-// Copies up to `n` bytes into `dst`. Returns how many were copied.
-fn buffer_read(b: ^Buffer, dst: rawptr, n: i64): i64 {
-    count := n;
-    left := buffer_remaining(b);
-    if count > left {
-        count = left;
+fn buffer_read(b: ^Buffer, dst: ^$T): bool {
+    n := size_of(T);
+    count := clamp_index(n, 0, buffer_remaining(b));
+    if count != n {
+        return false;
     }
-    if count <= 0 {
+    mem_copy(cast(rawptr)dst, ptr_add(b^.data, cast(u64)b^.read_pos), cast(u64)count);
+    b^.read_pos += count;
+    return true;
+}
+// Copies up to `n` bytes into `dst`. Returns how many were copied.
+fn buffer_read_raw(b: ^Buffer, dst: rawptr, n: i64): i64 {
+    count := clamp_index(n, 0, buffer_remaining(b));
+    if count == 0 {
         return 0;
     }
-    mem_copy(dst, ptr_add(b^.data, cast(u64)b^.pos), cast(u64)count);
-    b^.pos += count;
+    mem_copy(dst, ptr_add(b^.data, cast(u64)b^.read_pos), cast(u64)count);
+    b^.read_pos += count;
     return count;
 }
 
 // Next byte, or -1 at the end.
 fn buffer_read_byte(b: ^Buffer): i32 {
-    if b^.pos >= b^.length {
-        return -1;
+    c := buffer_peek_byte(b);
+    if c >= 0 {
+        b^.read_pos += 1;
     }
-    src := buffer_at(b, b^.pos);
-    c := src^;
-    b^.pos += 1;
-    return cast(i32)c;
+    return c;
 }
 
 // Next byte without moving the cursor, or -1 at the end.
 fn buffer_peek_byte(b: ^Buffer): i32 {
-    if b^.pos >= b^.length {
+    if b^.read_pos >= b^.length {
         return -1;
     }
-    src := buffer_at(b, b^.pos);
-    c := src^;
-    return cast(i32)c;
+    src := buffer_at(b, b^.read_pos);
+    return cast(i32)(src^);
 }
 
 // Up to `n` bytes as a view (no copy), moving the cursor past them.
 fn buffer_take(b: ^Buffer, n: i64): []byte {
-    count := n;
-    left := buffer_remaining(b);
-    if count > left {
-        count = left;
-    }
-    if count < 0 {
-        count = 0;
-    }
-    raw := ptr_add(b^.data, cast(u64)b^.pos);
-    b^.pos += count;
-    return bytes_from(raw, count);
+    count := clamp_index(n, 0, buffer_remaining(b));
+    v := buffer_slice(b, b^.read_pos, b^.read_pos + count);
+    b^.read_pos += count;
+    return v;
 }
 
 // Distance from the cursor to the next `c`, or -1 if there is none.
 fn buffer_find(b: ^Buffer, c: byte): i64 {
-    i := b^.pos;
+    i := b^.read_pos;
     while i < b^.length {
         p := buffer_at(b, i);
         if p^ == c {
-            return i - b^.pos;
+            return i - b^.read_pos;
         }
         i += 1;
     }
@@ -300,34 +329,32 @@ fn buffer_find(b: ^Buffer, c: byte): i64 {
 // `out` as a view. If there is no complete line yet it returns false and
 // the cursor doesn't move, so you can wait for more data and try again.
 fn buffer_read_line(b: ^Buffer, out: ^string): bool {
-    idx := buffer_find(b, CHAR_LF);
-    if idx < 0 {
+    offset := buffer_find(b, CHAR_LF);
+    if offset < 0 {
         return false;
     }
-    start := b^.pos;
-    n := idx;
-    if n > 0 {
-        prev := buffer_at(b, start + n - 1);
+    start := b^.read_pos;
+    line_end := start + offset;
+    if offset > 0 {
+        prev := buffer_at(b, line_end - 1);
         if prev^ == CHAR_CR {
-            n -= 1;
+            line_end -= 1;
         }
     }
-    raw := ptr_add(b^.data, cast(u64)start);
-    v := bytes_from(raw, n);
-    out^ = transmute(string)v;
-    b^.pos = start + idx + 1;
+    out^ = buffer_slice_string(b, start, line_end);
+    b^.read_pos = start + offset + 1;
     return true;
 }
 
 // Drops the bytes already read, so a long-lived buffer doesn't grow forever.
 fn buffer_compact(b: ^Buffer) {
-    if b^.pos == 0 {
+    if b^.read_pos == 0 {
         return;
     }
-    left := b^.length - b^.pos;
+    left := buffer_remaining(b);
     if left > 0 {
-        mem_copy(b^.data, ptr_add(b^.data, cast(u64)b^.pos), cast(u64)left);
+        mem_copy(b^.data, ptr_add(b^.data, cast(u64)b^.read_pos), cast(u64)left);
     }
     b^.length = left;
-    b^.pos = 0;
+    b^.read_pos = 0;
 }

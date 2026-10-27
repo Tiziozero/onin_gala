@@ -55,9 +55,6 @@ fn from_addr(a: u64): rawptr {
     return transmute(rawptr)a;
 }
 
-fn ptr_add(p: rawptr, n: u64): rawptr {
-    return from_addr(addr(p) + n);
-}
 
 fn is_power_of_two(x: u64): bool {
     if x == 0 {
@@ -257,7 +254,7 @@ fn del(p: ^$T, a: Allocator = base_allocator) {
 
 // T is given explicitly: make_slice::<f64>(10) gives a []f64 of ten
 // zeroes. On failure the slice is empty.
-fn make_slice::<$T>(n: i64, a: Allocator = base_allocator): []T {
+fn make_slice::<$T>(n: i64 = 0, a: Allocator = base_allocator): []T {
     esz := cast(u64)size_of(T);
     raw: rawptr = NULL;
     count: i64 = 0;
