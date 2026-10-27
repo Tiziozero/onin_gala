@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:math"
 import "core:strconv"
 import "core:strings"
+import "core:reflect"
 
 // A folded compile-time value. Integers are i128 so overflow can be
 // detected; they must stay inside [i64 min, u64 max].
@@ -397,4 +398,23 @@ inline_constant :: proc(id: ExprId, oid: ObjId) {
         return
     }
     get_expr(id)^ = get_expr(lit)^
+}
+
+// constants.odin (or wherever base types are set up)
+
+inject_kind_constants :: proc(base: ^ModuleScope) {
+    for k in RtKind {
+        name := strings.concatenate(
+            {"KIND_", strings.to_upper(reflect.enum_string(k), context.temp_allocator)},
+            get_ctx().allocator)
+
+        oid := new_object(base, Object{kind=.Variable, name=name, read_only=.Constant}, {})
+        const_table[oid] = ConstEntry{
+            state = .Done,
+            value = i128(k),
+            type  = nil,       // untyped, adapts to its use like `a :: 5`
+        }
+        base.objects[name]     = oid
+        base.obj_exports[name] = oid
+    }
 }

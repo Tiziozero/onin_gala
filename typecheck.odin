@@ -628,6 +628,18 @@ complete_untyped_union :: proc(id: ExprId, e: StructLit, target: TypeId) {
 }
 tc_expr :: proc(tc: ^TcContext, id: ExprId) {
     switch e in get_expr(id) {
+    case TypeInfoOf: {
+        tc_expr(tc, e.expr)
+        t := expr_ty(e.expr)
+        r, ok, err := assignable(integer_type(), t)
+        if !ok {
+            highlight_lines(get_span_expr(id))
+            gala_panicf("`type_info` takes an i64 type id, got %s (%s).", tts(t), err)
+        }
+        propagate_type(r, e.expr)
+        get_ctx().expr_types[id] = get_ctx().expr_resolution_types[id]
+        get_ctx().uses_type_table = true
+    }
     case TypeIdOf: {
         _, syntactic := e.t.(TypeSpecifier)
         if !syntactic && !e.names_type {
@@ -1591,7 +1603,7 @@ propagate_type :: proc(ty: TypeId, expr: ExprId) {
     // already typed (or fixed by their own syntax): nothing to propagate
     case UnNot, BoolLitFalse, BoolLitTrue, String, Reference, Deref, TakeSlice,
          Index, FixedSizeArray, Cast, Transmute,
-         Symbol, FnCall, FnLit, FieldAccess:
+         Symbol, FnCall, FnLit, FieldAccess, TypeInfoOf:
         return
     // `Foo{..}` is typed already; `{...}` takes its type (and checks its
     // fields) now that the target is known

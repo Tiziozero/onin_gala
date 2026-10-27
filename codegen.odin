@@ -1753,6 +1753,15 @@ cg_module :: proc(m: ModId) {
             cg_entry_wrapper(&cgctx, m, ast, has_globals)
         }
     }
+    // runtime type table: defined once (entry module), declared elsewhere
+    if get_ctx().uses_type_table {
+        if is_entry {
+            cg_type_table(&cgctx)
+        } else {
+            cwritefln(&cgctx, "@__gala_types = external constant [0 x %s]",
+                ty_to_llvm_str(&cgctx, ty_from_name("TypeInfo")))
+        }
+    }
 
     // ---- write + compile ----
     if dir_err := os.make_directory(".gala_build"); dir_err != io.Error.None && dir_err != .Exist {

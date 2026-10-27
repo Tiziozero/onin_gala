@@ -1,7 +1,7 @@
 // core.gala
 //
-// Small runtime layer: C bindings, `any` helpers, a Builder-based
-// formatter (no C formatting), println and printfmt.
+// Runtime layer: C bindings, `any` helpers, a Builder-based
+// formatter driven by type_info, println and print.
 
 alias int = i32;
 
@@ -52,18 +52,17 @@ fn str_cmp(a: string, b: string): bool {
 // BUILDER
 // ============================================================
 
-// Fixed-size output buffer. Lives on the caller's stack, so it is
-// thread-safe. Output past 1024 bytes is dropped.
-// Later: swap `data` for an allocator-backed growable buffer; only
-// push_byte has to change.
+// Fixed-size output buffer on the caller's stack (thread-safe).
+// Output past BUF_SIZE bytes is dropped.
+BUF_SIZE :: 4096;
 
 struct Builder {
-    data: [1024]byte,
+    data: [BUF_SIZE]byte,
     count: i64,
 }
 
 fn push_byte(b: ^Builder, c: byte) {
-    if b^.count < 1024 {
+    if b^.count < BUF_SIZE {
         b^.data[b^.count] = c;
         b^.count += 1;
     }
@@ -77,8 +76,7 @@ fn push_string(b: ^Builder, s: string) {
     }
 }
 
-// The only place that touches C. If cfunctions declares `write`,
-// use write(1, &b.data[0], b.count) instead.
+// The only place that touches C.
 fn flush_stdout(b: ^Builder) {
     printf(&("%.*s")[0], b^.count, &b^.data[0]);
 }
@@ -88,7 +86,6 @@ fn flush_stdout(b: ^Builder) {
 // ============================================================
 
 fn fmt_u64(b: ^Builder, v: u64) {
-    // find the largest power of 10 <= v, then emit digits forward
     div: u64 = 1;
     while v / div >= 10 {
         div = div * 10;
@@ -106,6 +103,23 @@ fn fmt_i64(b: ^Builder, v: i64) {
         fmt_u64(b, cast(u64)0 - cast(u64)v);
     } else {
         fmt_u64(b, cast(u64)v);
+    }
+}
+
+fn fmt_hex(b: ^Builder, v: u64) {
+    push_string(b, "0x");
+    div: u64 = 1;
+    while v / div >= 16 {
+        div = div * 16;
+    }
+    while div > 0 {
+        d := (v / div) % 16;
+        if d < 10 {
+            push_byte(b, cast(byte)(48 + d));            // '0'
+        } else {
+            push_byte(b, cast(byte)(87 + d));            // 'a' - 10
+        }
+        div = div / 16;
     }
 }
 
@@ -160,60 +174,158 @@ fn fmt_f64(b: ^Builder, x: f64) {
 }
 
 // ============================================================
-// ANY FORMATTING
+// VALUE FORMATTING (driven by type_info)
 // ============================================================
 
-fn try_int::<$T>(b: ^Builder, v: any): bool {
-    p := any_as::<T>(v);
-    if p == 0 { return false; }
-    fmt_i64(b, cast(i64)(p^));
-    return true;
+fn offset_ptr(p: rawptr, bytes: i64): rawptr {
+    return cast(rawptr)(cast(i64)p + bytes);
 }
 
-fn try_uint::<$T>(b: ^Builder, v: any): bool {
-    p := any_as::<T>(v);
-    if p == 0 { return false; }
-    fmt_u64(b, cast(u64)(p^));
-    return true;
+fn fmt_int_at(b: ^Builder, data: rawptr, size: i64) {
+    if size == 8 {
+        p := cast(^i64)data;
+        fmt_i64(b, p^);
+    } else if size == 4 {
+        p := cast(^i32)data;
+        fmt_i64(b, cast(i64)(p^));
+    } else if size == 2 {
+        p := cast(^i16)data;
+        fmt_i64(b, cast(i64)(p^));
+    } else {
+        p := cast(^i8)data;
+        fmt_i64(b, cast(i64)(p^));
+    }
 }
 
-fn try_float::<$T>(b: ^Builder, v: any): bool {
-    p := any_as::<T>(v);
-    if p == 0 { return false; }
-    fmt_f64(b, cast(f64)(p^));
-    return true;
+fn fmt_uint_at(b: ^Builder, data: rawptr, size: i64) {
+    if size == 8 {
+        p := cast(^u64)data;
+        fmt_u64(b, p^);
+    } else if size == 4 {
+        p := cast(^u32)data;
+        fmt_u64(b, cast(u64)(p^));
+    } else if size == 2 {
+        p := cast(^u16)data;
+        fmt_u64(b, cast(u64)(p^));
+    } else {
+        p := cast(^u8)data;
+        fmt_u64(b, cast(u64)(p^));
+    }
 }
 
-fn fmt_any(b: ^Builder, v: any) {
-    ps := any_as::<string>(v);
-    if ps != 0 {
-        push_string(b, ps^);
+fn fmt_float_at(b: ^Builder, data: rawptr, size: i64) {
+    if size == 8 {
+        p := cast(^f64)data;
+        fmt_f64(b, p^);
+    } else {
+        p := cast(^f32)data;
+        fmt_f64(b, cast(f64)(p^));
+    }
+}
+
+// Formats the value at `data` of type `id`. `nested` is true inside
+// structs/arrays/slices, where strings get quoted.
+fn fmt_value(b: ^Builder, data: rawptr, id: i64, nested: bool) {
+    info := type_info(id);
+    k := info^.kind;
+
+    if k == KIND_INT {
+        fmt_int_at(b, data, info^.size);
         return;
     }
-
-    if try_int::<i64>(b, v) { return; }
-    if try_int::<i32>(b, v) { return; }
-    if try_int::<i16>(b, v) { return; }
-    if try_int::<i8>(b, v) { return; }
-    if try_uint::<u64>(b, v) { return; }
-    if try_uint::<u32>(b, v) { return; }
-    if try_uint::<u16>(b, v) { return; }
-    if try_uint::<u8>(b, v) { return; }
-    if try_float::<f64>(b, v) { return; }
-    if try_float::<f32>(b, v) { return; }
-
-    pb := any_as::<bool>(v);
-    if pb != 0 {
-        if pb^ {
+    if k == KIND_UINT || k == KIND_BYTE || k == KIND_RUNE {
+        fmt_uint_at(b, data, info^.size);
+        return;
+    }
+    if k == KIND_FLOAT {
+        fmt_float_at(b, data, info^.size);
+        return;
+    }
+    if k == KIND_BOOL {
+        p := cast(^bool)data;
+        if p^ {
             push_string(b, "true");
         } else {
             push_string(b, "false");
         }
         return;
     }
+    if k == KIND_STRING {
+        p := cast(^string)data;
+        if nested { push_byte(b, 34); }                  // '"'
+        push_string(b, p^);
+        if nested { push_byte(b, 34); }
+        return;
+    }
+    if k == KIND_POINTER {
+        p := cast(^u64)data;
+        if p^ == 0 {
+            push_string(b, "nil");
+        } else {
+            fmt_hex(b, p^);
+        }
+        return;
+    }
+    if k == KIND_ANY {
+        p := cast(^any)data;
+        fmt_value(b, p^.data, p^.id, nested);
+        return;
+    }
 
-    // structs, pointers, fns: needs type info, see notes
-    push_string(b, "<?>");
+    if k == KIND_STRUCT {
+        push_string(b, info^.name);
+        if len(info^.fields) == 0 {
+            push_string(b, " {}");
+            return;
+        }
+        push_string(b, " { ");
+        i := 0;
+        for f in info^.fields {
+            if i > 0 { push_string(b, ", "); }
+            push_string(b, f.name);
+            push_string(b, " = ");
+            fmt_value(b, offset_ptr(data, f.offset), f.typeid, true);
+            i += 1;
+        }
+        push_string(b, " }");
+        return;
+    }
+
+    if k == KIND_ARRAY {
+        esize := type_info(info^.elem)^.size;
+        push_byte(b, 91);                                // '['
+        i: i64 = 0;
+        while i < info^.count {
+            if i > 0 { push_string(b, ", "); }
+            fmt_value(b, offset_ptr(data, i * esize), info^.elem, true);
+            i += 1;
+        }
+        push_byte(b, 93);                                // ']'
+        return;
+    }
+
+    if k == KIND_SLICE {
+        // layout is { ptr, i64 }
+        ptr_p := cast(^rawptr)data;
+        cnt_p := cast(^i64)offset_ptr(data, 8);
+        esize := type_info(info^.elem)^.size;
+        push_byte(b, 91);
+        i: i64 = 0;
+        while i < cnt_p^ {
+            if i > 0 { push_string(b, ", "); }
+            fmt_value(b, offset_ptr(ptr_p^, i * esize), info^.elem, true);
+            i += 1;
+        }
+        push_byte(b, 93);
+        return;
+    }
+
+    // fns, unions, anything else: just the type name
+    push_string(b, info^.name);
+}
+
+fn fmt_any(b: ^Builder, v: any) {
+    fmt_value(b, v.data, v.id, false);
 }
 
 // ============================================================
@@ -255,10 +367,9 @@ fn format_into(b: ^Builder, fmt_str: string, args: []any) {
     }
 }
 
-// printfmt("a is {}, b is {}\n", a, b)
-fn printfmt(fmt_str: string, args: ..any) {
-    b :=  Builder{ data=[1024]byte{}, count=0};
-    b.count = 0;
+// print("a is {}, b is {}\n", a, b)
+fn print(fmt_str: string, args: ..any) {
+    b := Builder{ data=[BUF_SIZE]byte{}, count=0 };
     format_into(&b, fmt_str, args);
     flush_stdout(&b);
 }
@@ -268,8 +379,7 @@ fn printfmt(fmt_str: string, args: ..any) {
 // ============================================================
 
 fn println(data: ..any) {
-    b :=  Builder{ data=[1024]byte{}, count=0};
-    b.count = 0;
+    b := Builder{ data=[BUF_SIZE]byte{}, count=0 };
 
     i := 0;
     for v in data {

@@ -418,6 +418,31 @@ write_link_list :: proc(ctx: ^Context, extra_libs: []string) {
     }
 }
 
+RtKind :: enum i64 {
+    None,       // not a runtime type
+    Int, Uint, Float, Bool, Byte, Rune, String,
+    Pointer, Slice, Array, Struct, Union, Fn, Any,
+}
+
+rt_kind_of :: proc(k: TypeKind) -> RtKind {
+    #partial switch k {
+    case .Int_8, .Int16, .Int32, .Int64:     return .Int
+    case .UInt_8, .UInt16, .UInt32, .UInt64: return .Uint
+    case .Flt_8, .Flt16, .Flt32, .Flt64:     return .Float
+    case .Bool:           return .Bool
+    case .Byte:           return .Byte
+    case .Rune:           return .Rune
+    case .String:         return .String
+    case .Pointer:        return .Pointer
+    case .Slice:          return .Slice
+    case .FixedSizeArray: return .Array
+    case .Struct:         return .Struct
+    case .Union:          return .Union
+    case .Function:       return .Fn
+    case .Any:            return .Any
+    }
+    return .None
+}
 main :: proc() { // odins context is passed down, not up, or some shi
     cli := parse_cli_args(os.args[1:]) // skip program name itself
     // extra_libs was made on the heap before we switch allocators below; a
@@ -439,6 +464,7 @@ main :: proc() { // odins context is passed down, not up, or some shi
     // released by one arena_destroy instead of showing up as a heap leak.
     context.allocator = ctx.allocator
 
+    inject_kind_constants(&ctx.base_mod);
     // integer types
     new_type(&ctx.base_mod, Type{name="i8", kind=.Int_8}, {});
     new_type(&ctx.base_mod, Type{name="i16", kind=.Int16}, {});
@@ -460,6 +486,26 @@ main :: proc() { // odins context is passed down, not up, or some shi
     new_type(&ctx.base_mod, Type{name="byte", kind=.Byte}, {});
     new_type(&ctx.base_mod, Type{name="rawptr", kind=.Pointer, ptr=void_type()}, {});
     new_type(&ctx.base_mod, Type{name="string", kind=.String}, {});
+    // type info
+    i64_ty    := ty_from_name("i64")
+    string_ty := ty_from_name("string")
+
+    field_ty := new_type(&ctx.base_mod, Type{name="TypeField", kind=.Struct, structure={ fields = {
+        {name="name",    type=string_ty},
+        {name="typeid", type=i64_ty},
+        {name="offset",  type=i64_ty},
+    }}}, {})
+
+    fields_slice_ty := intern_type(Type{kind=.Slice, slice={type=field_ty}})
+
+    new_type(&ctx.base_mod, Type{name="TypeInfo", kind=.Struct, structure={ fields = {
+        {name="name",   type=string_ty},
+        {name="kind",   type=i64_ty},
+        {name="size",   type=i64_ty},
+        {name="elem",   type=i64_ty},   // ptr/slice/array element type id
+        {name="count",  type=i64_ty},   // fixed array length
+        {name="fields", type=fields_slice_ty},
+    }}}, {})
 
     ctx.program_name = cli.program_name
     ctx.object_only = cli.object_only

@@ -46,6 +46,9 @@ TypeIdOf :: struct {
     expr:       Maybe(ExprId),   // set otherwise
     names_type: bool,            // resolver: `expr` was a bare type name
 }
+TypeInfoOf :: struct {
+    expr:       ExprId,
+}
 ZeroInit :: struct {}
 BreakStmt :: struct {label: string};
 ContinueStmt :: struct {label: string};
@@ -100,6 +103,7 @@ Expr :: union {
     Cast,
     Transmute,
     TypeIdOf,
+    TypeInfoOf,
     Reference,
     Deref,
     UnNot,
@@ -1176,6 +1180,17 @@ parse_primary :: proc(p: ^Parser) -> ExprId {
         node.t, node.expr = parse_type_or_expr(p)
         end := expect_symbol(p, ")");
         id := new_expr(Expr(node));
+        get_ctx().spans.exprs[id] = {
+            file_name=get_ctx().current_file,
+            span={token.span.start, end.span.end},
+        }
+        return id
+    } else if current_token(p).kind == .TypeInfoOf {
+        token := consume_token(p); // "type_info"
+        expect_symbol(p, "(");
+        e := parse_expr(p);
+        id := new_expr(Expr(TypeInfoOf{e}));
+        end := expect_symbol(p, ")");
         get_ctx().spans.exprs[id] = {
             file_name=get_ctx().current_file,
             span={token.span.start, end.span.end},

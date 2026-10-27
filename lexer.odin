@@ -14,6 +14,7 @@ TokenKind :: enum {
     Link,
     Transmute,
     TypeIdOf,
+    TypeInfoOf,
     Keyword,
     Cast,
     Len,
@@ -115,6 +116,7 @@ keyword_token :: proc(ident: string, span: Span) -> (tok: Token, ok: bool) {
     case "len":       return Token{span=span, kind=.Len, kw=.Invalid}, true
     case "size_of":   return Token{span=span, kind=.SizeOf, kw=.Invalid}, true
     case "type_id":   return Token{span=span, kind=.TypeIdOf, kw=.Invalid}, true
+    case "type_info":   return Token{span=span, kind=.TypeInfoOf, kw=.Invalid}, true
     case "any":       return Token{span=span, kind=.Any, kw=.Invalid}, true
     case "true":      return Token{span=span, kind=.True, kw=.Invalid}, true
     case "false":     return Token{span=span, kind=.False, kw=.Invalid}, true

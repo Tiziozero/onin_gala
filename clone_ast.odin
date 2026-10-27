@@ -67,6 +67,8 @@ clone_expr :: proc(id: ExprId) -> ExprId {
         v.target = clone_expr(v.target)
     case TypeIdOf:
         v.expr = clone_maybe_expr(v.expr)
+    case TypeInfoOf:
+        v.expr = clone_expr(v.expr)
     case Reference:
         v.expr = clone_expr(v.expr)
     case Deref:

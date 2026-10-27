@@ -1,5 +1,10 @@
 import "core/core.gala";
+struct S {
+    x: int,
+    y: f32,
+    c: struct { c: string, b: f32 },
+}
 fn main(): i32 {
-    println("Hello, World!");
+    println("Hello, World!", S{1, 1.2, {"hello", 0.12}});
     return 0;
 }

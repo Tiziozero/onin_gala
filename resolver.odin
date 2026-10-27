@@ -303,6 +303,16 @@ bare_name_as_type :: proc(s: ^Scope, inner: ExprId, span: SpanStruct) -> (TypeId
 
 resolve_expr :: proc(s: ^Scope, id: ExprId) {
     switch e in get(id) {
+    case TypeInfoOf: {
+        resolve_expr(s, e.expr)
+
+        tid, found := scope_find_type(s, "TypeInfo")
+        if !found || get_type(tid).kind != .Struct {
+            highlight_lines(get_span(id))
+            gala_panic("`type_info` needs the struct `TypeInfo` in scope (import core).")
+        }
+        get_ctx().expr_resolution_types[id] = intern_type(Type{kind = .Pointer, ptr = tid})
+    }
     case TypeIdOf: {
         // written with type-only syntax (`^T`, `[]T`, `fn(..)`)
         if spec, is_ty := e.t.(TypeSpecifier); is_ty {

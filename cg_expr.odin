@@ -479,6 +479,18 @@ cg_pointer_binop :: proc(c: ^CGCtx, e: Binop) -> CGExprRes {
 
 cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
     switch e in get_expr(id) {
+    case TypeInfoOf: {
+        // the id is a runtime i64 (e.g. `v.id`); index the global table with it
+        id_v, returns := reduce_expr_to_single_value(c, cg_expr(c, e.expr))
+        assert(returns)
+
+        info_ty := get_type(expr_ty(id)).ptr   // expr type is ^TypeInfo
+
+        p := new_tmp(c)
+        cwritefln(c, "\t%s = getelementptr inbounds %s, ptr @__gala_types, i64 %s",
+            p, ty_to_llvm_str(c, info_ty), id_v)
+        return {kind=.Value, v=p}
+    }
     case UnNegative: {
         v, returns := reduce_expr_to_single_value(c, cg_expr(c, e.expr))
         assert(returns)
