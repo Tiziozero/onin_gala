@@ -1,7 +1,7 @@
 // core.gala
 //
 // Runtime layer: C bindings, `any` helpers, a Builder-based
-// formatter driven by type_info, println and print.
+// formatter driven by type_info, println and print_fmt.
 
 alias int = i32;
 
@@ -333,7 +333,7 @@ fn fmt_any(b: ^Builder, v: any) {
 // ============================================================
 
 // "{}" takes the next arg, "{{" / "}}" are literal braces.
-// Missing args print "<missing>", extra args are ignored.
+// Missing args print_fmt "<missing>", extra args are ignored.
 fn format_into(b: ^Builder, fmt_str: string, args: []any) {
     n := len(fmt_str);
     i := 0;
@@ -367,8 +367,8 @@ fn format_into(b: ^Builder, fmt_str: string, args: []any) {
     }
 }
 
-// print("a is {}, b is {}\n", a, b)
-fn print(fmt_str: string, args: ..any) {
+// print_fmt("a is {}, b is {}\n", a, b)
+fn print_fmt(fmt_str: string, args: ..any) {
     b := Builder{ data=[BUF_SIZE]byte{}, count=0 };
     format_into(&b, fmt_str, args);
     flush_stdout(&b);
@@ -378,8 +378,43 @@ fn print(fmt_str: string, args: ..any) {
 // PRINTLN
 // ============================================================
 
-fn println(data: ..any) {
+// true if `s` contains a "{}" placeholder
+// true if `s` contains a real "{}" (escaped "{{" and "}}" don't count)
+fn has_placeholder(s: string): bool {
+    n := len(s);
+    i := 0;
+    while i < n {
+        c := s[i];
+        if c == 123 {                                    // '{'
+            if i + 1 < n && s[i + 1] == 123 {
+                i += 2;                                  // "{{"
+            } else if i + 1 < n && s[i + 1] == 125 {
+                return true;                             // "{}"
+            } else {
+                i += 1;
+            }
+        } else if c == 125 && i + 1 < n && s[i + 1] == 125 {
+            i += 2;                                      // "}}"
+        } else {
+            i += 1;
+        }
+    }
+    return false;
+}
+
+fn print(data: ..any) {
     b := Builder{ data=[BUF_SIZE]byte{}, count=0 };
+
+    // println("a is {}, b is {}", a, b)
+    if len(data) > 0 {
+        ps := any_as::<string>(data[0]);
+        if ps != 0 && has_placeholder(ps^) {
+            format_into(&b, ps^, data[1:]);
+            push_byte(&b, 10);                           // '\n'
+            flush_stdout(&b);
+            return;
+        }
+    }
 
     i := 0;
     for v in data {
@@ -389,9 +424,131 @@ fn println(data: ..any) {
         fmt_any(&b, v);
         i += 1;
     }
-    push_byte(&b, 10);                                   // '\n'
 
     flush_stdout(&b);
+}
+
+// ============================================================
+// OUTPUT
+// ============================================================
+
+// Writes all of `data` to `fd`, retrying on short writes.
+// Returns the byte count written, or -1 on error.
+fn write_fd(fd: i32, data: []byte): i64 {
+    total: i64 = 0;
+    n := len(data);
+    while total < n {
+        rest := data[total:];
+        w := write(fd, raw_data(rest), len(rest));
+        if w <= 0 {
+            return -1;
+        }
+        total += w;
+    }
+    return total;
+}
+
+// stdout shorthand
+fn write_buf(data: []byte): i64 {
+    return write_fd(1, data);
+}
+
+// the bytes written so far (aliases the builder's storage)
+fn builder_bytes(b: ^Builder): []byte {
+    return b^.data[0:b^.count];
+}
+
+// Writes the builder's contents to `fd` and empties it.
+fn flush_fd(b: ^Builder, fd: i32): i64 {
+    n := write_fd(fd, builder_bytes(b));
+    b^.count = 0;
+    return n;
+}
+
+
+// ============================================================
+// PRINT FAMILY
+// ============================================================
+//   print*   -> stdout
+//   eprint*  -> stderr
+//   fprint*  -> any fd
+//   bprint*  -> append to a Builder, no I/O
+//
+// The wrappers all take `..any`, but they can't forward it to each
+// other, so the shared core takes a plain []any.
+
+// println("a is {}, b is {}", a, b) or println(a, b, c)
+fn println_into(b: ^Builder, data: []any) {
+    if len(data) > 0 {
+        ps := any_as::<string>(data[0]);
+        if ps != 0 && has_placeholder(ps^) {
+            format_into(b, ps^, data[1:]);
+            push_byte(b, 10);                            // '\n'
+            return;
+        }
+    }
+
+    i := 0;
+    for v in data {
+        if i > 0 {
+            push_byte(b, 32);                            // ' '
+        }
+        fmt_any(b, v);
+        i += 1;
+    }
+    push_byte(b, 10);
+}
+
+// ---- into a builder ----
+
+fn bprintfmt(b: ^Builder, fmt_str: string, args: ..any) {
+    format_into(b, fmt_str, args);
+}
+
+fn bprintln(b: ^Builder, data: ..any) {
+    println_into(b, data);
+}
+
+// ---- any fd ----
+
+fn fprintfmt(fd: i32, fmt_str: string, args: ..any) {
+    b := Builder{ data=[BUF_SIZE]byte{}, count=0 };
+    format_into(&b, fmt_str, args);
+    flush_fd(&b, fd);
+}
+
+fn fprintln(fd: i32, data: ..any) {
+    b := Builder{ data=[BUF_SIZE]byte{}, count=0 };
+    println_into(&b, data);
+    flush_fd(&b, fd);
+}
+
+// ---- stdout ----
+
+fn printfmt(fmt_str: string, args: ..any) {
+    b := Builder{ data=[BUF_SIZE]byte{}, count=0 };
+    format_into(&b, fmt_str, args);
+    flush_fd(&b, 1);
+}
+
+fn println(data: ..any) {
+    b := Builder{ data=[BUF_SIZE]byte{}, count=0 };
+    println_into(&b, data);
+    flush_fd(&b, 1);
+}
+
+// ---- stderr ----
+
+fn eprintfmt(fmt_str: string, args: ..any) {
+    b := Builder{ data=[BUF_SIZE]byte{}, count=0 };
+    format_into(&b, fmt_str, args);
+    flush_fd(&b, 2);
+}
+
+fn eprintln(data: ..any) {
+    b := Builder{ data=[BUF_SIZE]byte{}, count=0 };
+    println_into(&b, data);
+    flush_fd(&b, 2);
 }
 
 fn generic_fn(a: $T) {
