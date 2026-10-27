@@ -672,6 +672,7 @@ struct ModelSkeleton {
 }
 extern fn DrawModel(model: Model, position: Vector3 , scale: f32, tint:Color );
 extern fn LoadModel(c: ^byte): Model;
+extern fn UnloadModel(m: Model);
 struct Transform {
     padding: [40]u8,
 }

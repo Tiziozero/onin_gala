@@ -18,6 +18,16 @@ SHUT_RD: i32 = 0;
 SHUT_WR: i32 = 1;
 SHUT_RDWR: i32 = 2;
 
+SO_RCVTIMEO: i32 = 20;
+
+EAGAIN: i32 = 11;
+EWOULDBLOCK: i32 = 11;
+EINTR: i32 = 4;
+
+struct TimeVal {
+    sec: i64,
+    usec: i64,
+}
 
 // ============================================================
 // C _socket structures
@@ -179,12 +189,12 @@ fn tcp_accept(server: TcpSocket): TcpSocket {
 // Sending
 // ============================================================
 
-fn tcp_send(_socket: TcpSocket, data: []byte): i64 {
+fn tcp_send(_socket: TcpSocket, data: []byte, flags:=0): i64 {
     return send(
         _socket.fd,
         &data[0],
         cast(u64)len(data),
-        0,
+        cast(i32)flags,
     );
 }
 
@@ -220,4 +230,16 @@ fn tcp_close(_socket: TcpSocket) {
 
 fn tcp_shutdown(_socket: TcpSocket, how: i32): i32 {
     return shutdown(_socket.fd, how);
+}
+
+fn tcp_set_recv_timeout(_socket: TcpSocket, seconds: i64, microseconds: i64): i32 {
+    tv := TimeVal{seconds, microseconds};
+
+    return setsockopt(
+        _socket.fd,
+        SOL_SOCKET,
+        SO_RCVTIMEO,
+        cast(^byte)&tv,
+        16,
+    );
 }

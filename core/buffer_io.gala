@@ -67,6 +67,20 @@ fn buffer_from_string(s: string, allocator: Allocator = base_allocator): Buffer 
     buffer_write_string(&b, s);
     return b;
 }
+fn buffer_from_bytes(data: []byte): Buffer {
+    b := buffer_make(len(data));
+    buffer_write_bytes(&b, data);
+    return b;
+}
+fn buffer_wrap(data: []byte): Buffer {
+    return Buffer {
+        data = cast(rawptr)raw_data(data),
+        length = len(data),
+        capacity = len(data),
+        read_pos = 0,
+        allocator = PANIC_ALLOCATOR,
+    };
+}
 
 fn buffer_destroy(b: ^Buffer) {
     allocator := b^.allocator;

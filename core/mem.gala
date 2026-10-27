@@ -30,9 +30,6 @@
 //
 //   set_allocator(a);                                // make `a` the default
 //
-// Typed helpers (new, make_slice, del, del_slice) use size_of(T). `new`
-// infers T from the value you pass and copies it in. make_slice takes T
-// explicitly: make_slice::<f64>(n).
 
 
 import "./core.gala";
@@ -276,7 +273,7 @@ fn del_slice(s: []$T, a: Allocator = base_allocator) {
     }
     esz := cast(u64)size_of(T);
     total := esz * cast(u64)n;
-    dealloc(transmute(rawptr)&s[0], total, a);
+    dealloc(cast(rawptr)raw_data(s), total, a);
 }
 
 
@@ -670,3 +667,20 @@ fn slice_from(ptr: ^$T, length: $L): []T {
     r := SliceRepr{ptr, cast(i64)length};
     return transmute([]T)r;
 }
+fn panic_allocator(
+    data: rawptr,
+    mode: i32,
+    size: u64,
+    align: u64,
+    old: rawptr,
+    old_size: u64,
+): rawptr {
+    eprintln("PANIC: attempted allocation operation on a wrapped buffer");
+    exit(1);
+    return 0;
+}
+
+PANIC_ALLOCATOR := Allocator {
+    callback = panic_allocator,
+    data = 0,
+};
