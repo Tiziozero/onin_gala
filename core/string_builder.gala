@@ -1,0 +1,232 @@
+
+import "./core.gala";
+import "./mem.gala";
+
+// ============================================================
+// STRING BUILDER
+// ============================================================
+
+struct StringBuilder {
+    data: []byte,       // Allocated capacity, not current length.
+    count: i64,         // Number of bytes currently written.
+    allocator: Allocator,
+}
+
+fn sb_init(sb: ^StringBuilder, a: Allocator = base_allocator) {
+    sb^ = StringBuilder{
+        data = bytes_from(NULL, 0),
+        count = 0,
+        allocator = a,
+    };
+}
+
+fn sb_make(a: Allocator = base_allocator): StringBuilder {
+    sb: StringBuilder = StringBuilder{
+        data = bytes_from(NULL, 0),
+        count = 0,
+        allocator = a,
+    };
+    return sb;
+}
+
+fn sb_reset(sb: ^StringBuilder) {
+    sb^.count = 0;
+}
+
+fn sb_len(sb: ^StringBuilder): i64 {
+    return sb^.count;
+}
+
+fn sb_capacity(sb: ^StringBuilder): i64 {
+    return len(sb^.data);
+}
+
+fn sb_clear(sb: ^StringBuilder) {
+    sb^.count = 0;
+}
+
+// Ensures capacity >= required. Preserves existing contents.
+// Returns false on allocation failure.
+fn sb_reserve(sb: ^StringBuilder, required: i64): bool {
+    if required < 0 {
+        return false;
+    }
+
+    if required <= len(sb^.data) {
+        return true;
+    }
+
+    capacity := len(sb^.data);
+    if capacity < 16 {
+        capacity = 16;
+    }
+
+    while capacity < required {
+        if capacity > 4611686018427387903 {
+            capacity = required;
+            break;
+        }
+        capacity *= 2;
+    }
+
+    old_size := cast(u64)len(sb^.data);
+    new_size := cast(u64)capacity;
+
+    old_ptr: rawptr = NULL;
+    if old_size > 0 {
+        old_ptr = transmute(rawptr)&sb^.data[0];
+    }
+
+    p := resize(
+        old_ptr,
+        old_size,
+        new_size,
+        16,
+        sb^.allocator,
+    );
+
+    if p == NULL {
+        return false;
+    }
+
+    sb^.data = bytes_from(p, capacity);
+    return true;
+}
+
+// Appends one byte. Returns false if allocation fails.
+fn sb_append_byte(sb: ^StringBuilder, c: byte): bool {
+    if sb^.count == 9223372036854775807 {
+        return false;
+    }
+
+    if !sb_reserve(sb, sb^.count + 1) {
+        return false;
+    }
+
+    sb^.data[sb^.count] = c;
+    sb^.count += 1;
+    return true;
+}
+
+// Appends a byte slice. Returns false if allocation fails.
+fn sb_append_bytes(sb: ^StringBuilder, src: []byte): bool {
+    n := len(src);
+    if n == 0 {
+        return true;
+    }
+
+    if n < 0 || sb^.count > 9223372036854775807 - n {
+        return false;
+    }
+
+    // Support appending a slice that points into this builder.
+    // Its address may change if reserve reallocates the buffer.
+    src_ptr := transmute(rawptr)&src[0];
+    base: u64 = 0;
+    source: u64 = addr(src_ptr);
+    internal := false;
+    offset: u64 = 0;
+
+    if len(sb^.data) > 0 {
+        base = addr(transmute(rawptr)&sb^.data[0]);
+        if source >= base && source < base + cast(u64)len(sb^.data) {
+            internal = true;
+            offset = source - base;
+        }
+    }
+
+    old_count := sb^.count;
+    if !sb_reserve(sb, old_count + n) {
+        return false;
+    }
+
+    if internal {
+        src_ptr = from_addr(addr(transmute(rawptr)&sb^.data[0]) + offset);
+    }
+
+    mem_copy(
+        transmute(rawptr)&sb^.data[old_count],
+        src_ptr,
+        cast(u64)n,
+    );
+
+    sb^.count += n;
+    return true;
+}
+
+// Appends a string without adding a terminator.
+fn sb_append(sb: ^StringBuilder, s: string): bool {
+    if len(s) == 0 {
+        return true;
+    }
+
+    return sb_append_bytes(sb, transmute([]byte)s);
+}
+
+// Returns a string aliasing the builder's storage.
+// It is NOT NUL-terminated. Do not use after freeing or
+// modifying the builder.
+fn sb_string(sb: ^StringBuilder): string {
+    v : rawptr = 0;
+    if len(sb^.data) > 0 {
+        v = transmute(rawptr)&sb^.data[0];
+    }
+    view := bytes_from(v, sb^.count);
+
+    return transmute(string)view;
+}
+
+// Returns a slice aliasing the builder's storage.
+fn sb_bytes(sb: ^StringBuilder): []byte {
+    if sb^.count == 0 {
+        return bytes_from(NULL, 0);
+    }
+
+    return sb^.data[0:sb^.count];
+}
+
+// Releases the allocated storage and resets the builder.
+fn sb_free(sb: ^StringBuilder) {
+    if len(sb^.data) > 0 {
+        dealloc(
+            transmute(rawptr)&sb^.data[0],
+            cast(u64)len(sb^.data),
+            sb^.allocator,
+        );
+    }
+
+    a := sb^.allocator;
+    sb^ = StringBuilder{
+        data = bytes_from(NULL, 0),
+        count = 0,
+        allocator = a,
+    };
+}
+
+// ============================================================
+// STRING-BUILDER PRINT HELPERS
+// ============================================================
+
+// Appends a newline after the values.
+fn sb_println(sb: ^StringBuilder, data: ..any) {
+    // Uses the existing core.gala formatter.
+    // See the note below about the temporary buffer limit.
+    b := Builder{data = [BUILDER_CAPACITY]byte{}, count = 0};
+    print_into(&b, data, true);
+    sb_append_bytes(sb, builder_bytes(&b));
+}
+
+// Appends formatted values without adding a newline.
+fn sb_print(sb: ^StringBuilder, data: ..any) {
+    b := Builder{data = [BUILDER_CAPACITY]byte{}, count = 0};
+    print_into(&b, data, false);
+    sb_append_bytes(sb, builder_bytes(&b));
+}
+
+// Appends a format string and its arguments.
+fn sb_printfmt(sb: ^StringBuilder, fmt_str: string, args: ..any) {
+    b := Builder{data = [BUILDER_CAPACITY]byte{}, count = 0};
+    format_into(&b, fmt_str, args);
+    sb_append_bytes(sb, builder_bytes(&b));
+}
+

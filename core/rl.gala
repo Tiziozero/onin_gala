@@ -689,3 +689,6 @@ extern fn Vector2Normalize(v: Vector2): Vector2;
 extern fn Vector2Rotate(v: Vector2, angle: f32): Vector2;
 
 
+
+
+extern fn DrawPoint3D(position: Vector3 , color: Color);
