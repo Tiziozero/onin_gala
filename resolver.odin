@@ -1244,6 +1244,12 @@ resolve_struct_dec_item :: proc(s: ^ModuleScope, id: ItemId) {
     // link item to type
     delete_key(&s.ty_forward, sd.name) // delete fd and create type
     s.types[sd.name] = tid
+    if !get_type(tid).structure.is_generic {
+        if type_size(tid) == 0  {
+            highlight_lines(get_span(id))
+            gala_panicf("can't have empty structs (%s).", sd.name)
+        }
+    }
     get_ctx().item_types[id] = tid
 }
 
