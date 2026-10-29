@@ -686,9 +686,25 @@ extern fn MatrixRotateX(angle: f32): Matrix;
 extern fn MatrixRotateY(angle: f32): Matrix;
 extern fn MatrixRotateZ(angle: f32): Matrix;
 extern fn Vector2Normalize(v: Vector2): Vector2;
+extern fn Vector2Length(v: Vector2): f32;
 extern fn Vector2Rotate(v: Vector2, angle: f32): Vector2;
+extern fn Vector2Add(a, b: Vector2): Vector2;
+extern fn Vector2Subtract(a, b: Vector2): Vector2;
 
+extern fn DrawRectangleRounded(rec: Rectangle, roundness: f32, segments: i32, color: Color);
+extern fn DrawRectangleRoundedLines(rec: Rectangle, roundness: f32, segments: i32, color: Color);
+extern fn UpdateModelAnimation(model: Model, anim: ModelAnimation, frame: f32);             // Update model animation pose (vertex buffers and bone matrices)
 
-
-
+struct ModelAnimation {
+    name: [32]byte,          // Animation name
+    boneCount: u32, // Number of bones (per pose)
+    keyframeCount: i32,      // Number of animation key frames
+    keyframePoses: rawptr, // Animation sequence keyframe poses [keyframe][pose]
+}
+extern fn LoadModelAnimations(fileName: ^byte, animCount: ^i32): ^ModelAnimation;
 extern fn DrawPoint3D(position: Vector3 , color: Color);
+extern fn DrawCircle3D(center: Vector3, radius: f32, rotationAxis: Vector3, rotationAngle: f32, color: Color);
+extern fn DrawBoundingBox(box: BoundingBox, color: Color);
+struct BoundingBox {
+    min, max: Vector3,
+}

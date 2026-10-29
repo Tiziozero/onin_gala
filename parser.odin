@@ -1738,7 +1738,7 @@ expect_symbol :: proc(p: ^Parser, str: string) -> Token {
     c := current_token(p);
     if c.kind != .Symbol {
         highlight_lines(get_ctx().current_file, c.span);
-        gala_panic("Expected symbol, got:", c);
+        gala_panic("Expected symbol {}, got: {}", str, c);
     }
     if c.text != str {
         highlight_lines(get_ctx().current_file, c.span);

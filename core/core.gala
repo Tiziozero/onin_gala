@@ -2,6 +2,7 @@
 
 alias int = i64;
 NULL :: 0;
+MAX_I64 :: 9223372036854775807;
 
 @link("/lib/x86_64-linux-gnu/libc.so.6")
 @link("/lib/x86_64-linux-gnu/libm.so.6")
@@ -31,6 +32,7 @@ CHAR_RBRACE   :: 125;
 // ============================================================
 
 // `any` is { data: ptr, id: i64 }; `data` points at the spilled value.
+// Returns 0 if the value isn't a T.
 fn any_as::<$T>(v: any): ^T {
     if v.id == type_id(T) {
         return cast(^T)v.data;
@@ -53,8 +55,9 @@ fn ptr_add(p: rawptr, bytes: u64): rawptr {
 // STRINGS
 // ============================================================
 
-// Pointer to the first byte. Not NUL-terminated.
+// Pointer to the first byte (0 if empty). Not NUL-terminated.
 fn str_data(s: string): ^byte {
+    if len(s) == 0 { return 0; }
     return &s[0];
 }
 
@@ -80,6 +83,10 @@ BUILDER_CAPACITY :: 4096;
 struct Builder {
     data: [BUILDER_CAPACITY]byte,
     count: i64,
+}
+
+fn builder_make(): Builder {
+    return Builder{ data=[BUILDER_CAPACITY]byte{}, count=0 };
 }
 
 fn builder_push_byte(b: ^Builder, c: byte) {
@@ -272,6 +279,45 @@ fn fmt_float_at(b: ^Builder, data: rawptr, size: i64) {
     }
 }
 
+fn fmt_struct_at(b: ^Builder, data: rawptr, info: ^TypeInfo) {
+    builder_push_string(b, info^.name);
+    if len(info^.fields) == 0 {
+        builder_push_string(b, " {}");
+        return;
+    }
+    builder_push_string(b, " { ");
+    i := 0;
+    for f in info^.fields {
+        if i > 0 { builder_push_string(b, ", "); }
+        builder_push_string(b, f.name);
+        builder_push_string(b, " = ");
+        fmt_value(b, ptr_add(data, cast(u64)f.offset), f.typeid, true);
+        i += 1;
+    }
+    builder_push_string(b, " }");
+}
+
+fn fmt_list_at(b: ^Builder, data: rawptr, info: ^TypeInfo) {
+    elems: rawptr = data;
+    n: i64 = info^.count;
+    if info^.kind == KIND_SLICE {
+        // slice layout is { ptr, i64 }
+        slice_ptr := cast(^rawptr)data;
+        slice_count := cast(^i64)ptr_add(data, 8);
+        elems = slice_ptr^;
+        n = slice_count^;
+    }
+    elem_size := cast(u64)type_info(info^.elem)^.size;
+    builder_push_byte(b, CHAR_LBRACKET);
+    i: i64 = 0;
+    while i < n {
+        if i > 0 { builder_push_string(b, ", "); }
+        fmt_value(b, ptr_add(elems, cast(u64)i * elem_size), info^.elem, true);
+        i += 1;
+    }
+    builder_push_byte(b, CHAR_RBRACKET);
+}
+
 // Formats the value at `data` of type `id`. `nested` is true inside
 // structs/arrays/slices, where strings get quoted.
 fn fmt_value(b: ^Builder, data: rawptr, id: i64, nested: bool) {
@@ -280,90 +326,40 @@ fn fmt_value(b: ^Builder, data: rawptr, id: i64, nested: bool) {
 
     if k == KIND_INT {
         fmt_int_at(b, data, info^.size);
-        return;
-    }
-    if k == KIND_UINT || k == KIND_BYTE || k == KIND_RUNE {
+    } else if k == KIND_UINT || k == KIND_BYTE || k == KIND_RUNE {
         fmt_uint_at(b, data, info^.size);
-        return;
-    }
-    if k == KIND_FLOAT {
+    } else if k == KIND_FLOAT {
         fmt_float_at(b, data, info^.size);
-        return;
-    }
-    if k == KIND_BOOL {
+    } else if k == KIND_BOOL {
         bool_p := cast(^bool)data;
         if bool_p^ {
             builder_push_string(b, "true");
         } else {
             builder_push_string(b, "false");
         }
-        return;
-    }
-    if k == KIND_STRING {
+    } else if k == KIND_STRING {
         str_p := cast(^string)data;
         if nested { builder_push_byte(b, CHAR_QUOTE); }
         builder_push_string(b, str_p^);
         if nested { builder_push_byte(b, CHAR_QUOTE); }
-        return;
-    }
-    if k == KIND_POINTER {
+    } else if k == KIND_POINTER {
         addr_p := cast(^u64)data;
         if addr_p^ == 0 {
             builder_push_string(b, "nil");
         } else {
             fmt_hex(b, addr_p^);
         }
-        return;
-    }
-    if k == KIND_ANY {
+    } else if k == KIND_ANY {
         any_p := cast(^any)data;
         fmt_value(b, any_p^.data, any_p^.id, nested);
-        return;
-    }
-
-    if k == KIND_STRUCT {
+    } else if k == KIND_STRUCT {
+        fmt_struct_at(b, data, info);
+    } else if k == KIND_ARRAY || k == KIND_SLICE {
+        fmt_list_at(b, data, info);
+    } else {
+        // fns, unions, anything else: just the type name
         builder_push_string(b, info^.name);
-        if len(info^.fields) == 0 {
-            builder_push_string(b, " {}");
-            return;
-        }
-        builder_push_string(b, " { ");
-        i := 0;
-        for f in info^.fields {
-            if i > 0 { builder_push_string(b, ", "); }
-            builder_push_string(b, f.name);
-            builder_push_string(b, " = ");
-            fmt_value(b, ptr_add(data, cast(u64)f.offset), f.typeid, true);
-            i += 1;
-        }
-        builder_push_string(b, " }");
-        return;
     }
-
-    if k == KIND_ARRAY || k == KIND_SLICE {
-        elems: rawptr = data;
-        n: i64 = info^.count;
-        if k == KIND_SLICE {
-            // slice layout is { ptr, i64 }
-            slice_ptr := cast(^rawptr)data;
-            slice_count := cast(^i64)ptr_add(data, 8);
-            elems = slice_ptr^;
-            n = slice_count^;
-        }
-        elem_size := type_info(info^.elem)^.size;
-        builder_push_byte(b, CHAR_LBRACKET);
-        i: i64 = 0;
-        while i < n {
-            if i > 0 { builder_push_string(b, ", "); }
-            fmt_value(b, ptr_add(elems, cast(u64)i * cast(u64)elem_size), info^.elem, true);
-            i += 1;
-        }
-        builder_push_byte(b, CHAR_RBRACKET);
-        return;
-    }
-
-    // fns, unions, anything else: just the type name
-    builder_push_string(b, info^.name);
 }
 
 fn fmt_any(b: ^Builder, v: any) {
@@ -386,11 +382,10 @@ fn has_placeholder(s: string): bool {
     i := 0;
     while i < size {
         c := s[i];
-        if c == CHAR_LBRACE && next_is(s, i, CHAR_LBRACE) {
-            i += 2;
-        } else if c == CHAR_LBRACE && next_is(s, i, CHAR_RBRACE) {
+        if c == CHAR_LBRACE && next_is(s, i, CHAR_RBRACE) {
             return true;
-        } else if c == CHAR_RBRACE && next_is(s, i, CHAR_RBRACE) {
+        }
+        if (c == CHAR_LBRACE || c == CHAR_RBRACE) && next_is(s, i, c) {
             i += 2;
         } else {
             i += 1;
@@ -408,10 +403,7 @@ fn format_into(b: ^Builder, fmt_str: string, args: []any) {
 
     while i < size {
         c := fmt_str[i];
-        if c == CHAR_LBRACE && next_is(fmt_str, i, CHAR_LBRACE) {
-            builder_push_byte(b, CHAR_LBRACE);
-            i += 2;
-        } else if c == CHAR_LBRACE && next_is(fmt_str, i, CHAR_RBRACE) {
+        if c == CHAR_LBRACE && next_is(fmt_str, i, CHAR_RBRACE) {
             if arg_index < len(args) {
                 fmt_any(b, args[arg_index]);
             } else {
@@ -419,8 +411,8 @@ fn format_into(b: ^Builder, fmt_str: string, args: []any) {
             }
             arg_index += 1;
             i += 2;
-        } else if c == CHAR_RBRACE && next_is(fmt_str, i, CHAR_RBRACE) {
-            builder_push_byte(b, CHAR_RBRACE);
+        } else if (c == CHAR_LBRACE || c == CHAR_RBRACE) && next_is(fmt_str, i, c) {
+            builder_push_byte(b, c);
             i += 2;
         } else {
             builder_push_byte(b, c);
@@ -465,18 +457,18 @@ fn print_into(b: ^Builder, data: []any, newline: bool) {
 //   eprintln / eprintfmt           -> stderr
 //   fprintln / fprintfmt           -> any fd
 //   bprintln / bprintfmt           -> append to a Builder, no I/O
+//   (tprint & co. live in strings.gala: they need an allocator)
 //
-// Variadics can't be forwarded, so the wrappers share the plain
-// []any helpers below.
+// Variadics can't be forwarded, so the wrappers share the []any helpers.
 
 fn print_to_fd(fd: i32, data: []any, newline := false) {
-    b := Builder{ data=[BUILDER_CAPACITY]byte{}, count=0 };
+    b := builder_make();
     print_into(&b, data, newline);
     builder_flush(&b, fd);
 }
 
 fn format_to_fd(fd: i32, fmt_str: string, args: []any) {
-    b := Builder{ data=[BUILDER_CAPACITY]byte{}, count=0 };
+    b := builder_make();
     format_into(&b, fmt_str, args);
     builder_flush(&b, fd);
 }
@@ -547,6 +539,3 @@ fn sleep_ms(ms: i64) {
     while nanosleep(&ts, &ts) == -1 {
     }
 }
-
-
-
