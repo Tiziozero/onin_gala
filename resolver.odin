@@ -683,11 +683,7 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier, no_declare_generic :
                     gala_panicf("Duplicate field \"%s\".", f.name)
                 }
             }
-            if _, is_generic := f.t.(GenericSpecifier); is_generic {
-                highlight_lines({get_ctx().current_file, f.span})
-                gala_panic("Can't specify generic in a union.")
-            }
-            ft := resolve_type_specifier(s, f.t, true, bindings)
+            ft := resolve_type_specifier(s, f.t, no_declare_generic, bindings)
             if ft == void_type() {
                 highlight_lines({get_ctx().current_file, f.span})
                 gala_panic("A union field can't be void.")
@@ -714,7 +710,7 @@ resolve_type_specifier :: proc(s: ^Scope, t: TypeSpecifier, no_declare_generic :
         }
         if no_declare_generic {
             highlight_lines({get_ctx().current_file, k.span})
-            gala_panic("Can't specify generic in return type.")
+            gala_panic("Can't specify generic type here.")
         }
         return new_generic_ty(s, t)
     }
@@ -811,6 +807,13 @@ MAX_STRUCT_INSTANCE_DEPTH :: 32
 type_nesting_depth :: proc(t: TypeId) -> int {
     ty := get_type(t)
     #partial switch ty.kind {
+    case .Union: {
+        deepest := 0
+        for f in ty.union_fields {
+            deepest = max(deepest, type_nesting_depth(f.type))
+        }
+        return 1 + deepest
+    }
     case .Pointer:        return 1 + type_nesting_depth(ty.ptr)
     case .Slice:          return 1 + type_nesting_depth(ty.slice.type)
     case .FixedSizeArray: return 1 + type_nesting_depth(ty.fixed_size_array.type)
@@ -1084,6 +1087,9 @@ collect_generic_names :: proc(t: TypeSpecifier, out: ^[dynamic]string) {
         if k.signature.is_variadic do collect_generic_names(k.signature.variadic_ty, out)
         if r, ok := k.signature.ret_ty.(TypeSpecifier); ok do collect_generic_names(r, out)
     }
+    case UnionSpecifier: {
+        for f in k.fields do collect_generic_names(f.t, out)
+    }
     }
 }
 
@@ -1115,6 +1121,11 @@ specifier_has_generic :: proc(t: TypeSpecifier) -> bool {
         return false
     case BaseType, AnySpecifier:
         return false
+    case UnionSpecifier:
+        for f in k.fields {
+            if specifier_has_generic(f.t) do return true
+        }
+        return false
     }
     return false
 }
@@ -1134,6 +1145,14 @@ is_fn_signature_generic :: proc(sig: FnDecSignature) -> bool {
 bind_generics :: proc(spec: TypeSpecifier, concrete: TypeId, out: ^map[string]TypeId) {
     ty := get_type(concrete)
     #partial switch k in spec {
+    case UnionSpecifier:
+        if ty.kind == .Union {
+            for f in k.fields {
+                for uf in ty.union_fields {
+                    if uf.name == f.name do bind_generics(f.t, uf.type, out)
+                }
+            }
+        }
     case GenericInstSpecifier:
         if ty.kind == .Struct && ty.structure.is_instance {
             for a, i in k.args do bind_generics(a, ty.structure.args[i], out)

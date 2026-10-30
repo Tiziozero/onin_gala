@@ -41,6 +41,11 @@ gen_has :: proc(t: TypeId) -> bool {
             }
         }
     }
+    case .Union: {
+        for f in ty.union_fields {
+            if gen_has(f.type) do return true
+        }
+    }
     case .Function: {
         for a in ty.fn.args {
             if gen_has(a.type) do return true
@@ -148,6 +153,19 @@ gen_unify :: proc(param, got: TypeId, bound: ^map[string]TypeId) -> (bool, strin
     pt := get_type(param)^
     gt := get_type(got)^
     #partial switch pt.kind {
+    case .Union: {
+        if gt.kind != .Union do return false, "expected a union"
+        if len(gt.union_fields) != len(pt.union_fields) {
+            return false, "unions have different fields"
+        }
+        for pf, i in pt.union_fields {
+            gf := gt.union_fields[i]
+            if gf.name != pf.name do return false, "unions have different fields"
+            ok, msg := gen_unify(pf.type, gf.type, bound)
+            if !ok do return false, msg
+        }
+        return true, ""
+    }
     case .Pointer: {
         if gt.kind != .Pointer do return false, "expected a pointer"
         return gen_unify(pt.ptr, gt.ptr, bound)
@@ -214,6 +232,14 @@ gen_subst :: proc(t: TypeId, bound: map[string]TypeId, call: ExprId) -> TypeId {
     // copy first: interning below can move the type table
     ty := get_type(t)^
     #partial switch ty.kind {
+    case .Union: {
+        fields := make([]Field, len(ty.union_fields), allocator=get_ctx().allocator)
+        for f, i in ty.union_fields {
+            fields[i] = f
+            fields[i].type = gen_subst(f.type, bound, call)
+        }
+        return intern_type(Type{kind=.Union, union_fields=fields})
+    }
     case .Pointer: {
         inner := gen_subst(ty.ptr, bound, call)
         return intern_type(Type{kind=.Pointer, ptr=inner})

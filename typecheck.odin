@@ -1071,6 +1071,9 @@ tc_binop :: proc(tc: ^TcContext, id: ExprId, e: Binop) {
 collect_generic_type_names :: proc(t: TypeId, out: ^[dynamic]string) {
     ty := get_type(t)
     #partial switch ty.kind {
+    case .Union: {
+        for f in ty.union_fields do collect_generic_type_names(f.type, out)
+    }
     case .Generic: {
         for n in out^ {
             if n == ty.name do return
