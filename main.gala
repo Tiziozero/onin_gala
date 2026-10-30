@@ -1,22 +1,9 @@
 import "core/core.gala";
-struct inner { c: $T, b: f32 }
-struct S {
-    x: int,
-    y: f32,
-    c: inner($T),
-    d: fn(data: $D),
-    data: D,
+import "core/mem.gala";
+fn takes_i32(i: i32) {
 }
-
-struct v {
-}
-fn do_s(s: S($T, $D)) {
-    println(s);
-}
-fn main(): i32 {
-    println("Hello, World!", S{1, 1.2, {"hello", 0.12}, fn(c: int){}, 123});
-    println("6{}", 7);
-    println("6{{}", 7);
-    do_s({1, 1.2, {"Hello", 0.12}, fn(c: int){}, 123});
-    return 0;
+fn main() {
+    data := make_slice::<byte>(6);
+    takes_i32(len(data));
+    del_slice(data);
 }

@@ -520,7 +520,20 @@ cg_expr :: proc(c: ^CGCtx, id: ExprId) -> CGExprRes {
         return {kind=.Value, v="1"}
     case Len: {
         v, is_const := cg_len_of(c, e.target)
-        return {kind=.Number if is_const else .Value, v=v}
+        if is_const {
+            return {kind=.Number, v=v}
+        }
+        // slice/string length is a runtime i64; convert to whatever type the
+        // checker settled on (i32, u8, f32, ...)
+        to_ty := expr_ty(id)
+        op, ok := ty_to_llvm_cast_op(integer_type(), to_ty)
+        if ok {
+            t := new_tmp(c)
+            cwritefln(c, "\t%s = %s %s %s to %s", t, op,
+                ty_to_llvm_str(c, integer_type()), v, ty_to_llvm_str(c, to_ty))
+            v = t
+        }
+        return {kind=.Value, v=v}
     }
     case SizeOf: {
         s := type_size(get_ctx().expr_resolution_types[id])

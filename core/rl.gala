@@ -98,6 +98,7 @@ alias Camera3D = Camera;
 // ============================================================
 
 extern fn InitWindow(w: i32, h: i32, title: ^byte);
+extern fn InitAudioDevice();
 extern fn CloseWindow();
 extern fn WindowShouldClose(): bool;
 
@@ -718,3 +719,28 @@ LOG_ERROR :: 5;          // Error logging, used on unrecoverable failures
 LOG_FATAL :: 6;          // Fatal logging, used to abort program: exit(EXIT_FAILURE)
 LOG_NONE :: 7;            // Disable logging
 
+
+struct AudioStream {
+    buffer: rawptr,       // Pointer to internal data used by the audio system
+    processor: rawptr, // Pointer to internal data processor, useful for audio effects
+
+    sampleRate: u32,    // Frequency (samples per second)
+    sampleSize: u32,    // Bit depth (bits per sample): 8, 16, 32 (24 not supported)
+    channels: u32,      // Number of channels (1-mono, 2-stereo, ...)
+}
+
+struct Sound {
+    stream: AudioStream,         // Audio stream
+    frameCount: u32,    // Total number of frames (considering channels)
+}
+extern fn LoadSound(fileName: ^byte): Sound ;                          // Load sound from file
+extern fn UnloadSound(sound: Sound);                                  // Unload sound
+
+extern fn PlaySound(sound: Sound);
+extern fn StopSound(sound: Sound);
+extern fn PauseSound(sound: Sound);
+extern fn ResumeSound(sound: Sound);
+extern fn IsSoundPlaying(sound: Sound);
+extern fn SetSoundVolume(sound: Sound, volume: f32);
+extern fn SetSoundPitch(sound: Sound, pitch: f32);
+extern fn SetSoundPan(sound: Sound, pan: f32);
